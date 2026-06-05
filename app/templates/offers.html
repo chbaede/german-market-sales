@@ -101,6 +101,23 @@
     {% endfor %}
   </nav>
 
+  {% if selected_week == "next" and retailer_week_status.missing %}
+    <section class="availability-note" aria-label="next week retailer availability">
+      {% if retailer_week_status.available %}
+        <p>
+          <strong>Nächste Woche verfügbar</strong>
+          <span>{{ retailer_week_status.available | map(attribute="label") | join(", ") }}</span>
+          <span class="ko">다음 주 데이터 있음</span>
+        </p>
+      {% endif %}
+      <p>
+        <strong>Noch nicht veröffentlicht</strong>
+        <span>{{ retailer_week_status.missing | map(attribute="label") | join(", ") }}</span>
+        <span class="ko">아직 소스에서 다음 주 상품이 안 넘어옴</span>
+      </p>
+    </section>
+  {% endif %}
+
   <section class="basket-advisor" aria-label="shopping basket advisor">
     <form class="basket-form" method="get" data-basket-form data-endpoint="{{ url_for(page.basket_endpoint) }}">
       <input type="hidden" name="zip_code" value="{{ zip_code }}">

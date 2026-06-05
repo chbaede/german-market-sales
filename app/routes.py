@@ -18,7 +18,7 @@ WEEK_LABELS = {
 }
 SUPERMARKET_PAGE = {
     "title": "Supermarkt-Angebote · 독일 마트 할인",
-    "eyebrow": "ALDI · EDEKA · REWE · Lidl · Netto · Kaufland",
+    "eyebrow": "ALDI · EDEKA · REWE · Lidl · Netto · PENNY · nahkauf · Kaufland",
     "heading": "Wöchentliche Angebote",
     "heading_ko": "이번 주 할인 생필품",
     "active": "supermarket",
@@ -33,7 +33,7 @@ SUPERMARKET_PAGE = {
 }
 DRUGSTORE_PAGE = {
     "title": "Drogerie-Angebote · DM/ROSSMANN 할인",
-    "eyebrow": "dm · ROSSMANN",
+    "eyebrow": "dm · ROSSMANN · budni",
     "heading": "Drogerie-Angebote",
     "heading_ko": "DM/ROSSMANN 할인 생활용품",
     "active": "drugstore",
@@ -122,6 +122,7 @@ def render_offer_page(
         selected_week=selected_week,
         selected_week_label=week_labels[selected_week],
         week_counts=build_week_counts(result.offers, week_labels, selected_retailers, query, category),
+        retailer_week_status=build_retailer_week_status(result.offers, retailers, selected_week, selected_retailers),
         week_labels=week_labels,
         week_links=build_week_links(page_endpoint, week_labels),
         selected_category=category,
@@ -306,6 +307,28 @@ def build_week_counts(
     return {
         week: len(filter_offers(filter_offers_by_week(offers, week), selected_retailers or set(), query, category))
         for week in week_labels
+    }
+
+
+def build_retailer_week_status(
+    offers: list[Offer],
+    retailers: dict[str, str],
+    week: str,
+    selected_retailers: set[str] | None = None,
+) -> dict[str, list[dict[str, int | str]]]:
+    target_slugs = [slug for slug in retailers if not selected_retailers or slug in selected_retailers]
+    counts = {slug: 0 for slug in target_slugs}
+    for offer in filter_offers_by_week(offers, week):
+        if offer.retailer_slug in counts:
+            counts[offer.retailer_slug] += 1
+
+    return {
+        "available": [
+            {"slug": slug, "label": retailers[slug], "count": counts[slug]} for slug in target_slugs if counts[slug] > 0
+        ],
+        "missing": [
+            {"slug": slug, "label": retailers[slug], "count": counts[slug]} for slug in target_slugs if counts[slug] == 0
+        ],
     }
 
 

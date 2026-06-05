@@ -1,8 +1,8 @@
 # German Supermarket Deals
 
-Flask 기반의 독일 슈퍼마켓/드럭스토어 할인 대시보드입니다. 기본 화면(`/`)은 ALDI Nord, EDEKA, REWE, Lidl, Netto Marken-Discount, Kaufland의 주간 할인 항목을 가져와 필터링과 추천 후보로 보여줍니다. ALDI Nord, EDEKA, REWE, Kaufland는 공식 할인 페이지를 우선 사용하고, 공식 요청이 일시적으로 실패하면 Marktguru 데이터로 대체합니다. Lidl과 Netto Marken-Discount는 Marktguru 공개 데이터를 사용합니다.
+Flask 기반의 독일 슈퍼마켓/드럭스토어 할인 대시보드입니다. 기본 화면(`/`)은 ALDI Nord, EDEKA, REWE, Lidl, Netto Marken-Discount, PENNY, nahkauf, Kaufland의 주간 할인 항목을 가져와 필터링과 추천 후보로 보여줍니다. ALDI Nord, EDEKA, REWE, Kaufland는 공식 할인 페이지를 우선 사용하고, 공식 요청이 일시적으로 실패하면 Marktguru 데이터로 대체합니다. Lidl, Netto Marken-Discount, PENNY, nahkauf는 Marktguru 공개 데이터를 사용합니다.
 
-드럭스토어 화면(`/drogerie`)은 dm과 ROSSMANN을 슈퍼마켓과 별도로 관리합니다. dm은 공식 dm.de Ausverkauf/Angebot 검색 결과를 사용합니다. ROSSMANN은 공식 Blätterkatalog 색인으로 전단지 항목을 대조하고, 가격/이미지처럼 구조화가 필요한 상세값은 Marktguru 데이터를 함께 사용합니다. 드럭스토어도 `Diese Woche / 이번 주`와 `Nächste Woche / 다음 주` 탭으로 분리해 볼 수 있습니다. 두 화면 모두 독일어 원문을 우선 보여주고, 옆에 한국어 보조 번역을 함께 표시합니다.
+드럭스토어 화면(`/drogerie`)은 dm, ROSSMANN, budni를 슈퍼마켓과 별도로 관리합니다. dm은 공식 dm.de Ausverkauf/Angebot 검색 결과를 사용합니다. ROSSMANN은 공식 Blätterkatalog 색인으로 전단지 항목을 대조하고, 가격/이미지처럼 구조화가 필요한 상세값은 Marktguru 데이터를 함께 사용합니다. budni는 Marktguru 공개 데이터를 사용합니다. 드럭스토어도 `Diese Woche / 이번 주`와 `Nächste Woche / 다음 주` 탭으로 분리해 볼 수 있습니다. 두 화면 모두 독일어 원문을 우선 보여주고, 옆에 한국어 보조 번역을 함께 표시합니다.
 
 ## 실행
 

@@ -328,6 +328,35 @@ select:focus {
   background: rgba(255, 255, 255, 0.2);
 }
 
+.availability-note {
+  background: #eef5f1;
+  border: 1px solid #cbded2;
+  border-radius: 8px;
+  color: #25382b;
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.availability-note p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 0;
+}
+
+.availability-note strong {
+  min-width: 190px;
+}
+
+.availability-note span {
+  min-width: 0;
+}
+
+.availability-note .ko {
+  color: var(--muted);
+}
+
 .basket-advisor {
   background: var(--surface);
   border: 1px solid var(--line);

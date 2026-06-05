@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 
 from app.models import Offer
-from app.routes import filter_offers_by_week
+from app.routes import build_retailer_week_status, filter_offers_by_week
 
 
 def test_filter_offers_by_week_separates_current_and_next_week():
@@ -21,12 +21,27 @@ def test_filter_offers_by_week_uses_berlin_date_for_utc_timestamps():
     assert filter_offers_by_week([next_week], "next", today=today) == [next_week]
 
 
-def _offer(identifier: str, valid_from: str, valid_to: str) -> Offer:
+def test_build_retailer_week_status_reports_missing_next_week_sources(monkeypatch):
+    import app.routes as routes
+
+    monkeypatch.setattr(routes, "datetime", FrozenDateTime)
+    offers = [
+        _offer("lidl-next", "2026-06-08T00:00:00+02:00", "2026-06-14T23:59:59+02:00", "lidl"),
+        _offer("edeka-current", "2026-06-01T00:00:00+02:00", "2026-06-06T23:59:59+02:00", "edeka"),
+    ]
+
+    status = build_retailer_week_status(offers, {"edeka": "EDEKA", "lidl": "Lidl"}, "next")
+
+    assert status["available"] == [{"slug": "lidl", "label": "Lidl", "count": 1}]
+    assert status["missing"] == [{"slug": "edeka", "label": "EDEKA", "count": 0}]
+
+
+def _offer(identifier: str, valid_from: str, valid_to: str, retailer_slug: str = "rewe") -> Offer:
     return Offer(
         id=identifier,
         source_offer_id=1,
         retailer="REWE",
-        retailer_slug="rewe",
+        retailer_slug=retailer_slug,
         title=identifier,
         brand=None,
         category="other",
@@ -41,3 +56,9 @@ def _offer(identifier: str, valid_from: str, valid_to: str) -> Offer:
         image_url=None,
         source_url="https://example.test",
     )
+
+
+class FrozenDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(2026, 6, 4, tzinfo=tz)

@@ -17,12 +17,15 @@ class Config:
         "rewe": "REWE",
         "lidl": "Lidl",
         "netto-marken-discount": "Netto Marken-Discount",
+        "penny": "PENNY",
+        "nahkauf": "nahkauf",
         "kaufland": "Kaufland",
     }
 
     DRUGSTORE_RETAILERS = {
         "dm-drogerie-markt": "dm",
         "rossmann": "ROSSMANN",
+        "budnikowsky": "budni",
     }
 
     CATEGORY_LABELS = {

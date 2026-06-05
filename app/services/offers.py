@@ -15,7 +15,7 @@ from app.providers.rewe import ReweProvider
 from app.providers.rossmann import RossmannProvider
 
 
-CACHE_SCHEMA_VERSION = 9
+CACHE_SCHEMA_VERSION = 10
 UPSTREAM_FETCH_MULTIPLIER = 10
 MIN_UPSTREAM_FETCH_LIMIT = 500
 

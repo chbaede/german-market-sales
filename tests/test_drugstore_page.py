@@ -63,6 +63,7 @@ def test_drugstore_page_uses_separate_api_and_storage(monkeypatch):
     assert "Drogerie-Angebote" in html
     assert "dm" in html
     assert "ROSSMANN" in html
+    assert "budni" in html
     assert "/api/drogerie/basket" in html
     assert "drugstoreDealShoppingList" in html
     assert "Nächste Woche" in html
