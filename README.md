@@ -4,6 +4,10 @@ Flask 기반의 독일 슈퍼마켓/드럭스토어 할인 대시보드입니다
 
 드럭스토어 화면(`/drogerie`)은 dm, ROSSMANN, budni를 슈퍼마켓과 별도로 관리합니다. dm은 공식 dm.de Ausverkauf/Angebot 검색 결과를 사용합니다. ROSSMANN은 공식 Blätterkatalog 색인으로 전단지 항목을 대조하고, 가격/이미지처럼 구조화가 필요한 상세값은 Marktguru 데이터를 함께 사용합니다. budni는 Marktguru 공개 데이터를 사용합니다. 드럭스토어도 `Diese Woche / 이번 주`와 `Nächste Woche / 다음 주` 탭으로 분리해 볼 수 있습니다. 두 화면 모두 독일어 원문을 우선 보여주고, 옆에 한국어 보조 번역을 함께 표시합니다.
 
+기본 필터는 자주 쓰는 마트 중심으로 열립니다. 슈퍼마켓은 ALDI Nord, EDEKA, REWE, Lidl이 선택되고, 드럭스토어는 dm과 ROSSMANN이 선택됩니다. 각 마트 필터에는 현재 선택한 주차와 검색 조건에 맞는 상품 수가 함께 표시됩니다.
+
+일반 페이지/API 접속은 저장된 캐시를 먼저 보여주고 백그라운드에서 최신 데이터를 갱신합니다. 첫 화면은 빠르게 뜨고, 다음 새로고침부터 갱신된 가격을 볼 수 있습니다. 상단의 `Aktualisieren / 새로고침` 버튼은 최신 데이터를 즉시 다시 수집하는 동기 새로고침입니다.
+
 ## 실행
 
 ```bash
@@ -37,7 +41,7 @@ flask --app run run --debug --host 0.0.0.0
 환경변수로 기본값을 바꿀 수 있습니다.
 
 - `DEFAULT_ZIP_CODE`: 기본 우편번호, 기본값 `14195`
-- `CACHE_TTL_SECONDS`: 캐시 유지 시간, 기본값 6시간
+- `CACHE_TTL_SECONDS`: `refresh=0`으로 캐시 우선 조회할 때의 캐시 유지 시간, 기본값 6시간. 일반 페이지/API 접속은 캐시를 먼저 보여주고 백그라운드에서 새 데이터를 갱신합니다.
 - `MAX_OFFERS_PER_RETAILER`: 마트별 최대 수집 항목, 기본값 `60`
 - `REQUEST_VERIFY_TLS`: `true`, `false`, `auto`; 기본값 `auto`
 

@@ -38,5 +38,6 @@ class Config:
         "household": {"de": "Haushalt", "ko": "생활용품"},
         "personal_care": {"de": "Körperpflege", "ko": "개인위생"},
         "baby": {"de": "Baby", "ko": "유아용품"},
+        "nonfood": {"de": "Nonfood & Kleidung", "ko": "비식품/의류"},
         "other": {"de": "Sonstiges", "ko": "기타"},
     }

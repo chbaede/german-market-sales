@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from threading import Lock
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
@@ -11,11 +14,33 @@ from app.services.offers import OfferService
 from app.services.translations import translate_text
 
 bp = Blueprint("main", __name__)
+LOGGER = logging.getLogger(__name__)
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
+BACKGROUND_REFRESH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="offer-refresh")
+BACKGROUND_REFRESH_LOCK = Lock()
+BACKGROUND_REFRESH_KEYS: set[tuple[str, str]] = set()
 WEEK_LABELS = {
     "current": {"de": "Diese Woche", "ko": "이번 주"},
     "next": {"de": "Nächste Woche", "ko": "다음 주"},
 }
+ESSENTIAL_CATEGORY_PRIORITY = {
+    "produce": 0,
+    "dairy": 0,
+    "meat_fish": 0,
+    "bakery": 0,
+    "pantry": 0,
+    "drinks": 1,
+    "household": 2,
+    "personal_care": 2,
+    "baby": 2,
+    "nonfood": 5,
+    "other": 6,
+}
+LOW_PRIORITY_RECOMMENDATION_CATEGORIES = {"nonfood", "other"}
+RECOMMENDATION_CATEGORIES = frozenset(
+    category for category in ESSENTIAL_CATEGORY_PRIORITY if category not in LOW_PRIORITY_RECOMMENDATION_CATEGORIES
+)
+PRICE_SORT_FALLBACK = 999999
 SUPERMARKET_PAGE = {
     "title": "Supermarkt-Angebote · 독일 마트 할인",
     "eyebrow": "ALDI · EDEKA · REWE · Lidl · Netto · PENNY · nahkauf · Kaufland",
@@ -30,6 +55,12 @@ SUPERMARKET_PAGE = {
     "basket_placeholder": "파 4개, 당근, 우유 2개",
     "week_labels": WEEK_LABELS,
     "default_week": "current",
+    "default_retailers": ("aldi-nord", "edeka", "rewe", "lidl"),
+    "basket_templates": (
+        {"label": "Basis", "ko": "기본", "value": "우유 2개, 계란, 양파, 당근, 토마토, 바나나, 빵, 버터"},
+        {"label": "Kochen", "ko": "요리", "value": "파 4개, 감자 1kg, 파스타, 쌀, 닭고기, 치즈"},
+        {"label": "Haushalt", "ko": "생활", "value": "세제, 주방타월, 화장지, 쓰레기봉투"},
+    ),
 }
 DRUGSTORE_PAGE = {
     "title": "Drogerie-Angebote · DM/ROSSMANN 할인",
@@ -45,6 +76,12 @@ DRUGSTORE_PAGE = {
     "basket_placeholder": "샴푸 1개, 치약, 세제, 기저귀",
     "week_labels": WEEK_LABELS,
     "default_week": "current",
+    "default_retailers": ("dm-drogerie-markt", "rossmann"),
+    "basket_templates": (
+        {"label": "Basis", "ko": "기본", "value": "샴푸 1개, 치약, 바디워시, 비누, 데오"},
+        {"label": "Haushalt", "ko": "생활", "value": "세제, 화장지, 주방세제, 청소포"},
+        {"label": "Baby", "ko": "유아", "value": "기저귀, 물티슈, 베이비크림"},
+    ),
 }
 
 
@@ -93,19 +130,20 @@ def render_offer_page(
     page_endpoint: str,
 ):
     zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
-    refresh = request.args.get("refresh") == "1"
     week_labels = page.get("week_labels", WEEK_LABELS)
     selected_week = _clean_week(request.args.get("week"), week_labels, page.get("default_week", "current"))
-    result = service.get_offers(zip_code=zip_code, refresh=refresh)
+    result = load_offers_for_request(service, zip_code)
 
-    selected_retailers = set(request.args.getlist("retailer"))
+    selected_retailers = _selected_retailers(retailers, page.get("default_retailers", ()))
     query = (request.args.get("q") or "").strip()
     basket_query = (request.args.get("basket") or "").strip()
     category = request.args.get("category") or "all"
-    sort = request.args.get("sort") or "discount"
+    sort = request.args.get("sort") or "essentials"
+    priced_only = request.args.get("priced") == "1"
+    ending_soon = request.args.get("ending") == "1"
 
     week_offers = filter_offers_by_week(result.offers, selected_week)
-    filtered = filter_offers(week_offers, selected_retailers, query, category)
+    filtered = filter_offers(week_offers, selected_retailers, query, category, priced_only, ending_soon)
     filtered = sort_offers(filtered, sort)
     filtered = limit_offers_per_retailer(filtered, current_app.config["MAX_OFFERS_PER_RETAILER"])
     recommendations = pick_recommendations(filtered)
@@ -121,12 +159,24 @@ def render_offer_page(
         selected_retailers=selected_retailers,
         selected_week=selected_week,
         selected_week_label=week_labels[selected_week],
-        week_counts=build_week_counts(result.offers, week_labels, selected_retailers, query, category),
+        week_counts=build_week_counts(
+            result.offers,
+            week_labels,
+            selected_retailers,
+            query,
+            category,
+            priced_only,
+            ending_soon,
+        ),
         retailer_week_status=build_retailer_week_status(result.offers, retailers, selected_week, selected_retailers),
+        retailer_counts=build_retailer_counts(week_offers, retailers, query, category, priced_only, ending_soon),
+        default_retailers=page.get("default_retailers", ()),
         week_labels=week_labels,
         week_links=build_week_links(page_endpoint, week_labels),
         selected_category=category,
         selected_sort=sort,
+        priced_only=priced_only,
+        ending_soon=ending_soon,
         query=query,
         zip_code=zip_code,
         fetched_at=result.fetched_at,
@@ -163,7 +213,7 @@ def api_drugstore_offers():
 def api_offers_for(service: OfferService, week_labels: dict[str, dict[str, str]], default_week: str = "current"):
     zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
     selected_week = _clean_week(request.args.get("week"), week_labels, default_week)
-    result = service.get_offers(zip_code=zip_code, refresh=request.args.get("refresh") == "1")
+    result = load_offers_for_request(service, zip_code)
     offers = filter_offers_by_week(result.offers, selected_week)
     return jsonify(
         {
@@ -192,9 +242,18 @@ def api_basket_for(service: OfferService, week_labels: dict[str, dict[str, str]]
     selected_week = _clean_week(request.args.get("week"), week_labels, default_week)
     selected_retailers = set(request.args.getlist("retailer"))
     basket_query = (request.args.get("basket") or "").strip()
-    result = service.get_offers(zip_code=zip_code, refresh=request.args.get("refresh") == "1")
+    priced_only = request.args.get("priced") == "1"
+    ending_soon = request.args.get("ending") == "1"
+    result = load_offers_for_request(service, zip_code)
     offers = filter_offers_by_week(result.offers, selected_week)
-    offers = filter_offers(offers, selected_retailers, query="", category="all")
+    offers = filter_offers(
+        offers,
+        selected_retailers,
+        query="",
+        category="all",
+        priced_only=priced_only,
+        ending_soon=ending_soon,
+    )
     recommendations = recommend_basket_items(basket_query, offers)
     return jsonify(
         {
@@ -218,6 +277,8 @@ def filter_offers(
     selected_retailers: set[str],
     query: str,
     category: str,
+    priced_only: bool = False,
+    ending_soon: bool = False,
 ) -> list[Offer]:
     query_key = query.casefold()
     filtered: list[Offer] = []
@@ -225,6 +286,10 @@ def filter_offers(
         if selected_retailers and offer.retailer_slug not in selected_retailers:
             continue
         if category != "all" and offer.category != category:
+            continue
+        if priced_only and offer.price is None and offer.unit_price is None:
+            continue
+        if ending_soon and not _ends_soon(offer):
             continue
         if query_key:
             haystack = " ".join(
@@ -246,6 +311,16 @@ def filter_offers_by_week(offers: list[Offer], week: str, today: date | None = N
 
 
 def sort_offers(offers: list[Offer], sort: str) -> list[Offer]:
+    if sort == "essentials":
+        return sorted(
+            offers,
+            key=lambda offer: (
+                _essential_priority(offer),
+                -_discount_sort_value(offer),
+                _deal_price(offer),
+                offer.title.casefold(),
+            ),
+        )
     if sort == "price":
         return sorted(offers, key=lambda offer: (offer.price is None, offer.price or 0, offer.title.casefold()))
     if sort == "unit":
@@ -256,7 +331,7 @@ def sort_offers(offers: list[Offer], sort: str) -> list[Offer]:
         return sorted(offers, key=lambda offer: (offer.valid_to or "", offer.retailer.casefold()))
     return sorted(
         offers,
-        key=lambda offer: (-(offer.discount_percent or 0), offer.price or 999999, offer.title.casefold()),
+        key=lambda offer: (-_discount_sort_value(offer), _price_or_fallback(offer), offer.title.casefold()),
     )
 
 
@@ -273,16 +348,33 @@ def limit_offers_per_retailer(offers: list[Offer], limit: int) -> list[Offer]:
 
 
 def pick_recommendations(offers: list[Offer]) -> list[Offer]:
-    useful_categories = {"produce", "dairy", "meat_fish", "bakery", "pantry", "drinks", "household", "personal_care", "baby"}
     ranked = [
         offer
         for offer in offers
-        if offer.category in useful_categories and ((offer.discount_percent or 0) >= 10 or offer.price is not None)
+        if offer.category in RECOMMENDATION_CATEGORIES and (_discount_sort_value(offer) >= 10 or offer.price is not None)
     ]
     return sorted(
         ranked,
-        key=lambda offer: (-(offer.discount_percent or 0), offer.unit_price or offer.price or 999999),
+        key=lambda offer: (_essential_priority(offer), -_discount_sort_value(offer), _deal_price(offer)),
     )[:8]
+
+
+def _essential_priority(offer: Offer) -> int:
+    return ESSENTIAL_CATEGORY_PRIORITY.get(offer.category, ESSENTIAL_CATEGORY_PRIORITY["other"])
+
+
+def _discount_sort_value(offer: Offer) -> float:
+    return offer.discount_percent or 0
+
+
+def _deal_price(offer: Offer) -> float:
+    if offer.unit_price is not None:
+        return offer.unit_price
+    return _price_or_fallback(offer)
+
+
+def _price_or_fallback(offer: Offer) -> float:
+    return offer.price if offer.price is not None else PRICE_SORT_FALLBACK
 
 
 def build_stats(filtered: list[Offer], all_offers: list[Offer]) -> dict:
@@ -293,6 +385,7 @@ def build_stats(filtered: list[Offer], all_offers: list[Offer]) -> dict:
         "total": len(all_offers),
         "discounted": len(discounted),
         "best_discount": round(best),
+        "ending_soon": sum(1 for offer in filtered if _ends_soon(offer)),
         "retailer_count": len({offer.retailer_slug for offer in filtered}),
     }
 
@@ -303,11 +396,37 @@ def build_week_counts(
     selected_retailers: set[str] | None = None,
     query: str = "",
     category: str = "all",
+    priced_only: bool = False,
+    ending_soon: bool = False,
 ) -> dict[str, int]:
     return {
-        week: len(filter_offers(filter_offers_by_week(offers, week), selected_retailers or set(), query, category))
+        week: len(
+            filter_offers(
+                filter_offers_by_week(offers, week),
+                selected_retailers or set(),
+                query,
+                category,
+                priced_only,
+                ending_soon,
+            )
+        )
         for week in week_labels
     }
+
+
+def build_retailer_counts(
+    offers: list[Offer],
+    retailers: dict[str, str],
+    query: str = "",
+    category: str = "all",
+    priced_only: bool = False,
+    ending_soon: bool = False,
+) -> dict[str, int]:
+    counts = {slug: 0 for slug in retailers}
+    for offer in filter_offers(offers, set(), query, category, priced_only, ending_soon):
+        if offer.retailer_slug in counts:
+            counts[offer.retailer_slug] += 1
+    return counts
 
 
 def build_retailer_week_status(
@@ -332,6 +451,53 @@ def build_retailer_week_status(
     }
 
 
+def _selected_retailers(retailers: dict[str, str], default_retailers: tuple[str, ...] | list[str]) -> set[str]:
+    requested = request.args.getlist("retailer")
+    if requested or request.args.get("retailer_filter") == "1":
+        return {slug for slug in requested if slug in retailers}
+    return {slug for slug in default_retailers if slug in retailers}
+
+
+def load_offers_for_request(service: OfferService, zip_code: str) -> OfferResult:
+    refresh_mode = request.args.get("refresh")
+    if refresh_mode == "1":
+        return service.get_offers(zip_code=zip_code, refresh=True)
+    if refresh_mode == "0":
+        return service.get_offers(zip_code=zip_code, refresh=False)
+
+    cached_getter = getattr(service, "get_cached_offers", None)
+    if cached_getter:
+        cached = cached_getter(zip_code)
+        if cached:
+            _queue_refresh(service, zip_code)
+            return cached
+    return service.get_offers(zip_code=zip_code, refresh=True)
+
+
+def _queue_refresh(service: OfferService, zip_code: str) -> None:
+    key = _refresh_key(service, zip_code)
+    with BACKGROUND_REFRESH_LOCK:
+        if key in BACKGROUND_REFRESH_KEYS:
+            return
+        BACKGROUND_REFRESH_KEYS.add(key)
+    BACKGROUND_REFRESH_EXECUTOR.submit(_refresh_cache, service, zip_code, key)
+
+
+def _refresh_cache(service: OfferService, zip_code: str, key: tuple[str, str]) -> None:
+    try:
+        service.get_offers(zip_code=zip_code, refresh=True)
+    except Exception:
+        LOGGER.exception("Background offer refresh failed for zip_code=%s", zip_code)
+    finally:
+        with BACKGROUND_REFRESH_LOCK:
+            BACKGROUND_REFRESH_KEYS.discard(key)
+
+
+def _refresh_key(service: OfferService, zip_code: str) -> tuple[str, str]:
+    cache_file = getattr(service, "cache_file", None)
+    return (str(cache_file) if cache_file else str(id(service)), zip_code)
+
+
 def build_week_links(endpoint: str, week_labels: dict[str, dict[str, str]]) -> dict[str, str]:
     links: dict[str, str] = {}
     for week in week_labels:
@@ -354,6 +520,7 @@ def _basket_recommendation_to_dict(recommendation: BasketRecommendation) -> dict
         "candidates": [
             {
                 "retailer": candidate.offer.retailer,
+                "retailer_slug": candidate.offer.retailer_slug,
                 "title": candidate.offer.title,
                 "title_ko": translate_text(candidate.offer.title),
                 "description": candidate.offer.description,
@@ -466,6 +633,14 @@ def _is_active_on(offer: Offer, day: date) -> bool:
     if valid_to and valid_to < day:
         return False
     return True
+
+
+def _ends_soon(offer: Offer, today: date | None = None) -> bool:
+    valid_to = _offer_date(offer.valid_to)
+    if valid_to is None:
+        return False
+    today = today or datetime.now(BERLIN_TZ).date()
+    return today <= valid_to <= today + timedelta(days=1)
 
 
 def _offer_date(value: str | None) -> date | None:

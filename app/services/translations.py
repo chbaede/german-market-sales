@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 
 PHRASES: tuple[tuple[str, str], ...] = (
@@ -158,6 +159,7 @@ WORDS: dict[str, str] = {
 TOKEN_RE = re.compile(r"[A-Za-zÄÖÜäöüß]+|[0-9]+(?:[,.][0-9]+)?|[^A-Za-zÄÖÜäöüß0-9]+")
 
 
+@lru_cache(maxsize=4096)
 def translate_text(text: str | None) -> str:
     if not text:
         return ""

@@ -21,11 +21,15 @@
 
 <main class="layout" data-shopping-storage-key="{{ page.storage_key }}">
   {% if warnings %}
-    <section class="notice" aria-label="data warnings">
+    <details class="notice" aria-label="data warnings">
+      <summary>
+        <strong>Datenhinweise <span class="ko">수집 안내</span></strong>
+        <span>{{ warnings|length }}</span>
+      </summary>
       {% for warning in warnings %}
         <p>{{ warning }}</p>
       {% endfor %}
-    </section>
+    </details>
   {% endif %}
 
   <section class="stats" aria-label="summary">
@@ -45,52 +49,16 @@
       <span>off</span>
     </div>
     <div class="metric">
+      <span class="metric-label">Läuft bald ab <span class="ko">마감 임박</span></span>
+      <strong>{{ stats.ending_soon }}</strong>
+      <span>items</span>
+    </div>
+    <div class="metric">
       <span class="metric-label">PLZ</span>
       <strong>{{ zip_code }}</strong>
       <span>{% if from_cache %}cache{% else %}live{% endif %}</span>
     </div>
   </section>
-
-  <form class="filters" method="get" data-filter-form>
-    <input type="hidden" name="week" value="{{ selected_week }}">
-    <label>
-      <span>Postleitzahl <span class="ko">우편번호</span></span>
-      <input name="zip_code" value="{{ zip_code }}" inputmode="numeric" pattern="[0-9]{4,5}">
-    </label>
-    <label class="search-field">
-      <span>Suche <span class="ko">검색</span></span>
-      <input name="q" value="{{ query }}" placeholder="{{ page.search_placeholder }}">
-    </label>
-    <label>
-      <span>Kategorie <span class="ko">카테고리</span></span>
-      <select name="category">
-        <option value="all" {% if selected_category == "all" %}selected{% endif %}>Alle / 전체</option>
-        {% for key, label in category_labels.items() %}
-          <option value="{{ key }}" {% if selected_category == key %}selected{% endif %}>{{ label.de }} / {{ label.ko }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>
-      <span>Sortierung <span class="ko">정렬</span></span>
-      <select name="sort">
-        <option value="discount" {% if selected_sort == "discount" %}selected{% endif %}>Rabatt / 할인율</option>
-        <option value="unit" {% if selected_sort == "unit" %}selected{% endif %}>Grundpreis / 단위가격</option>
-        <option value="price" {% if selected_sort == "price" %}selected{% endif %}>Preis / 판매가격</option>
-        <option value="valid_to" {% if selected_sort == "valid_to" %}selected{% endif %}>Gültig bis / 마감일</option>
-        <option value="retailer" {% if selected_sort == "retailer" %}selected{% endif %}>{{ page.retailer_label.de }} / {{ page.retailer_label.ko }}</option>
-      </select>
-    </label>
-    <fieldset class="retailer-filter">
-      <legend>{{ page.retailer_label.de }} <span class="ko">{{ page.retailer_label.ko }}</span></legend>
-      {% for slug, label in retailers.items() %}
-        <label class="check-pill">
-          <input type="checkbox" name="retailer" value="{{ slug }}" {% if slug in selected_retailers %}checked{% endif %}>
-          <span>{{ label }}</span>
-        </label>
-      {% endfor %}
-    </fieldset>
-    <button class="submit-button" type="submit">Anwenden <span>적용</span></button>
-  </form>
 
   <nav class="week-switch" aria-label="offer week">
     {% for week_key, label in week_labels.items() %}
@@ -118,6 +86,75 @@
     </section>
   {% endif %}
 
+  <form class="filters" method="get" data-filter-form>
+    <input type="hidden" name="week" value="{{ selected_week }}">
+    <input type="hidden" name="retailer_filter" value="1">
+    <label>
+      <span>Postleitzahl <span class="ko">우편번호</span></span>
+      <input name="zip_code" value="{{ zip_code }}" inputmode="numeric" pattern="[0-9]{4,5}">
+    </label>
+    <label class="search-field">
+      <span>Suche <span class="ko">검색</span></span>
+      <input name="q" value="{{ query }}" placeholder="{{ page.search_placeholder }}">
+    </label>
+    <label>
+      <span>Kategorie <span class="ko">카테고리</span></span>
+      <select name="category">
+        <option value="all" {% if selected_category == "all" %}selected{% endif %}>Alle / 전체</option>
+        {% for key, label in category_labels.items() %}
+          <option value="{{ key }}" {% if selected_category == key %}selected{% endif %}>{{ label.de }} / {{ label.ko }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      <span>Sortierung <span class="ko">정렬</span></span>
+      <select name="sort">
+        <option value="essentials" {% if selected_sort == "essentials" %}selected{% endif %}>Wocheneinkauf / 생활우선</option>
+        <option value="discount" {% if selected_sort == "discount" %}selected{% endif %}>Rabatt / 할인율</option>
+        <option value="unit" {% if selected_sort == "unit" %}selected{% endif %}>Grundpreis / 단위가격</option>
+        <option value="price" {% if selected_sort == "price" %}selected{% endif %}>Preis / 판매가격</option>
+        <option value="valid_to" {% if selected_sort == "valid_to" %}selected{% endif %}>Gültig bis / 마감일</option>
+        <option value="retailer" {% if selected_sort == "retailer" %}selected{% endif %}>{{ page.retailer_label.de }} / {{ page.retailer_label.ko }}</option>
+      </select>
+    </label>
+    <div class="filter-toggles">
+      <label class="filter-toggle">
+        <input type="checkbox" name="priced" value="1" {% if priced_only %}checked{% endif %}>
+        <span>
+          <strong>Nur mit Preis</strong>
+          <small>가격 있는 상품만</small>
+        </span>
+      </label>
+      <label class="filter-toggle">
+        <input type="checkbox" name="ending" value="1" {% if ending_soon %}checked{% endif %}>
+        <span>
+          <strong>Läuft bald ab</strong>
+          <small>마감 임박</small>
+        </span>
+      </label>
+    </div>
+    <fieldset class="retailer-filter">
+      <legend>{{ page.retailer_label.de }} <span class="ko">{{ page.retailer_label.ko }}</span></legend>
+      <div class="retailer-options">
+        <div class="filter-actions" data-default-retailers="{{ default_retailers|join(',') }}">
+          <button type="button" data-retailer-preset="default">Standard <span>기본</span></button>
+          <button type="button" data-retailer-preset="all">Alle <span>전체</span></button>
+          <button type="button" data-retailer-preset="none">Keine <span>해제</span></button>
+        </div>
+        {% for slug, label in retailers.items() %}
+          <label class="check-pill retailer-theme retailer-{{ slug }}">
+            <input type="checkbox" name="retailer" value="{{ slug }}" {% if slug in selected_retailers %}checked{% endif %}>
+            <span class="check-pill-ui">
+              <span class="check-pill-label">{{ label }}</span>
+              <span class="check-pill-count">{{ retailer_counts.get(slug, 0) }}</span>
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <button class="submit-button" type="submit">Anwenden <span>적용</span></button>
+  </form>
+
   <section class="basket-advisor" aria-label="shopping basket advisor">
     <form class="basket-form" method="get" data-basket-form data-endpoint="{{ url_for(page.basket_endpoint) }}">
       <input type="hidden" name="zip_code" value="{{ zip_code }}">
@@ -125,12 +162,27 @@
       <input type="hidden" name="q" value="{{ query }}">
       <input type="hidden" name="category" value="{{ selected_category }}">
       <input type="hidden" name="sort" value="{{ selected_sort }}">
+      {% if priced_only %}
+        <input type="hidden" name="priced" value="1">
+      {% endif %}
+      {% if ending_soon %}
+        <input type="hidden" name="ending" value="1">
+      {% endif %}
       {% for retailer in selected_retailers %}
         <input type="hidden" name="retailer" value="{{ retailer }}">
       {% endfor %}
       <label for="basket-input">
         Einkauf planen <span class="ko">장보기 추천</span>
       </label>
+      {% if page.basket_templates %}
+        <div class="basket-template-row" aria-label="shopping templates">
+          {% for template in page.basket_templates %}
+            <button type="button" data-basket-template="{{ template.value }}">
+              {{ template.label }} <span>{{ template.ko }}</span>
+            </button>
+          {% endfor %}
+        </div>
+      {% endif %}
       <textarea
         id="basket-input"
         name="basket"
@@ -168,12 +220,12 @@
   {% if recommendations %}
     <section class="recommendations" aria-label="recommendations">
       <div class="section-heading">
-        <h2>Gute Kandidaten <span class="ko">좋은 후보</span></h2>
-        <p>Nach Rabatt und Grundpreis <span class="ko">할인율과 단위가격 기준</span></p>
+        <h2>Wocheneinkauf zuerst <span class="ko">생활 우선 후보</span></h2>
+        <p>Lebensmittel und Bedarf vor Nonfood <span class="ko">식료품과 생활필수품을 먼저</span></p>
       </div>
       <div class="deal-strip">
         {% for offer in recommendations %}
-          <article class="mini-deal">
+          <article class="mini-deal retailer-theme retailer-{{ offer.retailer_slug }}">
             <span class="retailer-badge">{{ offer.retailer }}</span>
             <strong>{{ offer.title }}</strong>
             {% if offer.title|ko_text %}
@@ -198,7 +250,7 @@
           {% set title_ko = offer.title|ko_text %}
           {% set valid_text = offer.valid_from|date_de ~ " - " ~ offer.valid_to|date_de %}
           <article
-            class="offer-card"
+            class="offer-card retailer-theme retailer-{{ offer.retailer_slug }}"
             data-offer-id="{{ offer.id }}"
             data-title="{{ offer.title }}"
             data-title-ko="{{ title_ko }}"
@@ -213,7 +265,7 @@
           >
             <div class="image-wrap">
               {% if offer.image_url %}
-                <img src="{{ offer.image_url }}" alt="{{ offer.title }}" loading="lazy">
+                <img src="{{ offer.image_url }}" alt="{{ offer.title }}" loading="lazy" decoding="async">
               {% else %}
                 <div class="image-placeholder">{{ offer.retailer }}</div>
               {% endif %}
@@ -249,9 +301,6 @@
                 <p class="unit-price">{{ offer.unit_price|eur }} / {{ offer.unit or "unit" }}</p>
               {% endif %}
               <p class="description">{{ offer.description }}</p>
-              {% if offer.description|ko_text %}
-                <p class="description translation">{{ offer.description|ko_text }}</p>
-              {% endif %}
               <div class="valid-row">
                 <span>Gültig <span class="ko">유효기간</span>: {{ valid_text }}</span>
                 <a href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">Quelle <span class="ko">출처</span></a>
@@ -283,10 +332,22 @@
       <p class="shopping-empty" data-shopping-empty>
         Noch nichts ausgewählt. <span class="ko">사고 싶은 항목의 담기 버튼을 눌러보세요.</span>
       </p>
-      <ul class="shopping-list" data-shopping-list></ul>
-      <button class="clear-list-button" type="button" data-clear-shopping-list>
-        Liste leeren <span>비우기</span>
-      </button>
+      <div class="shopping-list-scroll" data-shopping-list-scroll>
+        <ul class="shopping-list" data-shopping-list></ul>
+      </div>
+      <div class="shopping-panel-actions">
+        <a
+          class="whatsapp-share-button is-disabled"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+          data-shopping-whatsapp
+          aria-disabled="true"
+        >WhatsApp <span>전송</span></a>
+        <button class="clear-list-button" type="button" data-clear-shopping-list>
+          Liste leeren <span>비우기</span>
+        </button>
+      </div>
     </aside>
   </section>
 </main>

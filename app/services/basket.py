@@ -90,6 +90,91 @@ KOREAN_PRODUCT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "화장품": ("kosmetik", "make-up", "makeup"),
     "화장솜": ("wattepads", "watte"),
     "기저귀": ("windeln", "pampers"),
+    "면도기": ("rasierer", "nassrasierer"),
+}
+KOREAN_PRODUCT_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "파": ("produce",),
+    "쪽파": ("produce",),
+    "대파": ("produce",),
+    "당근": ("produce",),
+    "양파": ("produce",),
+    "감자": ("produce",),
+    "고구마": ("produce",),
+    "마늘": ("produce",),
+    "생강": ("produce",),
+    "버섯": ("produce",),
+    "양송이": ("produce",),
+    "토마토": ("produce",),
+    "방울토마토": ("produce",),
+    "오이": ("produce",),
+    "상추": ("produce",),
+    "샐러드": ("produce",),
+    "시금치": ("produce",),
+    "파프리카": ("produce",),
+    "브로콜리": ("produce",),
+    "사과": ("produce",),
+    "바나나": ("produce",),
+    "딸기": ("produce",),
+    "블루베리": ("produce",),
+    "포도": ("produce",),
+    "오렌지": ("produce",),
+    "레몬": ("produce",),
+    "라임": ("produce",),
+    "우유": ("dairy",),
+    "버터": ("dairy",),
+    "치즈": ("dairy",),
+    "모짜렐라": ("dairy",),
+    "요거트": ("dairy",),
+    "계란": ("dairy",),
+    "달걀": ("dairy",),
+    "크림": ("dairy",),
+    "닭고기": ("meat_fish",),
+    "닭": ("meat_fish",),
+    "돼지고기": ("meat_fish",),
+    "소고기": ("meat_fish",),
+    "소세지": ("meat_fish",),
+    "소시지": ("meat_fish",),
+    "햄": ("meat_fish",),
+    "연어": ("meat_fish",),
+    "생선": ("meat_fish",),
+    "새우": ("meat_fish",),
+    "빵": ("bakery",),
+    "식빵": ("bakery",),
+    "파스타": ("pantry",),
+    "면": ("pantry",),
+    "쌀": ("pantry",),
+    "밥": ("pantry",),
+    "밀가루": ("pantry",),
+    "설탕": ("pantry",),
+    "소금": ("pantry",),
+    "기름": ("pantry",),
+    "올리브유": ("pantry",),
+    "커피": ("pantry",),
+    "차": ("pantry",),
+    "물": ("drinks",),
+    "주스": ("drinks",),
+    "콜라": ("drinks",),
+    "맥주": ("drinks",),
+    "와인": ("drinks",),
+    "세제": ("household",),
+    "주방세제": ("household",),
+    "휴지": ("household",),
+    "키친타월": ("household",),
+    "물티슈": ("household", "baby"),
+    "샴푸": ("personal_care",),
+    "샤워젤": ("personal_care",),
+    "바디워시": ("personal_care",),
+    "치약": ("personal_care",),
+    "칫솔": ("personal_care",),
+    "비누": ("personal_care",),
+    "생리대": ("personal_care",),
+    "로션": ("personal_care",),
+    "선크림": ("personal_care",),
+    "데오드란트": ("personal_care",),
+    "화장품": ("personal_care",),
+    "화장솜": ("personal_care",),
+    "기저귀": ("baby",),
+    "면도기": ("personal_care",),
 }
 
 QUANTITY_RE = re.compile(
@@ -104,6 +189,7 @@ class BasketItem:
     amount: float | None
     unit: str | None
     keywords: tuple[str, ...]
+    categories: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -145,12 +231,15 @@ def _parse_item(raw: str) -> BasketItem:
         name = (raw[: match.start()] + raw[match.end() :]).strip()
     name = re.sub(r"\s+", " ", name).strip() or raw.strip()
     keywords = _keywords_for_name(name)
-    return BasketItem(raw=raw.strip(), name=name, amount=amount, unit=unit, keywords=keywords)
+    categories = _categories_for_name(name)
+    return BasketItem(raw=raw.strip(), name=name, amount=amount, unit=unit, keywords=keywords, categories=categories)
 
 
 def _recommend_for_item(item: BasketItem, offers: list[Offer], limit_per_item: int) -> BasketRecommendation:
     candidates: list[BasketCandidate] = []
     for offer in offers:
+        if item.categories and offer.category not in item.categories:
+            continue
         score, matched = _match_score(item, offer)
         if score <= 0:
             continue
@@ -236,6 +325,15 @@ def _keywords_for_name(name: str) -> tuple[str, ...]:
     if not keywords:
         keywords.append(name)
     return tuple(dict.fromkeys(keywords))
+
+
+def _categories_for_name(name: str) -> tuple[str, ...]:
+    normalized = re.sub(r"\s+", "", name.casefold())
+    categories: list[str] = []
+    for korean, target_categories in KOREAN_PRODUCT_CATEGORIES.items():
+        if korean in normalized:
+            categories.extend(target_categories)
+    return tuple(dict.fromkeys(categories))
 
 
 def _normalize_unit(unit: str | None) -> str | None:

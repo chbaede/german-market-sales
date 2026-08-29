@@ -40,3 +40,11 @@ def test_offer_from_api_maps_core_fields():
 def test_category_detection_for_household_items():
     assert categorize_offer("Universal Reiniger", description="Küche und Bad") == "household"
     assert categorize_offer("Pampers Windeln") == "baby"
+    assert categorize_offer("Sneaker Aktion") == "nonfood"
+    assert categorize_offer("Socken aus Grobstrick") == "nonfood"
+    assert categorize_offer("Regenjacke gefüttert mit Schmetterling-Muster") == "nonfood"
+    assert categorize_offer("Speiseteller NORA aus Kunststoff") == "nonfood"
+    assert categorize_offer("Duftlichter frostige Erdbeere", description="Deko Limited Edition") == "nonfood"
+    assert categorize_offer("Foundation Buttermelt Glaze mit LSF 30") == "personal_care"
+    assert categorize_offer("Swirl Staubfilterbeutel MicroPor Plus", description="Rabattierter Preis") == "household"
+    assert categorize_offer("Eis-Box") == "pantry"

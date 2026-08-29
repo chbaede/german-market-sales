@@ -36,6 +36,28 @@ def test_recommend_basket_items_matches_german_offer_keywords_and_estimates_pric
     assert recommendations[1].candidates[0].estimated_total == 1.29
 
 
+def test_recommend_basket_items_uses_korean_item_category_to_avoid_compound_false_matches():
+    offers = [
+        _offer("GUT&GÜNSTIG H-Vollmilch", 0.95, "l", category="dairy"),
+        _offer("Nivea Sun Schutz & Pflege Sonnenmilch", 8.49, "l", category="personal_care"),
+    ]
+
+    recommendations = recommend_basket_items("우유", offers)
+
+    assert [candidate.offer.title for candidate in recommendations[0].candidates] == ["GUT&GÜNSTIG H-Vollmilch"]
+
+
+def test_recommend_basket_items_supports_korean_razor_keyword():
+    offers = [
+        _offer("Nassrasierer Set", 4.95, "St", category="personal_care"),
+        _offer("Butter", 1.49, "kg", category="dairy"),
+    ]
+
+    recommendations = recommend_basket_items("면도기", offers)
+
+    assert [candidate.offer.title for candidate in recommendations[0].candidates] == ["Nassrasierer Set"]
+
+
 def test_basket_recommendation_dict_includes_price_discount_and_estimate():
     offer = _offer("Lauchzwiebeln", 0.49, "Bund")
     offer.old_price = 0.59
@@ -68,8 +90,21 @@ def test_basket_recommendation_dict_includes_price_discount_and_estimate():
 def test_basket_api_respects_selected_retailers(monkeypatch):
     import app.routes as routes
 
+    calls: list[str] = []
+    queued: list[str] = []
+
     class FakeOfferService:
+        def get_cached_offers(self, zip_code: str) -> OfferResult | None:
+            calls.append(f"cache:{zip_code}")
+            return OfferResult(
+                offers=[_offer("Lauchzwiebeln", 0.79, "Bund")],
+                fetched_at="2026-05-30T08:00:00+00:00",
+                warnings=[],
+                from_cache=True,
+            )
+
         def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
+            calls.append(f"live:{refresh}")
             return OfferResult(
                 offers=[_offer("Lauchzwiebeln", 0.79, "Bund")],
                 fetched_at="2026-05-30T08:00:00+00:00",
@@ -78,6 +113,7 @@ def test_basket_api_respects_selected_retailers(monkeypatch):
 
     monkeypatch.setattr(routes, "datetime", FrozenDateTime)
     monkeypatch.setattr(routes, "offer_service", lambda: FakeOfferService())
+    monkeypatch.setattr(routes, "_queue_refresh", lambda service, zip_code: queued.append(zip_code))
     app = create_app()
     client = app.test_client()
 
@@ -88,12 +124,20 @@ def test_basket_api_respects_selected_retailers(monkeypatch):
     payload = response.get_json()
 
     assert payload["retailers"] == ["rewe"]
+    assert calls == ["cache:14195"]
+    assert queued == ["14195"]
     candidates = payload["recommendations"][0]["candidates"]
     assert candidates
     assert {candidate["retailer"] for candidate in candidates} == {"REWE"}
 
 
-def _offer(title: str, price: float, unit: str | None = None, unit_price: float | None = None) -> Offer:
+def _offer(
+    title: str,
+    price: float,
+    unit: str | None = None,
+    unit_price: float | None = None,
+    category: str = "produce",
+) -> Offer:
     return Offer(
         id=title,
         source_offer_id=1,
@@ -101,7 +145,7 @@ def _offer(title: str, price: float, unit: str | None = None, unit_price: float 
         retailer_slug="rewe",
         title=title,
         brand=None,
-        category="produce",
+        category=category,
         price=price,
         old_price=None,
         unit_price=unit_price,

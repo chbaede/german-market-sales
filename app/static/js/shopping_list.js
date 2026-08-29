@@ -7,8 +7,11 @@
   const count = document.querySelector("[data-shopping-count]");
   const summary = document.querySelector("[data-shopping-summary]");
   const clearButton = document.querySelector("[data-clear-shopping-list]");
+  const listScroll = document.querySelector("[data-shopping-list-scroll]");
+  const shoppingWhatsapp = document.querySelector("[data-shopping-whatsapp]");
   const filterForm = document.querySelector("[data-filter-form]");
   const basketForm = document.querySelector("[data-basket-form]");
+  const basketInput = basketForm?.querySelector('[name="basket"]');
   const basketModal = document.querySelector("[data-basket-modal]");
   const basketModalBody = document.querySelector("[data-basket-modal-body]");
   const basketModalStatus = document.querySelector("[data-basket-modal-status]");
@@ -73,27 +76,31 @@
 
   function renderSummary() {
     const counts = selected.reduce((acc, offer) => {
-      acc[offer.retailer] = (acc[offer.retailer] || 0) + 1;
+      const key = retailerKey(offer.retailerSlug, offer.retailer);
+      acc[key] = acc[key] || { amount: 0, retailer: offer.retailer, retailerSlug: offer.retailerSlug };
+      acc[key].amount += 1;
       return acc;
     }, {});
     summary.innerHTML = "";
-    Object.entries(counts).forEach(([retailer, amount]) => {
+    Object.values(counts).forEach(({ retailer, retailerSlug, amount }) => {
       const item = document.createElement("span");
+      item.className = `retailer-theme ${themeClass(retailerSlug)}`;
       item.textContent = `${retailer} ${amount}`;
       summary.appendChild(item);
     });
   }
 
-  function renderList() {
+  function renderList(options = {}) {
     list.innerHTML = "";
     count.textContent = selected.length;
     emptyState.hidden = selected.length > 0;
     clearButton.disabled = selected.length === 0;
     renderSummary();
+    updateShoppingWhatsappShare();
 
     selected.forEach((offer) => {
       const item = document.createElement("li");
-      item.className = "shopping-item";
+      item.className = `shopping-item retailer-theme ${themeClass(offer.retailerSlug)}`;
       item.innerHTML = `
         <div class="shopping-item-main">
           ${
@@ -117,11 +124,16 @@
       `;
       list.appendChild(item);
     });
+
+    if (options.scrollToTop && listScroll) {
+      listScroll.scrollTop = 0;
+    }
   }
 
   function toggleOffer(card) {
     const offer = offerFromCard(card);
     const index = selected.findIndex((item) => item.id === offer.id);
+    const isAdding = index < 0;
     if (index >= 0) {
       selected.splice(index, 1);
     } else {
@@ -129,7 +141,7 @@
     }
     writeSelected();
     syncButtons();
-    renderList();
+    renderList({ scrollToTop: isAdding });
   }
 
   cards.forEach((card) => {
@@ -155,8 +167,21 @@
     selected = [];
     writeSelected();
     syncButtons();
-    renderList();
+    renderList({ scrollToTop: true });
   });
+
+  if (basketForm && basketInput) {
+    basketForm.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-basket-template]");
+      if (!button || !basketForm.contains(button)) {
+        return;
+      }
+      basketInput.value = button.dataset.basketTemplate || "";
+      basketInput.focus();
+      const cursor = basketInput.value.length;
+      basketInput.setSelectionRange(cursor, cursor);
+    });
+  }
 
   if (basketForm && basketModal && basketModalBody && basketModalStatus && basketModalClose && basketWhatsapp) {
     basketForm.addEventListener("submit", async (event) => {
@@ -202,6 +227,26 @@
     });
   }
 
+  if (filterForm) {
+    filterForm.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-retailer-preset]");
+      if (!button) {
+        return;
+      }
+      const preset = button.dataset.retailerPreset;
+      const checkboxes = Array.from(filterForm.querySelectorAll('input[name="retailer"]'));
+      const defaultRetailers = new Set(
+        (button.closest("[data-default-retailers]")?.dataset.defaultRetailers || "")
+          .split(",")
+          .filter(Boolean)
+      );
+      checkboxes.forEach((checkbox) => {
+        checkbox.checked =
+          preset === "all" || (preset === "default" && defaultRetailers.has(checkbox.value));
+      });
+    });
+  }
+
   function buildBasketRequestData() {
     const formData = new FormData(basketForm);
     if (!filterForm) {
@@ -210,6 +255,16 @@
 
     copyCurrentFilterValue(formData, "zip_code");
     copyCurrentFilterValue(formData, "week");
+    formData.delete("priced");
+    const pricedOnly = filterForm.querySelector('input[name="priced"]:checked');
+    if (pricedOnly) {
+      formData.append("priced", pricedOnly.value || "1");
+    }
+    formData.delete("ending");
+    const endingSoon = filterForm.querySelector('input[name="ending"]:checked');
+    if (endingSoon) {
+      formData.append("ending", endingSoon.value || "1");
+    }
     formData.delete("retailer");
     filterForm.querySelectorAll('input[name="retailer"]:checked').forEach((input) => {
       formData.append("retailer", input.value);
@@ -229,6 +284,8 @@
   function openBasketModal() {
     basketModal.hidden = false;
     document.body.classList.add("modal-open");
+    basketModal.scrollTop = 0;
+    basketModalBody.scrollTop = 0;
     basketModalClose.focus();
   }
 
@@ -251,18 +308,33 @@
         ${recommendations.map(renderBasketRecommendation).join("")}
       </div>
     `;
+    window.requestAnimationFrame(() => {
+      basketModal.scrollTop = 0;
+      basketModalBody.scrollTop = 0;
+    });
   }
 
   function updateWhatsappShare(text) {
-    if (!text) {
-      basketWhatsapp.href = "#";
-      basketWhatsapp.classList.add("is-disabled");
-      basketWhatsapp.setAttribute("aria-disabled", "true");
+    updateShareLink(basketWhatsapp, text);
+  }
+
+  function updateShoppingWhatsappShare() {
+    updateShareLink(shoppingWhatsapp, buildSelectedWhatsappText());
+  }
+
+  function updateShareLink(link, text) {
+    if (!link) {
       return;
     }
-    basketWhatsapp.href = `https://wa.me/?text=${encodeURIComponent(text)}`;
-    basketWhatsapp.classList.remove("is-disabled");
-    basketWhatsapp.setAttribute("aria-disabled", "false");
+    if (!text) {
+      link.href = "#";
+      link.classList.add("is-disabled");
+      link.setAttribute("aria-disabled", "true");
+      return;
+    }
+    link.href = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    link.classList.remove("is-disabled");
+    link.setAttribute("aria-disabled", "false");
   }
 
   function buildWhatsappText(payload) {
@@ -274,42 +346,109 @@
       "",
     ].filter(Boolean);
 
-    for (const recommendation of payload.recommendations || []) {
-      const item = recommendation.item || {};
-      lines.push(`[${item.raw || item.name || "항목"}]`);
-      const candidates = recommendation.candidates || [];
-      if (!candidates.length) {
-        lines.push("현재 선택한 마트/주간 할인 목록에서 찾지 못했습니다.", "");
-        continue;
-      }
-      candidates.forEach((candidate, index) => {
-        const details = [];
-        if (candidate.old_price_text) {
-          details.push(`원가 ${candidate.old_price_text}${candidate.old_price_estimated ? " (추정)" : ""}`);
-        }
-        if (candidate.price_text) {
-          details.push(`할인가 ${candidate.price_text}`);
-        }
-        if (candidate.discount_text) {
-          details.push(`할인 ${candidate.discount_text}`);
-        }
-        if (candidate.estimated_total_text) {
-          details.push(`예상 ${candidate.estimated_total_text}`);
-        }
-        if (candidate.unit_price_text) {
-          details.push(`단위 ${candidate.unit_price_text}`);
-        }
-        if (candidate.valid_text) {
-          details.push(`유효 ${candidate.valid_text}`);
-        }
-        lines.push(`${index + 1}. ${candidate.retailer} - ${candidate.title}`);
-        if (details.length) {
-          lines.push(`   ${details.join(" · ")}`);
-        }
+    const grouped = groupBasketCandidatesByRetailer(payload.recommendations || []);
+    grouped.forEach((group) => {
+      lines.push(`[${group.retailer}]`);
+      group.items.forEach(({ item, candidate }) => {
+        lines.push(`- ${item.raw || item.name || "항목"}: ${candidate.title || ""}`);
+        appendDetailLine(lines, candidateDetails(candidate));
+      });
+      lines.push("");
+    });
+
+    const missed = (payload.recommendations || []).filter((recommendation) => {
+      return !(recommendation.candidates || []).length;
+    });
+    if (missed.length) {
+      lines.push("[못 찾음]");
+      missed.forEach((recommendation) => {
+        const item = recommendation.item || {};
+        lines.push(`- ${item.raw || item.name || "항목"}`);
       });
       lines.push("");
     }
+
     return lines.join("\n").trim();
+  }
+
+  function groupBasketCandidatesByRetailer(recommendations) {
+    const groups = new Map();
+    for (const recommendation of recommendations) {
+      const item = recommendation.item || {};
+      const candidate = (recommendation.candidates || [])[0];
+      if (!candidate) {
+        continue;
+      }
+      const key = retailerKey(candidate.retailer_slug, candidate.retailer);
+      ensureRetailerGroup(groups, key, candidate.retailer, "items").items.push({ item, candidate });
+    }
+    return Array.from(groups.values());
+  }
+
+  function buildSelectedWhatsappText() {
+    if (!selected.length) {
+      return "";
+    }
+    const lines = ["장보기 목록", ""];
+    groupSelectedByRetailer(selected).forEach((group) => {
+      lines.push(`[${group.retailer}]`);
+      group.offers.forEach((offer) => {
+        lines.push(`- ${offer.title}`);
+        appendDetailLine(lines, [offer.price, offer.discount, offer.unitPrice, offer.valid]);
+      });
+      lines.push("");
+    });
+    return lines.join("\n").trim();
+  }
+
+  function groupSelectedByRetailer(offers) {
+    const groups = new Map();
+    offers.forEach((offer) => {
+      const key = retailerKey(offer.retailerSlug, offer.retailer);
+      ensureRetailerGroup(groups, key, offer.retailer, "offers").offers.push(offer);
+    });
+    return Array.from(groups.values());
+  }
+
+  function retailerKey(slug, retailer) {
+    return slug || retailer || "unknown";
+  }
+
+  function ensureRetailerGroup(groups, key, retailer, collectionName) {
+    if (!groups.has(key)) {
+      groups.set(key, { retailer: retailer || "마트 미정", [collectionName]: [] });
+    }
+    return groups.get(key);
+  }
+
+  function appendDetailLine(lines, details) {
+    const visibleDetails = details.filter(Boolean);
+    if (visibleDetails.length) {
+      lines.push(`  ${visibleDetails.join(" · ")}`);
+    }
+  }
+
+  function candidateDetails(candidate) {
+    const details = [];
+    if (candidate.old_price_text) {
+      details.push(`원가 ${candidate.old_price_text}${candidate.old_price_estimated ? " (추정)" : ""}`);
+    }
+    if (candidate.price_text) {
+      details.push(`할인가 ${candidate.price_text}`);
+    }
+    if (candidate.discount_text) {
+      details.push(`할인 ${candidate.discount_text}`);
+    }
+    if (candidate.estimated_total_text) {
+      details.push(`예상 ${candidate.estimated_total_text}`);
+    }
+    if (candidate.unit_price_text) {
+      details.push(`단위 ${candidate.unit_price_text}`);
+    }
+    if (candidate.valid_text) {
+      details.push(`유효 ${candidate.valid_text}`);
+    }
+    return details;
   }
 
   function renderBasketRecommendation(recommendation) {
@@ -337,7 +476,7 @@
     const oldPriceLabel = candidate.old_price_estimated ? "Normalpreis 추정 원가" : "Normalpreis 원가";
     const hasImage = Boolean(candidate.image_url);
     return `
-      <li>
+      <li class="retailer-theme ${themeClass(candidate.retailer_slug)}">
         <div class="basket-candidate-main ${hasImage ? "" : "is-without-image"}">
           ${
             hasImage
@@ -381,6 +520,15 @@
 
   function escapeAttribute(value) {
     return escapeHtml(value).replaceAll("`", "&#096;");
+  }
+
+  function themeClass(value) {
+    const slug = String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return slug ? `retailer-${slug}` : "";
   }
 
   syncButtons();
