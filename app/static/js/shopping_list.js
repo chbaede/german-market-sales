@@ -1,4 +1,9 @@
 (function () {
+
+  const getLang = () => document.cookie.includes('lang=en') ? 'en' : 'ko';
+  const currentLang = getLang();
+  const tk = (ko, en) => currentLang === 'en' ? en : ko;
+
   const pageRoot = document.querySelector("[data-shopping-storage-key]");
   const storageKey = pageRoot?.dataset.shoppingStorageKey || "supermarketDealShoppingList";
   const cards = Array.from(document.querySelectorAll("[data-offer-id]"));
@@ -64,7 +69,7 @@
     }
     button.setAttribute("aria-pressed", String(isSelected));
     button.classList.toggle("is-selected", isSelected);
-    button.innerHTML = isSelected ? "Gemerkt <span>담김</span>" : "Zur Liste <span>담기</span>";
+    button.innerHTML = isSelected ? `Gemerkt <span>${tk("담김", "Saved")}</span>` : `Zur Liste <span>${tk("담기", "Add")}</span>`;
   }
 
   function syncButtons() {
@@ -118,8 +123,8 @@
           </div>
         </div>
         <div class="shopping-item-actions">
-          <a href="${escapeAttribute(offer.sourceUrl)}" target="_blank" rel="noopener noreferrer">Quelle <span>출처</span></a>
-          <button type="button" data-remove-offer="${escapeAttribute(offer.id)}">Entfernen <span>삭제</span></button>
+          <a href="${escapeAttribute(offer.sourceUrl)}" target="_blank" rel="noopener noreferrer">Quelle <span>${tk("출처", "Source")}</span></a>
+          <button type="button" data-remove-offer="${escapeAttribute(offer.id)}">Entfernen <span>${tk("삭제", "Remove")}</span></button>
         </div>
       `;
       list.appendChild(item);
@@ -192,11 +197,11 @@
       updateWhatsappShare("");
       basketModalBody.innerHTML = "";
       if (!query) {
-        basketModalStatus.textContent = "장보기 목록을 먼저 입력해주세요.";
+        basketModalStatus.textContent = tk("장보기 목록을 먼저 입력해주세요.", "Please enter your shopping list first.");
         return;
       }
 
-      basketModalStatus.textContent = "할인 품목을 찾는 중입니다...";
+      basketModalStatus.textContent = tk("할인 품목을 찾는 중입니다...", "Finding deals...");
       try {
         const url = new URL(basketForm.dataset.endpoint || "/api/basket", window.location.origin);
         formData.forEach((value, key) => {
@@ -210,7 +215,7 @@
         }
         renderBasketRecommendations(await response.json());
       } catch (error) {
-        basketModalStatus.textContent = "추천을 가져오지 못했습니다. 잠시 후 다시 시도해주세요.";
+        basketModalStatus.textContent = tk("추천을 가져오지 못했습니다. 잠시 후 다시 시도해주세요.", "Failed to fetch recommendations. Please try again.");
       }
     });
 
@@ -300,7 +305,7 @@
     updateWhatsappShare(buildWhatsappText(payload));
     const recommendations = payload.recommendations || [];
     if (!recommendations.length) {
-      basketModalBody.innerHTML = `<p class="basket-miss">입력한 장보기 항목이 없습니다.</p>`;
+      basketModalBody.innerHTML = `<p class="basket-miss">${tk("입력한 장보기 항목이 없습니다.", "No shopping items entered.")}</p>`;
       return;
     }
     basketModalBody.innerHTML = `
@@ -340,9 +345,9 @@
   function buildWhatsappText(payload) {
     const weekLabel = payload.week_label ? `${payload.week_label.de} / ${payload.week_label.ko}` : "";
     const lines = [
-      "할인 장보기 추천",
-      weekLabel ? `기간: ${weekLabel}` : "",
-      payload.query ? `목록: ${payload.query}` : "",
+      tk("할인 장보기 추천", "Deal Recommendations"),
+      weekLabel ? `${tk("기간: ", "Period: ")}${weekLabel}` : "",
+      payload.query ? `${tk("목록: ", "List: ")}${payload.query}` : "",
       "",
     ].filter(Boolean);
 
@@ -350,7 +355,7 @@
     grouped.forEach((group) => {
       lines.push(`[${group.retailer}]`);
       group.items.forEach(({ item, candidate }) => {
-        lines.push(`- ${item.raw || item.name || "항목"}: ${candidate.title || ""}`);
+        lines.push(`- ${item.raw || item.name || tk("항목", "Item")}: ${candidate.title || ""}`);
         appendDetailLine(lines, candidateDetails(candidate));
       });
       lines.push("");
@@ -360,10 +365,10 @@
       return !(recommendation.candidates || []).length;
     });
     if (missed.length) {
-      lines.push("[못 찾음]");
+      lines.push(tk("[못 찾음]", "[Not found]"));
       missed.forEach((recommendation) => {
         const item = recommendation.item || {};
-        lines.push(`- ${item.raw || item.name || "항목"}`);
+        lines.push(`- ${item.raw || item.name || tk("항목", "Item")}`);
       });
       lines.push("");
     }
@@ -389,7 +394,7 @@
     if (!selected.length) {
       return "";
     }
-    const lines = ["장보기 목록", ""];
+    const lines = [tk("장보기 목록", "Shopping List"), ""];
     groupSelectedByRetailer(selected).forEach((group) => {
       lines.push(`[${group.retailer}]`);
       group.offers.forEach((offer) => {
@@ -416,7 +421,7 @@
 
   function ensureRetailerGroup(groups, key, retailer, collectionName) {
     if (!groups.has(key)) {
-      groups.set(key, { retailer: retailer || "마트 미정", [collectionName]: [] });
+      groups.set(key, { retailer: retailer || tk("마트 미정", "Unknown retailer"), [collectionName]: [] });
     }
     return groups.get(key);
   }
@@ -431,22 +436,22 @@
   function candidateDetails(candidate) {
     const details = [];
     if (candidate.old_price_text) {
-      details.push(`원가 ${candidate.old_price_text}${candidate.old_price_estimated ? " (추정)" : ""}`);
+      details.push(`${tk("원가 ", "Reg. ")}${candidate.old_price_text}${candidate.old_price_estimated ? tk(" (추정)", " (est.)") : ""}`);
     }
     if (candidate.price_text) {
-      details.push(`할인가 ${candidate.price_text}`);
+      details.push(`${tk("할인가 ", "Deal ")}${candidate.price_text}`);
     }
     if (candidate.discount_text) {
-      details.push(`할인 ${candidate.discount_text}`);
+      details.push(`${tk("할인 ", "Save ")}${candidate.discount_text}`);
     }
     if (candidate.estimated_total_text) {
-      details.push(`예상 ${candidate.estimated_total_text}`);
+      details.push(`${tk("예상 ", "Total ")}${candidate.estimated_total_text}`);
     }
     if (candidate.unit_price_text) {
-      details.push(`단위 ${candidate.unit_price_text}`);
+      details.push(`${tk("단위 ", "Unit ")}${candidate.unit_price_text}`);
     }
     if (candidate.valid_text) {
-      details.push(`유효 ${candidate.valid_text}`);
+      details.push(`${tk("유효 ", "Valid ")}${candidate.valid_text}`);
     }
     return details;
   }
@@ -466,14 +471,14 @@
         ${
           candidates.length
             ? `<ol class="basket-candidates">${candidates.map(renderBasketCandidate).join("")}</ol>`
-            : `<p class="basket-miss">Aktuell kein passendes Angebot. <span class="ko">현재 선택한 주 할인 목록에서 찾지 못했습니다.</span></p>`
+            : `<p class="basket-miss">Aktuell kein passendes Angebot. <span class="ko">${tk("현재 선택한 주 할인 목록에서 찾지 못했습니다.", "Not found in the current week's deals.")}</span></p>`
         }
       </article>
     `;
   }
 
   function renderBasketCandidate(candidate) {
-    const oldPriceLabel = candidate.old_price_estimated ? "Normalpreis 추정 원가" : "Normalpreis 원가";
+    const oldPriceLabel = candidate.old_price_estimated ? `Normalpreis ${tk("추정 원가", "Estimated Reg.")}` : `Normalpreis ${tk("원가", "Regular Price")}`;
     const hasImage = Boolean(candidate.image_url);
     return `
       <li class="retailer-theme ${themeClass(candidate.retailer_slug)}">
@@ -493,7 +498,7 @@
                   ? `<span>${oldPriceLabel}: <s>${escapeHtml(candidate.old_price_text)}</s></span>`
                   : ""
               }
-              ${candidate.price_text ? `<span>Angebot 할인가: <strong>${escapeHtml(candidate.price_text)}</strong></span>` : ""}
+              ${candidate.price_text ? `<span>Angebot ${tk("할인가:", "Deal:")} <strong>${escapeHtml(candidate.price_text)}</strong></span>` : ""}
               ${candidate.discount_text ? `<span class="basket-discount">${escapeHtml(candidate.discount_text)}</span>` : ""}
             </div>
             ${candidate.unit_price_text ? `<p>${escapeHtml(candidate.unit_price_text)}</p>` : ""}
@@ -502,8 +507,8 @@
         </div>
         <div class="basket-estimate">
           <strong>${escapeHtml(candidate.estimated_total_text || "-")}</strong>
-          <span>${escapeHtml(candidate.estimate_note || "")}</span>
-          <a href="${escapeAttribute(candidate.source_url || "#")}" target="_blank" rel="noopener noreferrer">Quelle <span>출처</span></a>
+          <span>${tk(escapeHtml(candidate.estimate_note || ""), {"가격 정보 없음": "No price", "단위가격 기준 예상": "Est. by unit", "수량 기준 단순 예상": "Est. by qty", "행사가 기준": "Deal price", "단위가격 기준": "Unit price"}[candidate.estimate_note] || escapeHtml(candidate.estimate_note || ""))}</span>
+          <a href="${escapeAttribute(candidate.source_url || "#")}" target="_blank" rel="noopener noreferrer">Quelle <span>${tk("출처", "Source")}</span></a>
         </div>
       </li>
     `;

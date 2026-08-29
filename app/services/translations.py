@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from flask import request, session
 
-
-PHRASES: tuple[tuple[str, str], ...] = (
+PHRASES_KO: tuple[tuple[str, str], ...] = (
     ("verschiedene sorten", "다양한 종류"),
     ("versch. sorten", "다양한 종류"),
     ("details im prospekt", "전단지 상세 정보"),
@@ -21,7 +21,36 @@ PHRASES: tuple[tuple[str, str], ...] = (
     ("white wine", "화이트 와인"),
 )
 
-WORDS: dict[str, str] = {
+PHRASES_EN: tuple[tuple[str, str], ...] = (
+
+    ("새 데이터를 가져오지 못해 캐시를 표시합니다.", "Failed to fetch new data, showing cached results instead."),
+    ("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "EDEKA request retried without TLS verification due to failure."),
+    ("ALDI Nord 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "ALDI Nord request retried without TLS verification due to failure."),
+    ("Kaufland 공식 페이지 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "Kaufland official page request retried without TLS verification due to failure."),
+    ("TLS 인증서 검증 실패로 Marktguru 요청을 한 번 비검증 모드로 재시도했습니다.", "Marktguru request retried without TLS verification due to failure."),
+    ("TLS 인증서 검증 실패로 dm 요청을 한 번 비검증 모드로 재시도했습니다.", "dm request retried without TLS verification due to failure."),
+    ("REWE 공식 페이지 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "REWE official page request retried without TLS verification due to failure."),
+    ("REWE 상품 타일 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "REWE product tile request retried without TLS verification due to failure."),
+    ("ROSSMANN 공식 전단지 색인을 확인하지 못해 Marktguru 상세 데이터만 사용했습니다", "Failed to verify ROSSMANN official flyer index, used Marktguru data only"),
+    ("ROSSMANN 공식 전단지 색인과 Marktguru 항목의 일치율이 낮아 Marktguru 출처 링크를 유지했습니다.", "Maintained Marktguru source link due to low match rate with ROSSMANN official flyer index."),
+
+    ("verschiedene sorten", "various types"),
+    ("versch. sorten", "various types"),
+    ("details im prospekt", "details in flyer"),
+    ("preis variiert je nach groesse und variante", "price varies by size and variant"),
+    ("preis variiert je nach größe und variante", "price varies by size and variant"),
+    ("aus dem steinbackofen", "stone-baked"),
+    ("klasse i", "class I"),
+    ("ursprung deutschland", "origin Germany"),
+    ("fairtrade", "fairtrade"),
+    ("bio baby spinat", "organic baby spinach"),
+    ("caffe crema", "caffe crema"),
+    ("caffè crema", "caffè crema"),
+    ("ready to drink", "ready to drink"),
+    ("white wine", "white wine"),
+)
+
+WORDS_KO: dict[str, str] = {
     "ab": "부터",
     "aperitif": "아페리티프",
     "apfel": "사과",
@@ -156,16 +185,153 @@ WORDS: dict[str, str] = {
     "zwiebeln": "양파",
 }
 
+WORDS_EN: dict[str, str] = {
+    "ab": "from",
+    "aperitif": "aperitif",
+    "apfel": "apple",
+    "aepfel": "apples",
+    "äpfel": "apples",
+    "baby": "baby",
+    "baguette": "baguette",
+    "banane": "banana",
+    "becher": "cup",
+    "beeren": "berries",
+    "binden": "pads",
+    "bio": "organic",
+    "birnen": "pears",
+    "blended": "blended",
+    "braten": "roast",
+    "bratwurst": "sausage",
+    "brot": "bread",
+    "broetchen": "rolls",
+    "brötchen": "rolls",
+    "butter": "butter",
+    "ca": "approx",
+    "chips": "chips",
+    "cola": "cola",
+    "crema": "crema",
+    "creme": "cream",
+    "delikatess": "delicatessen",
+    "deo": "deodorant",
+    "dolce": "dolce",
+    "duschgel": "shower gel",
+    "dusche": "shower",
+    "dornfelder": "dornfelder",
+    "duschkopf": "shower head",
+    "edelsalami": "premium salami",
+    "eiersalat": "egg salad",
+    "eis": "ice cream",
+    "eiscreme": "ice cream",
+    "espresso": "espresso",
+    "filet": "fillet",
+    "fisch": "fish",
+    "forelle": "trout",
+    "frisch": "fresh",
+    "gekuehlt": "chilled",
+    "gekühlt": "chilled",
+    "gemuese": "vegetables",
+    "gemüse": "vegetables",
+    "glas": "glass",
+    "grill": "grill",
+    "gurken": "cucumbers",
+    "haehnchen": "chicken",
+    "hähnchen": "chicken",
+    "haushalt": "household",
+    "haar": "hair",
+    "je": "each",
+    "joghurt": "yogurt",
+    "kaffee": "coffee",
+    "kalbs": "veal",
+    "kartoffeln": "potatoes",
+    "kaese": "cheese",
+    "käse": "cheese",
+    "kg": "kg",
+    "knusperchen": "crispies",
+    "kosmetik": "cosmetics",
+    "koerper": "body",
+    "körper": "body",
+    "kuh": "cow",
+    "lachs": "salmon",
+    "lauchzwiebeln": "spring onions",
+    "liter": "liter",
+    "l": "l",
+    "maggi": "maggi",
+    "marinade": "marinade",
+    "medaillons": "medallions",
+    "milch": "milk",
+    "mozzarella": "mozzarella",
+    "nudeln": "pasta",
+    "nuss": "nut",
+    "obst": "fruit",
+    "ofenh": "oven",
+    "ouzo": "ouzo",
+    "packung": "pack",
+    "paniert": "breaded",
+    "paprika": "bell pepper",
+    "pesto": "pesto",
+    "pflasterspray": "plaster spray",
+    "pflege": "care",
+    "premium": "premium",
+    "quark": "quark",
+    "reis": "rice",
+    "reiniger": "cleaner",
+    "rind": "beef",
+    "rueckenbraten": "saddle roast",
+    "rückenbraten": "saddle roast",
+    "sahne": "cream",
+    "sahnesteif": "cream stabilizer",
+    "salami": "salami",
+    "salat": "salad",
+    "sauce": "sauce",
+    "schafmilch": "sheep milk",
+    "schinken": "ham",
+    "schlemmerfilet": "gourmet fillet",
+    "schoko": "choco",
+    "schokolade": "chocolate",
+    "schweine": "pork",
+    "sekt": "sparkling wine",
+    "sensitiv": "sensitive",
+    "sensitive": "sensitive",
+    "shampoo": "shampoo",
+    "sorte": "type",
+    "sorten": "types",
+    "spinat": "spinach",
+    "stk": "pcs",
+    "stueck": "pcs",
+    "stück": "pcs",
+    "suess": "sweet",
+    "süß": "sweet",
+    "tomaten": "tomatoes",
+    "tomate": "tomato",
+    "vegan": "vegan",
+    "wein": "wine",
+    "weisskaese": "white cheese",
+    "weisskäse": "white cheese",
+    "weißkäse": "white cheese",
+    "whisky": "whiskey",
+    "windeln": "diapers",
+    "waschmittel": "detergent",
+    "wurst": "sausage",
+    "xxl": "xxl",
+    "zahnpasta": "toothpaste",
+    "zahnbuerste": "toothbrush",
+    "zahnbürste": "toothbrush",
+    "zahncreme": "toothpaste",
+    "zwiebeln": "onions",
+}
+
 TOKEN_RE = re.compile(r"[A-Za-zÄÖÜäöüß]+|[0-9]+(?:[,.][0-9]+)?|[^A-Za-zÄÖÜäöüß0-9]+")
 
-
 @lru_cache(maxsize=4096)
-def translate_text(text: str | None) -> str:
+def _translate_text_cached(text: str | None, lang: str) -> str:
     if not text:
         return ""
 
+    phrases = PHRASES_EN if lang == "en" else PHRASES_KO
+    words = WORDS_EN if lang == "en" else WORDS_KO
+
     translated = text
-    for source, target in sorted(PHRASES, key=lambda pair: len(pair[0]), reverse=True):
+    for source, target in sorted(phrases, key=lambda pair: len(pair[0]), reverse=True):
         translated = re.sub(re.escape(source), target, translated, flags=re.IGNORECASE)
 
     parts: list[str] = []
@@ -177,8 +343,16 @@ def translate_text(text: str | None) -> str:
             .replace("ü", "ue")
             .replace("ß", "ss")
         )
-        parts.append(WORDS.get(key, WORDS.get(key_ascii, token)))
+        parts.append(words.get(key, words.get(key_ascii, token)))
 
     result = "".join(parts)
     result = re.sub(r"\s+", " ", result).strip()
     return result if result != text else ""
+
+def translate_text(text: str | None, lang: str | None = None) -> str:
+    if lang is None:
+        try:
+            lang = request.cookies.get("lang", "ko")
+        except Exception:
+            lang = "ko"
+    return _translate_text_cached(text, lang)

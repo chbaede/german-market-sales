@@ -20,8 +20,8 @@ BACKGROUND_REFRESH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_pref
 BACKGROUND_REFRESH_LOCK = Lock()
 BACKGROUND_REFRESH_KEYS: set[tuple[str, str]] = set()
 WEEK_LABELS = {
-    "current": {"de": "Diese Woche", "ko": "이번 주"},
-    "next": {"de": "Nächste Woche", "ko": "다음 주"},
+    "current": {"de": "Diese Woche", "ko": "이번 주", "en": "This week"},
+    "next": {"de": "Nächste Woche", "ko": "다음 주", "en": "Next week"},
 }
 ESSENTIAL_CATEGORY_PRIORITY = {
     "produce": 0,
@@ -45,42 +45,44 @@ SUPERMARKET_PAGE = {
     "title": "Supermarkt-Angebote · 독일 마트 할인",
     "eyebrow": "ALDI · EDEKA · REWE · Lidl · Netto · PENNY · nahkauf · Kaufland",
     "heading": "Wöchentliche Angebote",
-    "heading_ko": "이번 주 할인 생필품",
+    "heading_ko": "이번 주 할인 생필품", "heading_en": "Weekly Essentials Deals",
     "active": "supermarket",
     "refresh_endpoint": "main.refresh",
     "basket_endpoint": "main.api_basket",
     "storage_key": "supermarketDealShoppingList",
-    "retailer_label": {"de": "Händler", "ko": "마트"},
+    "retailer_label": {"de": "Händler", "ko": "마트", "en": "Retailer"},
     "search_placeholder": "butter, kaffee, pasta",
     "basket_placeholder": "파 4개, 당근, 우유 2개",
+    "basket_placeholder_en": "4 green onions, carrots, 2 milk",
     "week_labels": WEEK_LABELS,
     "default_week": "current",
     "default_retailers": ("aldi-nord", "edeka", "rewe", "lidl"),
     "basket_templates": (
-        {"label": "Basis", "ko": "기본", "value": "우유 2개, 계란, 양파, 당근, 토마토, 바나나, 빵, 버터"},
-        {"label": "Kochen", "ko": "요리", "value": "파 4개, 감자 1kg, 파스타, 쌀, 닭고기, 치즈"},
-        {"label": "Haushalt", "ko": "생활", "value": "세제, 주방타월, 화장지, 쓰레기봉투"},
+        {"label": "Basis", "ko": "기본", "en": "Basic", "value": "우유 2개, 계란, 양파, 당근, 토마토, 바나나, 빵, 버터", "value_en": "2 milk, eggs, onions, carrots, tomatoes, bananas, bread, butter"},
+        {"label": "Kochen", "ko": "요리", "en": "Cooking", "value": "파 4개, 감자 1kg, 파스타, 쌀, 닭고기, 치즈", "value_en": "4 green onions, 1kg potatoes, pasta, rice, chicken, cheese"},
+        {"label": "Haushalt", "ko": "생활", "en": "Household", "value": "세제, 주방타월, 화장지, 쓰레기봉투", "value_en": "detergent, paper towels, toilet paper, trash bags"},
     ),
 }
 DRUGSTORE_PAGE = {
     "title": "Drogerie-Angebote · DM/ROSSMANN 할인",
     "eyebrow": "dm · ROSSMANN · budni",
     "heading": "Drogerie-Angebote",
-    "heading_ko": "DM/ROSSMANN 할인 생활용품",
+    "heading_ko": "DM/ROSSMANN 할인 생활용품", "heading_en": "DM/ROSSMANN Deals",
     "active": "drugstore",
     "refresh_endpoint": "main.drugstores_refresh",
     "basket_endpoint": "main.api_drugstore_basket",
     "storage_key": "drugstoreDealShoppingList",
-    "retailer_label": {"de": "Drogerie", "ko": "드럭스토어"},
+    "retailer_label": {"de": "Drogerie", "ko": "드럭스토어", "en": "Drugstore"},
     "search_placeholder": "shampoo, zahnpasta, waschmittel",
     "basket_placeholder": "샴푸 1개, 치약, 세제, 기저귀",
+    "basket_placeholder_en": "1 shampoo, toothpaste, detergent, diapers",
     "week_labels": WEEK_LABELS,
     "default_week": "current",
     "default_retailers": ("dm-drogerie-markt", "rossmann"),
     "basket_templates": (
-        {"label": "Basis", "ko": "기본", "value": "샴푸 1개, 치약, 바디워시, 비누, 데오"},
-        {"label": "Haushalt", "ko": "생활", "value": "세제, 화장지, 주방세제, 청소포"},
-        {"label": "Baby", "ko": "유아", "value": "기저귀, 물티슈, 베이비크림"},
+        {"label": "Basis", "ko": "기본", "en": "Basic", "value": "샴푸 1개, 치약, 바디워시, 비누, 데오", "value_en": "1 shampoo, toothpaste, body wash, soap, deodorant"},
+        {"label": "Haushalt", "ko": "생활", "en": "Household", "value": "세제, 화장지, 주방세제, 청소포", "value_en": "detergent, toilet paper, dish soap, cleaning wipes"},
+        {"label": "Baby", "ko": "유아", "en": "Baby", "value": "기저귀, 물티슈, 베이비크림", "value_en": "diapers, baby wipes, baby cream"},
     ),
 }
 
@@ -129,6 +131,7 @@ def render_offer_page(
     page: dict,
     page_endpoint: str,
 ):
+    lang = request.cookies.get("lang", "ko")
     zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
     week_labels = page.get("week_labels", WEEK_LABELS)
     selected_week = _clean_week(request.args.get("week"), week_labels, page.get("default_week", "current"))
@@ -183,6 +186,7 @@ def render_offer_page(
         warnings=result.warnings,
         from_cache=result.from_cache,
         page=page,
+        lang=lang,
     )
 
 

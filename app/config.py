@@ -35,9 +35,9 @@ class Config:
         "bakery": {"de": "Bäckerei", "ko": "빵/베이커리"},
         "pantry": {"de": "Vorrat", "ko": "식료품"},
         "drinks": {"de": "Getränke", "ko": "음료"},
-        "household": {"de": "Haushalt", "ko": "생활용품"},
+        "household": {"de": "Haushalt", "ko": "생활용품", "en": "Household"},
         "personal_care": {"de": "Körperpflege", "ko": "개인위생"},
         "baby": {"de": "Baby", "ko": "유아용품"},
         "nonfood": {"de": "Nonfood & Kleidung", "ko": "비식품/의류"},
-        "other": {"de": "Sonstiges", "ko": "기타"},
+        "other": {"de": "Sonstiges", "ko": "기타", "en": "Other"},
     }

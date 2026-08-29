@@ -1710,3 +1710,37 @@ select:focus {
     justify-self: start;
   }
 }
+
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.lang-toggle-button {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 14px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+}
+.lang-toggle-button:hover {
+  background: var(--surface-2);
+  border-color: var(--green);
+}
+@media (max-width: 620px) {
+  .topbar-actions {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+  }
+  .lang-toggle-button {
+    width: 100%;
+    text-align: center;
+  }
+}
