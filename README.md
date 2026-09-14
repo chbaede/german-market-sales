@@ -50,3 +50,15 @@ flask --app run run --debug --host 0.0.0.0
 ```bash
 .venv/bin/pytest -q
 ```
+
+## 배포 (Docker)
+
+최신 코드 pull부터 Docker 빌드, 재시작까지 자동화된 스크립트를 제공합니다:
+
+```bash
+./deploy.sh
+```
+
+- 포트 변경이 필요한 경우: `HOST_PORT=8080 ./deploy.sh`
+- 마트 할인 데이터 캐시는 `./data/cache`에 마운트되어 컨테이너 재시작 후에도 유지됩니다.
+
