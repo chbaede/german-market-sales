@@ -1,179 +1,101 @@
 (function () {
-
-  const getLang = () => document.cookie.includes('lang=en') ? 'en' : 'ko';
+  const getLang = () => (document.cookie.includes("lang=en") ? "en" : "ko");
   const currentLang = getLang();
-  const tk = (ko, en) => currentLang === 'en' ? en : ko;
+  const tk = (ko, en) => (currentLang === "en" ? en : ko);
 
-  const pageRoot = document.querySelector("[data-shopping-storage-key]");
-  const storageKey = pageRoot?.dataset.shoppingStorageKey || "supermarketDealShoppingList";
-  const cards = Array.from(document.querySelectorAll("[data-offer-id]"));
-  const list = document.querySelector("[data-shopping-list]");
-  const emptyState = document.querySelector("[data-shopping-empty]");
-  const count = document.querySelector("[data-shopping-count]");
-  const summary = document.querySelector("[data-shopping-summary]");
-  const clearButton = document.querySelector("[data-clear-shopping-list]");
-  const listScroll = document.querySelector("[data-shopping-list-scroll]");
-  const shoppingWhatsapp = document.querySelector("[data-shopping-whatsapp]");
+  // Toast Notification
+  const toast = document.getElementById("toast");
+  let toastTimer = null;
+  function showToast(message) {
+    if (!toast) return;
+    toast.textContent = message;
+    toast.hidden = false;
+    toast.classList.add("is-visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toast.classList.remove("is-visible");
+      setTimeout(() => {
+        toast.hidden = true;
+      }, 200);
+    }, 2500);
+  }
+
+  // Share Page / Copy Link
+  const shareBtn = document.querySelector("[data-share-page]");
+  if (shareBtn) {
+    shareBtn.addEventListener("click", async () => {
+      const shareData = {
+        title: document.title,
+        url: window.location.href,
+      };
+      if (navigator.share) {
+        try {
+          await navigator.share(shareData);
+          return;
+        } catch (e) {
+          // Fallback to clipboard if share was cancelled or unsupported
+          if (e.name === "AbortError") return;
+        }
+      }
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        showToast(tk("링크가 클립보드에 복사되었습니다!", "Link copied to clipboard!"));
+      } catch (err) {
+        showToast(tk("링크 복사에 실패했습니다.", "Failed to copy link."));
+      }
+    });
+  }
+
+  // Floating Back to Top Button
+  const backToTop = document.getElementById("back-to-top");
+  if (backToTop) {
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (window.scrollY > 320) {
+          backToTop.classList.add("is-visible");
+        } else {
+          backToTop.classList.remove("is-visible");
+        }
+      },
+      { passive: true }
+    );
+    backToTop.addEventListener("click", () => {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }
+
+  // Filter Retailer Presets (Standard / Alle / Keine)
   const filterForm = document.querySelector("[data-filter-form]");
+  if (filterForm) {
+    filterForm.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-retailer-preset]");
+      if (!button) {
+        return;
+      }
+      const preset = button.dataset.retailerPreset;
+      const checkboxes = Array.from(filterForm.querySelectorAll('input[name="retailer"]'));
+      const defaultRetailers = new Set(
+        (button.closest("[data-default-retailers]")?.dataset.defaultRetailers || "")
+          .split(",")
+          .filter(Boolean)
+      );
+      checkboxes.forEach((checkbox) => {
+        checkbox.checked =
+          preset === "all" || (preset === "default" && defaultRetailers.has(checkbox.value));
+      });
+    });
+  }
+
+  // Basket Advisor Modal & Recommendations Copy
   const basketForm = document.querySelector("[data-basket-form]");
   const basketInput = basketForm?.querySelector('[name="basket"]');
   const basketModal = document.querySelector("[data-basket-modal]");
   const basketModalBody = document.querySelector("[data-basket-modal-body]");
   const basketModalStatus = document.querySelector("[data-basket-modal-status]");
   const basketModalClose = document.querySelector("[data-basket-modal-close]");
-  const basketWhatsapp = document.querySelector("[data-basket-whatsapp]");
-
-  if (!list || !emptyState || !count || !summary || !clearButton) {
-    return;
-  }
-
-  let selected = readSelected();
-
-  function readSelected() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(storageKey) || "[]");
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (error) {
-      return [];
-    }
-  }
-
-  function writeSelected() {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(selected));
-    } catch (error) {
-      return;
-    }
-  }
-
-  function offerFromCard(card) {
-    return {
-      id: card.dataset.offerId,
-      title: card.dataset.title || "",
-      titleKo: card.dataset.titleKo || "",
-      retailer: card.dataset.retailer || "",
-      retailerSlug: card.dataset.retailerSlug || "",
-      price: card.dataset.price || "",
-      unitPrice: card.dataset.unitPrice || "",
-      discount: card.dataset.discount || "",
-      valid: card.dataset.valid || "",
-      sourceUrl: card.dataset.sourceUrl || "",
-      imageUrl: card.dataset.imageUrl || "",
-    };
-  }
-
-  function setButtonState(card, isSelected) {
-    const button = card.querySelector("[data-select-offer]");
-    if (!button) {
-      return;
-    }
-    button.setAttribute("aria-pressed", String(isSelected));
-    button.classList.toggle("is-selected", isSelected);
-    button.innerHTML = isSelected ? `Gemerkt <span>${tk("담김", "Saved")}</span>` : `Zur Liste <span>${tk("담기", "Add")}</span>`;
-  }
-
-  function syncButtons() {
-    const selectedIds = new Set(selected.map((offer) => offer.id));
-    cards.forEach((card) => {
-      setButtonState(card, selectedIds.has(card.dataset.offerId));
-    });
-  }
-
-  function renderSummary() {
-    const counts = selected.reduce((acc, offer) => {
-      const key = retailerKey(offer.retailerSlug, offer.retailer);
-      acc[key] = acc[key] || { amount: 0, retailer: offer.retailer, retailerSlug: offer.retailerSlug };
-      acc[key].amount += 1;
-      return acc;
-    }, {});
-    summary.innerHTML = "";
-    Object.values(counts).forEach(({ retailer, retailerSlug, amount }) => {
-      const item = document.createElement("span");
-      item.className = `retailer-theme ${themeClass(retailerSlug)}`;
-      item.textContent = `${retailer} ${amount}`;
-      summary.appendChild(item);
-    });
-  }
-
-  function renderList(options = {}) {
-    list.innerHTML = "";
-    count.textContent = selected.length;
-    emptyState.hidden = selected.length > 0;
-    clearButton.disabled = selected.length === 0;
-    renderSummary();
-    updateShoppingWhatsappShare();
-
-    selected.forEach((offer) => {
-      const item = document.createElement("li");
-      item.className = `shopping-item retailer-theme ${themeClass(offer.retailerSlug)}`;
-      item.innerHTML = `
-        <div class="shopping-item-main">
-          ${
-            offer.imageUrl
-              ? `<img src="${escapeAttribute(offer.imageUrl)}" alt="">`
-              : `<span class="shopping-image-placeholder">${escapeHtml(offer.retailer.slice(0, 1))}</span>`
-          }
-          <div>
-            <span class="retailer-badge">${escapeHtml(offer.retailer)}</span>
-            <strong>${escapeHtml(offer.title)}</strong>
-            ${offer.titleKo ? `<p class="shopping-translation">${escapeHtml(offer.titleKo)}</p>` : ""}
-            <p>${escapeHtml(offer.price)}${offer.discount ? ` · ${escapeHtml(offer.discount)}` : ""}</p>
-            ${offer.unitPrice ? `<p class="shopping-unit">${escapeHtml(offer.unitPrice)}</p>` : ""}
-            <p class="shopping-valid">${escapeHtml(offer.valid)}</p>
-          </div>
-        </div>
-        <div class="shopping-item-actions">
-          <a href="${escapeAttribute(offer.sourceUrl)}" target="_blank" rel="noopener noreferrer">Quelle <span>${tk("출처", "Source")}</span></a>
-          <button type="button" data-remove-offer="${escapeAttribute(offer.id)}">Entfernen <span>${tk("삭제", "Remove")}</span></button>
-        </div>
-      `;
-      list.appendChild(item);
-    });
-
-    if (options.scrollToTop && listScroll) {
-      listScroll.scrollTop = 0;
-    }
-  }
-
-  function toggleOffer(card) {
-    const offer = offerFromCard(card);
-    const index = selected.findIndex((item) => item.id === offer.id);
-    const isAdding = index < 0;
-    if (index >= 0) {
-      selected.splice(index, 1);
-    } else {
-      selected.unshift(offer);
-    }
-    writeSelected();
-    syncButtons();
-    renderList({ scrollToTop: isAdding });
-  }
-
-  cards.forEach((card) => {
-    const button = card.querySelector("[data-select-offer]");
-    if (!button) {
-      return;
-    }
-    button.addEventListener("click", () => toggleOffer(card));
-  });
-
-  list.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-remove-offer]");
-    if (!button) {
-      return;
-    }
-    selected = selected.filter((offer) => offer.id !== button.dataset.removeOffer);
-    writeSelected();
-    syncButtons();
-    renderList();
-  });
-
-  clearButton.addEventListener("click", () => {
-    selected = [];
-    writeSelected();
-    syncButtons();
-    renderList({ scrollToTop: true });
-  });
+  const basketCopy = document.querySelector("[data-basket-copy]");
+  let lastBasketText = "";
 
   if (basketForm && basketInput) {
     basketForm.addEventListener("click", (event) => {
@@ -188,13 +110,17 @@
     });
   }
 
-  if (basketForm && basketModal && basketModalBody && basketModalStatus && basketModalClose && basketWhatsapp) {
+  if (basketForm && basketModal && basketModalBody && basketModalStatus && basketModalClose) {
     basketForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const formData = buildBasketRequestData();
       const query = String(formData.get("basket") || "").trim();
       openBasketModal();
-      updateWhatsappShare("");
+      lastBasketText = "";
+      if (basketCopy) {
+        basketCopy.disabled = true;
+        basketCopy.classList.add("is-disabled");
+      }
       basketModalBody.innerHTML = "";
       if (!query) {
         basketModalStatus.textContent = tk("장보기 목록을 먼저 입력해주세요.", "Please enter your shopping list first.");
@@ -215,7 +141,10 @@
         }
         renderBasketRecommendations(await response.json());
       } catch (error) {
-        basketModalStatus.textContent = tk("추천을 가져오지 못했습니다. 잠시 후 다시 시도해주세요.", "Failed to fetch recommendations. Please try again.");
+        basketModalStatus.textContent = tk(
+          "추천을 가져오지 못했습니다. 잠시 후 다시 시도해주세요.",
+          "Failed to fetch recommendations. Please try again."
+        );
       }
     });
 
@@ -230,26 +159,18 @@
         closeBasketModal();
       }
     });
-  }
 
-  if (filterForm) {
-    filterForm.addEventListener("click", (event) => {
-      const button = event.target.closest("[data-retailer-preset]");
-      if (!button) {
-        return;
-      }
-      const preset = button.dataset.retailerPreset;
-      const checkboxes = Array.from(filterForm.querySelectorAll('input[name="retailer"]'));
-      const defaultRetailers = new Set(
-        (button.closest("[data-default-retailers]")?.dataset.defaultRetailers || "")
-          .split(",")
-          .filter(Boolean)
-      );
-      checkboxes.forEach((checkbox) => {
-        checkbox.checked =
-          preset === "all" || (preset === "default" && defaultRetailers.has(checkbox.value));
+    if (basketCopy) {
+      basketCopy.addEventListener("click", async () => {
+        if (!lastBasketText) return;
+        try {
+          await navigator.clipboard.writeText(lastBasketText);
+          showToast(tk("추천 목록이 복사되었습니다!", "Recommendations copied to clipboard!"));
+        } catch (err) {
+          showToast(tk("복사에 실패했습니다.", "Failed to copy."));
+        }
       });
-    });
+    }
   }
 
   function buildBasketRequestData() {
@@ -302,7 +223,11 @@
   function renderBasketRecommendations(payload) {
     const weekLabel = payload.week_label ? `${payload.week_label.de} / ${payload.week_label.ko}` : "";
     basketModalStatus.textContent = `${payload.query || ""} · ${weekLabel}`;
-    updateWhatsappShare(buildWhatsappText(payload));
+    lastBasketText = buildBasketText(payload);
+    if (basketCopy && lastBasketText) {
+      basketCopy.disabled = false;
+      basketCopy.classList.remove("is-disabled");
+    }
     const recommendations = payload.recommendations || [];
     if (!recommendations.length) {
       basketModalBody.innerHTML = `<p class="basket-miss">${tk("입력한 장보기 항목이 없습니다.", "No shopping items entered.")}</p>`;
@@ -319,43 +244,20 @@
     });
   }
 
-  function updateWhatsappShare(text) {
-    updateShareLink(basketWhatsapp, text);
-  }
-
-  function updateShoppingWhatsappShare() {
-    updateShareLink(shoppingWhatsapp, buildSelectedWhatsappText());
-  }
-
-  function updateShareLink(link, text) {
-    if (!link) {
-      return;
-    }
-    if (!text) {
-      link.href = "#";
-      link.classList.add("is-disabled");
-      link.setAttribute("aria-disabled", "true");
-      return;
-    }
-    link.href = `https://wa.me/?text=${encodeURIComponent(text)}`;
-    link.classList.remove("is-disabled");
-    link.setAttribute("aria-disabled", "false");
-  }
-
-  function buildWhatsappText(payload) {
+  function buildBasketText(payload) {
     const weekLabel = payload.week_label ? `${payload.week_label.de} / ${payload.week_label.ko}` : "";
     const lines = [
-      tk("할인 장보기 추천", "Deal Recommendations"),
+      `🛒 ${tk("마트 할인 장보기 추천", "Supermarkt Deals - Basket Advisor")}`,
       weekLabel ? `${tk("기간: ", "Period: ")}${weekLabel}` : "",
-      payload.query ? `${tk("목록: ", "List: ")}${payload.query}` : "",
+      payload.query ? `${tk("입력 목록: ", "Shopping Query: ")}${payload.query}` : "",
       "",
     ].filter(Boolean);
 
     const grouped = groupBasketCandidatesByRetailer(payload.recommendations || []);
     grouped.forEach((group) => {
-      lines.push(`[${group.retailer}]`);
+      lines.push(`📍 [${group.retailer}]`);
       group.items.forEach(({ item, candidate }) => {
-        lines.push(`- ${item.raw || item.name || tk("항목", "Item")}: ${candidate.title || ""}`);
+        lines.push(`• ${item.raw || item.name || tk("항목", "Item")}: ${candidate.title || ""}`);
         appendDetailLine(lines, candidateDetails(candidate));
       });
       lines.push("");
@@ -365,10 +267,10 @@
       return !(recommendation.candidates || []).length;
     });
     if (missed.length) {
-      lines.push(tk("[못 찾음]", "[Not found]"));
+      lines.push(`❓ ${tk("[할인 미발견 항목]", "[No Deals Found]")}`);
       missed.forEach((recommendation) => {
         const item = recommendation.item || {};
-        lines.push(`- ${item.raw || item.name || tk("항목", "Item")}`);
+        lines.push(`• ${item.raw || item.name || tk("항목", "Item")}`);
       });
       lines.push("");
     }
@@ -390,31 +292,6 @@
     return Array.from(groups.values());
   }
 
-  function buildSelectedWhatsappText() {
-    if (!selected.length) {
-      return "";
-    }
-    const lines = [tk("장보기 목록", "Shopping List"), ""];
-    groupSelectedByRetailer(selected).forEach((group) => {
-      lines.push(`[${group.retailer}]`);
-      group.offers.forEach((offer) => {
-        lines.push(`- ${offer.title}`);
-        appendDetailLine(lines, [offer.price, offer.discount, offer.unitPrice, offer.valid]);
-      });
-      lines.push("");
-    });
-    return lines.join("\n").trim();
-  }
-
-  function groupSelectedByRetailer(offers) {
-    const groups = new Map();
-    offers.forEach((offer) => {
-      const key = retailerKey(offer.retailerSlug, offer.retailer);
-      ensureRetailerGroup(groups, key, offer.retailer, "offers").offers.push(offer);
-    });
-    return Array.from(groups.values());
-  }
-
   function retailerKey(slug, retailer) {
     return slug || retailer || "unknown";
   }
@@ -429,7 +306,7 @@
   function appendDetailLine(lines, details) {
     const visibleDetails = details.filter(Boolean);
     if (visibleDetails.length) {
-      lines.push(`  ${visibleDetails.join(" · ")}`);
+      lines.push(`    ${visibleDetails.join(" · ")}`);
     }
   }
 
@@ -478,7 +355,9 @@
   }
 
   function renderBasketCandidate(candidate) {
-    const oldPriceLabel = candidate.old_price_estimated ? `Normalpreis ${tk("추정 원가", "Estimated Reg.")}` : `Normalpreis ${tk("원가", "Regular Price")}`;
+    const oldPriceLabel = candidate.old_price_estimated
+      ? `Normalpreis ${tk("추정 원가", "Estimated Reg.")}`
+      : `Normalpreis ${tk("원가", "Regular Price")}`;
     const hasImage = Boolean(candidate.image_url);
     return `
       <li class="retailer-theme ${themeClass(candidate.retailer_slug)}">
@@ -491,7 +370,7 @@
           <div class="basket-candidate-details">
             <span class="retailer-badge">${escapeHtml(candidate.retailer || "")}</span>
             <strong>${escapeHtml(candidate.title || "")}</strong>
-            ${candidate.title_ko ? `<p class="shopping-translation">${escapeHtml(candidate.title_ko)}</p>` : ""}
+            ${candidate.title_ko ? `<p class="deal-translation">${escapeHtml(candidate.title_ko)}</p>` : ""}
             <div class="basket-price-details">
               ${
                 candidate.old_price_text
@@ -535,7 +414,4 @@
       .replace(/^-|-$/g, "");
     return slug ? `retailer-${slug}` : "";
   }
-
-  syncButtons();
-  renderList();
 })();

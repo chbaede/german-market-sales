@@ -37,7 +37,12 @@
   '새로고침': 'Refresh',
   '다음 주 데이터 있음': 'Next week data available',
   '아직 소스에서 다음 주 상품이 안 넘어옴': 'Next week data missing',
-  '가격 있는 상품만': 'Priced only'
+  '가격 있는 상품만': 'Priced only',
+  '공유': 'Share',
+  '링크 공유': 'Share link',
+  '바로가기': 'View deal',
+  '추천 복사': 'Copy recs',
+  '맨 위로': 'Top'
 } %}
 
 {% macro render_ko(ko_str) -%}
@@ -59,6 +64,9 @@
       </nav>
     </div>
     <div class="topbar-actions">
+      <button class="share-page-button" type="button" data-share-page aria-label="Share page">
+        Teilen <span>{{ render_ko("공유") }}</span>
+      </button>
       <button class="lang-toggle-button" type="button" onclick="document.cookie='lang=' + (document.cookie.includes('lang=en') ? 'ko' : 'en') + '; path=/; max-age=31536000'; window.location.reload();">
         {% if lang == 'en' %}🇰🇷 한국어로 보기{% else %}🇺🇸 Switch to English{% endif %}
       </button>
@@ -67,7 +75,7 @@
   </div>
 </header>
 
-<main class="layout" data-shopping-storage-key="{{ page.storage_key }}">
+<main class="layout">
   {% if warnings %}
     <details class="notice" aria-label="data warnings">
       <summary>
@@ -249,14 +257,13 @@
           <h2 id="basket-modal-title">Empfehlungen <span class="ko">{{ render_ko("추천 결과") }}</span></h2>
         </div>
         <div class="basket-modal-actions">
-          <a
-            class="whatsapp-share-button is-disabled"
-            href="#"
-            target="_blank"
-            rel="noopener noreferrer"
-            data-basket-whatsapp
-            aria-disabled="true"
-          >WhatsApp <span>{{ render_ko("전송") }}</span></a>
+          <button
+            class="copy-button is-disabled"
+            type="button"
+            data-basket-copy
+            aria-label="Copy recommendations"
+            disabled
+          >Kopieren <span>{{ render_ko("추천 복사") }}</span></button>
           <button class="modal-close-button" type="button" data-basket-modal-close aria-label="close">×</button>
         </div>
       </div>
@@ -354,9 +361,9 @@
                 {% endif %}
               </div>
               <div class="card-actions">
-                <button class="select-offer-button" type="button" data-select-offer aria-pressed="false">
-                  Zur Liste <span>{{ render_ko("담기") }}</span>
-                </button>
+                <a class="view-deal-button" href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">
+                  Zum Angebot <span>{{ render_ko("바로가기") }} ↗</span>
+                </a>
               </div>
               {% if offer.unit_price %}
                 <p class="unit-price">{{ offer.unit_price|eur }} / {{ offer.unit or "unit" }}</p>
@@ -393,38 +400,33 @@
         </script>
       </div>
     </div>
-
-    <aside class="shopping-panel" aria-label="shopping list">
-      <div class="shopping-panel-header">
-        <div>
-          <p class="eyebrow">Einkaufsliste</p>
-          <h2>Gemerkte Angebote <span class="ko">{{ render_ko("담은 항목") }}</span></h2>
-        </div>
-        <span class="shopping-count" data-shopping-count>0</span>
-      </div>
-      <div class="shopping-summary" data-shopping-summary></div>
-      <p class="shopping-empty" data-shopping-empty>
-        Noch nichts ausgewählt. <span class="ko">{{ render_ko("사고 싶은 항목의 담기 버튼을 눌러보세요.") }}</span>
-      </p>
-      <div class="shopping-list-scroll" data-shopping-list-scroll>
-        <ul class="shopping-list" data-shopping-list></ul>
-      </div>
-      <div class="shopping-panel-actions">
-        <a
-          class="whatsapp-share-button is-disabled"
-          href="#"
-          target="_blank"
-          rel="noopener noreferrer"
-          data-shopping-whatsapp
-          aria-disabled="true"
-        >WhatsApp <span>{{ render_ko("전송") }}</span></a>
-        <button class="clear-list-button" type="button" data-clear-shopping-list>
-          Liste leeren <span>{{ render_ko("비우기") }}</span>
-        </button>
-      </div>
-    </aside>
   </section>
 </main>
+
+<button class="back-to-top" id="back-to-top" type="button" aria-label="Nach oben" title="Nach oben">
+  ↑ <span>{{ render_ko("맨 위로") }}</span>
+</button>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<footer class="site-footer">
+  <div class="site-footer-inner">
+    <div class="footer-brand">
+      <p class="footer-title">{{ page.heading }} · {% if lang == 'en' %}{{ page.heading_en }}{% else %}{{ page.heading_ko }}{% endif %}</p>
+      <p class="footer-disclaimer">
+        ⚠️ <strong>Hinweis / Disclaimer:</strong> Alle Preis- und Rabattangaben ohne Gewähr. Irrtümer und Änderungen vorbehalten. Gültigkeit und Verfügbarkeit können filialabhängig variieren.
+      </p>
+      <p class="footer-update">
+        📅 Zuletzt aktualisiert: {{ fetched_at|date_de }} · Wöchentliche Angebote direkt aus den Händler-Prospekten
+      </p>
+    </div>
+    <div class="footer-links">
+      <a href="{{ url_for('main.index') }}">Supermarkt</a>
+      <a href="{{ url_for('main.drugstores') }}">Drogerie</a>
+      <a href="{{ url_for(page.refresh_endpoint, **request.args) }}">Aktualisieren</a>
+    </div>
+  </div>
+</footer>
 {% endblock %}
 
 {% block scripts %}

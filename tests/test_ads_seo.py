@@ -60,6 +60,13 @@ def test_supermarket_page_seo_and_ads(monkeypatch):
     assert '<link rel="canonical"' in html
     assert 'application/ld+json' in html
 
+    # Public portal features
+    assert "data-share-page" in html
+    assert "data-basket-copy" in html
+    assert "back-to-top" in html
+    assert "site-footer" in html
+    assert "whatsapp" not in html.lower()
+
 
 def test_drogerie_page_seo_and_ads(monkeypatch):
     import app.routes as routes
@@ -85,3 +92,7 @@ def test_drogerie_page_seo_and_ads(monkeypatch):
     assert 'data-ad-slot="9426228178"' in html
     assert '<div class="topbar-inner">' in html
     assert '<meta name="description"' in html
+    assert "data-share-page" in html
+    assert "data-basket-copy" in html
+    assert "site-footer" in html
+    assert "whatsapp" not in html.lower()

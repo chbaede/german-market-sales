@@ -68,9 +68,9 @@ def test_drugstore_page_uses_separate_api_and_storage(monkeypatch):
     assert 'name="retailer" value="rossmann" checked' in html
     assert 'name="retailer" value="budnikowsky" checked' not in html
     assert "/api/drogerie/basket" in html
-    assert "drugstoreDealShoppingList" in html
     assert 'data-basket-template="샴푸 1개, 치약, 바디워시, 비누, 데오"' in html
-    assert "data-shopping-whatsapp" in html
+    assert "data-share-page" in html
+    assert "site-footer" in html
     assert "Nächste Woche" in html
 
 

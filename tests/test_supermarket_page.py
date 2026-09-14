@@ -37,7 +37,8 @@ def test_supermarket_page_lists_added_berlin_retailers(monkeypatch):
     assert "PENNY extra item" not in html
     assert '<span class="check-pill-count">1</span>' in html
     assert 'data-basket-template="우유 2개, 계란, 양파, 당근, 토마토, 바나나, 빵, 버터"' in html
-    assert "data-shopping-whatsapp" in html
+    assert "data-share-page" in html
+    assert "site-footer" in html
 
 
 def test_supermarket_default_sort_prioritizes_weekly_essentials(monkeypatch):
