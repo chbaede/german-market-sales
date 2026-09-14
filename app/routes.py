@@ -276,6 +276,16 @@ def health():
     return {"status": "ok"}
 
 
+@bp.get("/ads.txt")
+def ads_txt():
+    return current_app.send_static_file("ads.txt")
+
+
+@bp.get("/robots.txt")
+def robots_txt():
+    return current_app.send_static_file("robots.txt")
+
+
 def filter_offers(
     offers: list[Offer],
     selected_retailers: set[str],

@@ -1,10 +1,44 @@
 <!doctype html>
-<html lang="ko">
+<html lang="{% if lang == 'en' %}en{% elif lang == 'de' %}de{% else %}ko{% endif %}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Supermarkt Deals{% endblock %}</title>
+    <meta name="description" content="{% block meta_description %}Wöchentliche Supermarkt- & Drogerie-Angebote in Deutschland (ALDI, LIDL, REWE, EDEKA, DM, ROSSMANN) vergleichen und sparen.{% endblock %}">
+    <meta name="keywords" content="Supermarkt Angebote, Prospekte, Rabatt, ALDI, LIDL, REWE, EDEKA, DM, ROSSMANN, 독일 마트 할인">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="{{ request.base_url }}">
+
+    <!-- Open Graph / Social Media -->
+    <meta property="og:title" content="{% block og_title %}{{ self.title() }}{% endblock %}">
+    <meta property="og:description" content="{% block og_description %}Wöchentliche Supermarkt- & Drogerie-Angebote in Deutschland vergleichen und sparen.{% endblock %}">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Supermarkt & Drogerie Deals">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="{% block twitter_title %}{{ self.title() }}{% endblock %}">
+    <meta name="twitter:description" content="{% block twitter_description %}Wöchentliche Supermarkt- & Drogerie-Angebote in Deutschland vergleichen und sparen.{% endblock %}">
+
+    <!-- Google AdSense -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6854824605420161" crossorigin="anonymous"></script>
+
     <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+
+    <!-- Structured Data (JSON-LD) for SEO -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Supermarkt & Drogerie Deals",
+      "url": "{{ request.url_root }}",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "{{ request.url_root }}?q={search_term_string}",
+        "query-input": "required name=search_term_string"
+      }
+    }
+    </script>
   </head>
   <body>
     {% block body %}{% endblock %}

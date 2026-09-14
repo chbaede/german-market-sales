@@ -45,25 +45,25 @@
 {%- endmacro %}
 
 <header class="topbar">
-
-
-  <div class="topbar-title">
-    <p class="eyebrow">{{ page.eyebrow }}</p>
-    <h1>{{ page.heading }} <span class="ko">{% if lang == "en" %}{{ page.heading_en }}{% else %}{{ page.heading_ko }}{% endif %}</span></h1>
-    <nav class="top-nav" aria-label="areas">
-      <a class="{% if page.active == 'supermarket' %}is-active{% endif %}" href="{{ url_for('main.index') }}">
-        Supermarkt <span>{{ render_ko("슈퍼") }}</span>
-      </a>
-      <a class="{% if page.active == 'drugstore' %}is-active{% endif %}" href="{{ url_for('main.drugstores') }}">
-        Drogerie <span>DM/ROSSMANN</span>
-      </a>
-    </nav>
-  </div>
-  <div class="topbar-actions">
-    <button class="lang-toggle-button" type="button" onclick="document.cookie='lang=' + (document.cookie.includes('lang=en') ? 'ko' : 'en') + '; path=/; max-age=31536000'; window.location.reload();">
-      {% if lang == 'en' %}🇰🇷 한국어로 보기{% else %}🇺🇸 Switch to English{% endif %}
-    </button>
-    <a class="refresh-link" href="{{ url_for(page.refresh_endpoint, **request.args) }}">Aktualisieren <span>{{ render_ko("새로고침") }}</span></a>
+  <div class="topbar-inner">
+    <div class="topbar-title">
+      <p class="eyebrow">{{ page.eyebrow }}</p>
+      <h1>{{ page.heading }} <span class="ko">{% if lang == "en" %}{{ page.heading_en }}{% else %}{{ page.heading_ko }}{% endif %}</span></h1>
+      <nav class="top-nav" aria-label="areas">
+        <a class="{% if page.active == 'supermarket' %}is-active{% endif %}" href="{{ url_for('main.index') }}">
+          Supermarkt <span>{{ render_ko("슈퍼") }}</span>
+        </a>
+        <a class="{% if page.active == 'drugstore' %}is-active{% endif %}" href="{{ url_for('main.drugstores') }}">
+          Drogerie <span>DM/ROSSMANN</span>
+        </a>
+      </nav>
+    </div>
+    <div class="topbar-actions">
+      <button class="lang-toggle-button" type="button" onclick="document.cookie='lang=' + (document.cookie.includes('lang=en') ? 'ko' : 'en') + '; path=/; max-age=31536000'; window.location.reload();">
+        {% if lang == 'en' %}🇰🇷 한국어로 보기{% else %}🇺🇸 Switch to English{% endif %}
+      </button>
+      <a class="refresh-link" href="{{ url_for(page.refresh_endpoint, **request.args) }}">Aktualisieren <span>{{ render_ko("새로고침") }}</span></a>
+    </div>
   </div>
 </header>
 
@@ -286,6 +286,19 @@
     </section>
   {% endif %}
 
+  <div class="ad-unit ad-unit-mid" aria-label="Anzeige">
+    <span class="ad-label">Anzeige</span>
+    <ins class="adsbygoogle"
+         style="display:block"
+         data-ad-client="ca-pub-6854824605420161"
+         data-ad-slot="9426228178"
+         data-ad-format="auto"
+         data-full-width-responsive="true"></ins>
+    <script>
+         (adsbygoogle = window.adsbygoogle || []).push({});
+    </script>
+  </div>
+
   <section class="offer-workspace">
     <div class="offers-column">
       <section class="section-heading list-heading">
@@ -366,6 +379,19 @@
           </div>
         {% endfor %}
       </section>
+
+      <div class="ad-unit ad-unit-bottom" aria-label="Anzeige">
+        <span class="ad-label">Anzeige</span>
+        <ins class="adsbygoogle"
+             style="display:block"
+             data-ad-client="ca-pub-6854824605420161"
+             data-ad-slot="9426228178"
+             data-ad-format="auto"
+             data-full-width-responsive="true"></ins>
+        <script>
+             (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      </div>
     </div>
 
     <aside class="shopping-panel" aria-label="shopping list">
