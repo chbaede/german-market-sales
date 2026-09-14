@@ -6,6 +6,7 @@ APP_NAME="${APP_NAME:-german-market-sales}"
 IMAGE_NAME="${IMAGE_NAME:-german-market-sales:latest}"
 HOST_PORT="${HOST_PORT:-5000}"
 CONTAINER_PORT="${CONTAINER_PORT:-5000}"
+DEFAULT_ZIP_CODE="${DEFAULT_ZIP_CODE:-14195}"
 CACHE_DIR="$(pwd)/data/cache"
 
 echo "=========================================="
@@ -40,6 +41,7 @@ echo ">>> Starting new container '${APP_NAME}' on port ${HOST_PORT}..."
 docker run -d \
   --name "${APP_NAME}" \
   -p "${HOST_PORT}:${CONTAINER_PORT}" \
+  -e DEFAULT_ZIP_CODE="${DEFAULT_ZIP_CODE}" \
   -v "${CACHE_DIR}:/app/data/cache" \
   --restart unless-stopped \
   "${IMAGE_NAME}"
@@ -63,3 +65,4 @@ else
   echo "=========================================="
   exit 1
 fi
+
