@@ -109,6 +109,17 @@ h1 {
   color: #fff;
 }
 
+.top-nav a.hub-link {
+  background: #eef3f8;
+  border-color: #c9d8e7;
+  color: #1a4268;
+}
+
+.top-nav a.hub-link:hover {
+  background: #dde8f3;
+  border-color: #a8c2dc;
+}
+
 .top-nav span {
   font-size: 0.88em;
   opacity: 0.72;

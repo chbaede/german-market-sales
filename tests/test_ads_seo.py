@@ -66,6 +66,8 @@ def test_supermarket_page_seo_and_ads(monkeypatch):
     assert "back-to-top" in html
     assert "site-footer" in html
     assert "whatsapp" not in html.lower()
+    assert "https://main.yocto.co.kr/" in html
+    assert "hub-link" in html
 
 
 def test_drogerie_page_seo_and_ads(monkeypatch):
@@ -96,3 +98,4 @@ def test_drogerie_page_seo_and_ads(monkeypatch):
     assert "data-basket-copy" in html
     assert "site-footer" in html
     assert "whatsapp" not in html.lower()
+    assert "https://main.yocto.co.kr/" in html

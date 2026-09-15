@@ -42,7 +42,9 @@
   '링크 공유': 'Share link',
   '바로가기': 'View deal',
   '추천 복사': 'Copy recs',
-  '맨 위로': 'Top'
+  '맨 위로': 'Top',
+  '메인': 'Main',
+  '허브': 'Hub'
 } %}
 
 {% macro render_ko(ko_str) -%}
@@ -55,6 +57,9 @@
       <p class="eyebrow">{{ page.eyebrow }}</p>
       <h1>{{ page.heading }} <span class="ko">{% if lang == "en" %}{{ page.heading_en }}{% else %}{{ page.heading_ko }}{% endif %}</span></h1>
       <nav class="top-nav" aria-label="areas">
+        <a class="hub-link" href="https://main.yocto.co.kr/" title="Hub 메인 페이지로 이동">
+          🏠 Hub <span>{{ render_ko("메인") }}</span>
+        </a>
         <a class="{% if page.active == 'supermarket' %}is-active{% endif %}" href="{{ url_for('main.index') }}">
           Supermarkt <span>{{ render_ko("슈퍼") }}</span>
         </a>
@@ -421,6 +426,7 @@
       </p>
     </div>
     <div class="footer-links">
+      <a href="https://main.yocto.co.kr/">🏠 Hub 메인</a>
       <a href="{{ url_for('main.index') }}">Supermarkt</a>
       <a href="{{ url_for('main.drugstores') }}">Drogerie</a>
       <a href="{{ url_for(page.refresh_endpoint, **request.args) }}">Aktualisieren</a>
