@@ -56,6 +56,7 @@ def test_supermarket_page_seo_and_ads(monkeypatch):
     # SEO tags
     assert '<meta name="description"' in html
     assert '<meta name="robots" content="index, follow">' in html
+    assert '<meta name="google-site-verification" content="2VmKKN5VGVIL9P-KiYywyJoeJQiKVCxEhRM4japgnzE">' in html
     assert '<meta property="og:title"' in html
     assert '<link rel="canonical"' in html
     assert 'application/ld+json' in html
