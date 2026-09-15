@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from threading import Lock
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, url_for
 
 from app.models import Offer
 from app.services.basket import BasketRecommendation, recommend_basket_items
@@ -43,6 +43,7 @@ RECOMMENDATION_CATEGORIES = frozenset(
 PRICE_SORT_FALLBACK = 999999
 SUPERMARKET_PAGE = {
     "title": "Supermarkt-Angebote · 독일 마트 할인",
+    "meta_description": "Wöchentliche Supermarkt-Angebote in Deutschland (ALDI, LIDL, REWE, EDEKA, Kaufland, Netto, PENNY) vergleichen und sparen. Aktuelle Prospekte, Rabatte und günstige Lebensmittel.",
     "eyebrow": "ALDI · EDEKA · REWE · Lidl · Netto · PENNY · nahkauf · Kaufland",
     "heading": "Wöchentliche Angebote",
     "heading_ko": "이번 주 할인 생필품", "heading_en": "Weekly Essentials Deals",
@@ -65,6 +66,7 @@ SUPERMARKET_PAGE = {
 }
 DRUGSTORE_PAGE = {
     "title": "Drogerie-Angebote · DM/ROSSMANN 할인",
+    "meta_description": "Aktuelle Drogerie-Angebote bei dm, ROSSMANN und budni vergleichen. Entdecken Sie Rabatte auf Kosmetik, Pflegeprodukte, Haushaltswaren und Babyartikel.",
     "eyebrow": "dm · ROSSMANN · budni",
     "heading": "Drogerie-Angebote",
     "heading_ko": "DM/ROSSMANN 할인 생활용품", "heading_en": "DM/ROSSMANN Deals",
@@ -283,7 +285,39 @@ def ads_txt():
 
 @bp.get("/robots.txt")
 def robots_txt():
-    return current_app.send_static_file("robots.txt")
+    base_url = request.url_root.rstrip("/")
+    content = f"""User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /refresh
+Disallow: /drogerie/refresh
+
+Sitemap: {base_url}/sitemap.xml
+"""
+    return Response(content, mimetype="text/plain; charset=utf-8")
+
+
+@bp.get("/sitemap.xml")
+def sitemap_xml():
+    base_url = request.url_root.rstrip("/")
+    now = datetime.now(BERLIN_TZ).strftime("%Y-%m-%d")
+    xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>{base_url}/</loc>
+    <lastmod>{now}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>{base_url}/drogerie</loc>
+    <lastmod>{now}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.9</priority>
+  </url>
+</urlset>
+"""
+    return Response(xml_content, mimetype="application/xml; charset=utf-8")
 
 
 def filter_offers(

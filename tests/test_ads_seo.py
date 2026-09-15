@@ -21,6 +21,20 @@ def test_robots_txt_route():
     assert "text/plain" in response.content_type
     assert "User-agent: *" in response.text
     assert "Allow: /" in response.text
+    assert "Sitemap: http://localhost/sitemap.xml" in response.text
+
+
+def test_sitemap_xml_route():
+    app = create_app()
+    client = app.test_client()
+    response = client.get("/sitemap.xml")
+
+    assert response.status_code == 200
+    assert "application/xml" in response.content_type
+    assert "<urlset" in response.text
+    assert "http://localhost/" in response.text
+    assert "http://localhost/drogerie" in response.text
+    assert "<priority>1.0</priority>" in response.text
 
 
 def test_supermarket_page_seo_and_ads(monkeypatch):

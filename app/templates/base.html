@@ -14,7 +14,11 @@
     <meta property="og:title" content="{% block og_title %}{{ self.title() }}{% endblock %}">
     <meta property="og:description" content="{% block og_description %}Wöchentliche Supermarkt- & Drogerie-Angebote in Deutschland vergleichen und sparen.{% endblock %}">
     <meta property="og:type" content="website">
+    <meta property="og:url" content="{{ request.base_url }}">
+    <meta property="og:locale" content="{% if lang == 'de' %}de_DE{% elif lang == 'en' %}en_US{% else %}ko_KR{% endif %}">
     <meta property="og:site_name" content="Supermarkt & Drogerie Deals">
+    <meta name="theme-color" content="#1d7a46">
+    <link rel="sitemap" type="application/xml" title="Sitemap" href="{{ request.url_root }}sitemap.xml">
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary">
