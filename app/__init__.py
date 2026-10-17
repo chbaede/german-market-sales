@@ -15,6 +15,18 @@ def create_app(config_object: type[Config] = Config) -> Flask:
 
     register_template_filters(app)
     app.register_blueprint(bp)
+
+    if app.config.get("AUTO_REFRESH_ENABLED", True) and not app.config.get("TESTING", False):
+        from .services.scheduler import AutoRefreshScheduler
+
+        scheduler = AutoRefreshScheduler(
+            app=app,
+            check_interval_seconds=int(app.config.get("SCHEDULER_CHECK_INTERVAL_SECONDS", 900)),
+            max_cache_age_hours=int(app.config.get("SCHEDULER_MAX_CACHE_AGE_HOURS", 24)),
+        )
+        scheduler.start()
+        app.extensions["auto_scheduler"] = scheduler
+
     return app
 
 

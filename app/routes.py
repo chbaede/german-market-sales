@@ -404,6 +404,36 @@ def health():
     return {"status": "ok"}
 
 
+@bp.get("/api/scheduler/status")
+def api_scheduler_status():
+    from app.services.scheduler import AutoRefreshScheduler
+
+    scheduler = current_app.extensions.get("auto_scheduler")
+    if scheduler:
+        status = scheduler.get_status()
+        status["scheduler_running"] = scheduler._thread is not None and scheduler._thread.is_alive()
+        status["check_interval_seconds"] = scheduler.check_interval_seconds
+        status["max_cache_age_hours"] = scheduler.max_cache_age_hours
+        return jsonify(status)
+    dummy = AutoRefreshScheduler(current_app)
+    status = dummy.get_status()
+    status["scheduler_running"] = False
+    return jsonify(status)
+
+
+@bp.post("/api/scheduler/trigger")
+def api_scheduler_trigger():
+    scheduler = current_app.extensions.get("auto_scheduler")
+    if scheduler:
+        result = scheduler.execute_refresh()
+        return jsonify(result)
+    from app.services.scheduler import AutoRefreshScheduler
+
+    runner = AutoRefreshScheduler(current_app)
+    result = runner.execute_refresh()
+    return jsonify(result)
+
+
 @bp.get("/ads.txt")
 def ads_txt():
     return current_app.send_static_file("ads.txt")
