@@ -60,7 +60,10 @@
   '목표가 알림': 'Price alerts',
   '스마트 분할': 'Smart split',
   '비교': 'Compare',
-  '추가': 'Add'
+  '추가': 'Add',
+  '동시 할인': 'Price duel',
+  '타 마트 동시 할인만': 'Multi-store deals only',
+  '이번 주 최저가': 'Best weekly price'
 } %}
 
 {% macro render_ko(ko_str) -%}
@@ -138,6 +141,11 @@
       <span>items</span>
     </div>
     <div class="metric">
+      <span class="metric-label">Preisduelle <span class="ko">{{ render_ko("동시 할인") }}</span></span>
+      <strong>{{ stats.overlapping_count }}</strong>
+      <span>items</span>
+    </div>
+    <div class="metric">
       <span class="metric-label">PLZ</span>
       <strong>{{ zip_code }}</strong>
       <span>{% if from_cache %}cache{% else %}live{% endif %}</span>
@@ -202,6 +210,13 @@
       </select>
     </label>
     <div class="filter-toggles">
+      <label class="filter-toggle">
+        <input type="checkbox" name="overlap" value="1" {% if overlap_only %}checked{% endif %}>
+        <span>
+          <strong>Preisduelle</strong>
+          <small>{{ render_ko("타 마트 동시 할인만") }}</small>
+        </span>
+      </label>
       <label class="filter-toggle">
         <input type="checkbox" name="priced" value="1" {% if priced_only %}checked{% endif %}>
         <span>
@@ -363,6 +378,8 @@
             data-all-time-low="{{ offer.all_time_low or '' }}"
             data-is-all-time-low="{{ '1' if offer.is_all_time_low else '0' }}"
             data-recorded-at="{{ offer.recorded_at or '' }}"
+            data-has-competitors="{{ '1' if offer.competitors else '0' }}"
+            data-is-cheapest-in-week="{{ '1' if offer.is_cheapest_in_week else '0' }}"
           >
             <div class="image-wrap">
               {% if offer.image_url %}
@@ -372,6 +389,8 @@
               {% endif %}
               {% if offer.is_all_time_low %}
                 <span class="badge-atl" title="역대 최저가!">🔥 Tiefstpreis <span class="ko">{{ render_ko("역대 최저가") }}</span></span>
+              {% elif offer.is_cheapest_in_week and offer.competitors %}
+                <span class="badge-best-week" title="이번 주 타 마트 대비 최저가!">🏆 Bestpreis <span class="ko">{{ render_ko("이번 주 최저가") }}</span></span>
               {% elif offer.discount_percent %}
                 <span class="discount-badge">{{ offer.discount_percent|pct }}</span>
               {% endif %}
@@ -398,6 +417,35 @@
                   <s>{{ offer.old_price|eur }}</s>
                 {% endif %}
               </div>
+              {% if offer.competitors %}
+                <div class="card-competitor-box {% if offer.is_cheapest_in_week %}is-cheapest{% elif offer.cheapest_competitor and offer.cheapest_competitor.price_diff and offer.cheapest_competitor.price_diff > 0 %}has-cheaper{% else %}is-same{% endif %}">
+                  <div class="ccb-header">
+                    {% if offer.is_cheapest_in_week %}
+                      <span class="ccb-badge ccb-badge-best">🏆 {{ render_ko("이번 주 최저가") }}</span>
+                      <span class="ccb-note">타 마트 대비 최저가!</span>
+                    {% elif offer.cheapest_competitor and offer.cheapest_competitor.price_diff and offer.cheapest_competitor.price_diff > 0 %}
+                      <span class="ccb-badge ccb-badge-cheaper">💡 타 마트 최저 {{ offer.cheapest_competitor.price|eur }}</span>
+                      <span class="ccb-note"><strong>{{ offer.cheapest_competitor.retailer }}</strong>이(가) {{ offer.cheapest_competitor.price_diff|eur }} 더 저렴</span>
+                    {% else %}
+                      <span class="ccb-badge ccb-badge-same">🔄 {{ render_ko("동시 할인") }}</span>
+                      <span class="ccb-note">다른 마트에서도 동시 세일 중</span>
+                    {% endif %}
+                  </div>
+                  <div class="ccb-stores">
+                    {% for c in offer.competitors %}
+                      <a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer" class="comp-store-pill retailer-theme retailer-{{ c.retailer_slug }}" title="{{ c.retailer }}: {{ c.title }}">
+                        <span class="csp-retailer">{{ c.retailer }}</span>
+                        <strong class="csp-price">{{ c.price|eur }}</strong>
+                        {% if c.price_diff is not none and c.price_diff > 0 %}
+                          <span class="csp-diff cheaper">-{{ c.price_diff|eur }}</span>
+                        {% elif c.price_diff is not none and c.price_diff < 0 %}
+                          <span class="csp-diff expensive">+{{ (c.price_diff * -1)|eur }}</span>
+                        {% endif %}
+                      </a>
+                    {% endfor %}
+                  </div>
+                </div>
+              {% endif %}
               <div class="card-actions">
                 <button type="button" class="btn-card-action btn-history" data-price-history-btn data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" data-price="{{ offer.price or '' }}" title="가격 변동 내역">
                   📈 <span>{{ render_ko("가격 이력") }}</span>

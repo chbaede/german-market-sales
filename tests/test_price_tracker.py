@@ -139,3 +139,33 @@ def test_price_tracker_apis(monkeypatch):
     assert "results" in wl_data
     assert len(wl_data["results"]) == 1
 
+
+def test_build_weekly_competitor_map():
+    from app.services.price_history import build_weekly_competitor_map
+
+    rewe_pasta = _sample_offer("rewe-1", "Barilla Pasta 500g", "REWE", 0.99, brand="Barilla")
+    lidl_pasta = _sample_offer("lidl-1", "Barilla Pasta 500g", "Lidl", 0.89, brand="Barilla")
+    kaufland_pasta = _sample_offer("kaufland-1", "Barilla Pasta 500g", "Kaufland", 1.19, brand="Barilla")
+    other_item = _sample_offer("other-1", "Brot", "REWE", 1.50)
+
+    offers = [rewe_pasta, lidl_pasta, kaufland_pasta, other_item]
+    comp_map = build_weekly_competitor_map(offers)
+
+    # REWE pasta should have 2 competitors: Lidl (0.89) and Kaufland (1.19)
+    assert "rewe-1" in comp_map
+    rewe_comps = comp_map["rewe-1"]
+    assert len(rewe_comps) == 2
+    assert rewe_comps[0]["retailer"] == "Lidl"
+    assert rewe_comps[0]["price"] == 0.89
+    assert rewe_comps[0]["price_diff"] == 0.10  # REWE is 0.10 more expensive than Lidl
+
+    # Lidl pasta should have REWE (0.99) and Kaufland (1.19)
+    assert "lidl-1" in comp_map
+    lidl_comps = comp_map["lidl-1"]
+    assert lidl_comps[0]["retailer"] == "REWE"
+    assert lidl_comps[0]["price_diff"] == -0.10  # Lidl is 0.10 cheaper than REWE
+
+    # Single-store item should have no competitors
+    assert "other-1" not in comp_map
+
+

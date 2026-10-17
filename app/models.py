@@ -25,6 +25,9 @@ class Offer:
     all_time_low: float | None = None
     is_all_time_low: bool = False
     recorded_at: str | None = None
+    competitors: list[dict] | None = None
+    cheapest_competitor: dict | None = None
+    is_cheapest_in_week: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

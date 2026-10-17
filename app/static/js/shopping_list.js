@@ -191,6 +191,11 @@
     if (endingSoon) {
       formData.append("ending", endingSoon.value || "1");
     }
+    formData.delete("overlap");
+    const overlapOnly = filterForm.querySelector('input[name="overlap"]:checked');
+    if (overlapOnly) {
+      formData.append("overlap", overlapOnly.value || "1");
+    }
     formData.delete("retailer");
     filterForm.querySelectorAll('input[name="retailer"]:checked').forEach((input) => {
       formData.append("retailer", input.value);

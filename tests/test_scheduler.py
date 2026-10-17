@@ -57,3 +57,4 @@ def test_scheduler_api_endpoints():
     data = res.get_json()
     assert "status" in data
     assert "scheduler_running" in data
+

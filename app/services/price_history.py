@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import json
 import re
 import sqlite3
@@ -375,3 +376,45 @@ class PriceHistoryService:
                 continue
 
         return imported
+
+
+def build_weekly_competitor_map(offers: list[Offer]) -> dict[str, list[dict]]:
+    """
+    Finds competing offers for the same product at other retailers in the same week.
+    Returns a dictionary mapping offer.id -> list of competitor dicts sorted by price.
+    """
+    by_product_key: dict[str, list[Offer]] = defaultdict(list)
+    for o in offers:
+        pkey = getattr(o, "product_key", None) or normalize_product_key(o.title, o.brand)
+        by_product_key[pkey].append(o)
+
+    competitor_map: dict[str, list[dict]] = defaultdict(list)
+    for pkey, p_offers in by_product_key.items():
+        distinct_retailers = {o.retailer_slug for o in p_offers}
+        if len(distinct_retailers) <= 1:
+            continue
+
+        for current in p_offers:
+            others = [o for o in p_offers if o.retailer_slug != current.retailer_slug]
+            comp_list = []
+            for other in others:
+                diff = None
+                if current.price is not None and other.price is not None:
+                    diff = round(current.price - other.price, 2)
+                comp_list.append({
+                    "id": other.id,
+                    "retailer": other.retailer,
+                    "retailer_slug": other.retailer_slug,
+                    "title": other.title,
+                    "price": other.price,
+                    "old_price": other.old_price,
+                    "unit_price": other.unit_price,
+                    "unit": other.unit,
+                    "discount_percent": other.discount_percent,
+                    "source_url": other.source_url,
+                    "price_diff": diff,
+                })
+            comp_list.sort(key=lambda c: (c["price"] is None, c["price"] or 999999))
+            competitor_map[current.id] = comp_list
+
+    return competitor_map

@@ -11,7 +11,7 @@ from flask import Blueprint, Response, current_app, jsonify, redirect, render_te
 from app.models import Offer
 from app.services.basket import BasketRecommendation, calculate_basket_store_totals, recommend_basket_items
 from app.services.offers import OfferService
-from app.services.price_history import normalize_product_key
+from app.services.price_history import build_weekly_competitor_map, normalize_product_key
 from app.services.translations import translate_text
 
 bp = Blueprint("main", __name__)
@@ -150,19 +150,34 @@ def render_offer_page(
     sort = request.args.get("sort") or "essentials"
     priced_only = request.args.get("priced") == "1"
     ending_soon = request.args.get("ending") == "1"
+    overlap_only = request.args.get("overlap") == "1"
 
     week_offers = filter_offers_by_week(result.offers, selected_week)
-    filtered = filter_offers(week_offers, selected_retailers, query, category, priced_only, ending_soon)
+    for offer in week_offers:
+        pkey = normalize_product_key(offer.title, offer.brand)
+        setattr(offer, "product_key", pkey)
+
+    competitor_map = build_weekly_competitor_map(week_offers)
+    for offer in week_offers:
+        comps = competitor_map.get(offer.id, [])
+        setattr(offer, "competitors", comps)
+        priced_comps = [c for c in comps if c["price"] is not None]
+        cheapest_comp = priced_comps[0] if priced_comps else None
+        setattr(offer, "cheapest_competitor", cheapest_comp)
+        is_cheapest = False
+        if comps and offer.price is not None:
+            is_cheapest = all(c["price"] is None or offer.price <= (c["price"] + 0.001) for c in comps)
+        setattr(offer, "is_cheapest_in_week", is_cheapest)
+
+    filtered = filter_offers(week_offers, selected_retailers, query, category, priced_only, ending_soon, overlap_only)
     filtered = sort_offers(filtered, sort)
     filtered = limit_offers_per_retailer(filtered, current_app.config["MAX_OFFERS_PER_RETAILER"])
     recommendations = pick_recommendations(filtered)
 
     all_time_low_map = service.get_all_time_low_map() if hasattr(service, "get_all_time_low_map") else {}
     for offer in filtered:
-        pkey = normalize_product_key(offer.title, offer.brand)
-        min_p = all_time_low_map.get(pkey)
+        min_p = all_time_low_map.get(offer.product_key)
         is_atl = bool(offer.price is not None and min_p is not None and offer.price <= (min_p + 0.001))
-        setattr(offer, "product_key", pkey)
         setattr(offer, "all_time_low", min_p)
         setattr(offer, "is_all_time_low", is_atl)
         setattr(offer, "recorded_at", result.fetched_at)
@@ -186,9 +201,10 @@ def render_offer_page(
             category,
             priced_only,
             ending_soon,
+            overlap_only,
         ),
         retailer_week_status=build_retailer_week_status(result.offers, retailers, selected_week, selected_retailers),
-        retailer_counts=build_retailer_counts(week_offers, retailers, query, category, priced_only, ending_soon),
+        retailer_counts=build_retailer_counts(week_offers, retailers, query, category, priced_only, ending_soon, overlap_only),
         default_retailers=page.get("default_retailers", ()),
         week_labels=week_labels,
         week_links=build_week_links(page_endpoint, week_labels),
@@ -196,6 +212,7 @@ def render_offer_page(
         selected_sort=sort,
         priced_only=priced_only,
         ending_soon=ending_soon,
+        overlap_only=overlap_only,
         query=query,
         zip_code=zip_code,
         fetched_at=result.fetched_at,
@@ -483,6 +500,7 @@ def filter_offers(
     category: str,
     priced_only: bool = False,
     ending_soon: bool = False,
+    overlap_only: bool = False,
 ) -> list[Offer]:
     query_key = query.casefold()
     filtered: list[Offer] = []
@@ -494,6 +512,8 @@ def filter_offers(
         if priced_only and offer.price is None and offer.unit_price is None:
             continue
         if ending_soon and not _ends_soon(offer):
+            continue
+        if overlap_only and not getattr(offer, "competitors", None):
             continue
         if query_key:
             haystack = " ".join(
@@ -591,6 +611,7 @@ def build_stats(filtered: list[Offer], all_offers: list[Offer]) -> dict:
         "best_discount": round(best),
         "ending_soon": sum(1 for offer in filtered if _ends_soon(offer)),
         "all_time_low_count": sum(1 for offer in filtered if getattr(offer, "is_all_time_low", False)),
+        "overlapping_count": sum(1 for offer in filtered if getattr(offer, "competitors", None)),
         "retailer_count": len({offer.retailer_slug for offer in filtered}),
     }
 
@@ -603,6 +624,7 @@ def build_week_counts(
     category: str = "all",
     priced_only: bool = False,
     ending_soon: bool = False,
+    overlap_only: bool = False,
 ) -> dict[str, int]:
     return {
         week: len(
@@ -613,6 +635,7 @@ def build_week_counts(
                 category,
                 priced_only,
                 ending_soon,
+                overlap_only,
             )
         )
         for week in week_labels
@@ -626,9 +649,10 @@ def build_retailer_counts(
     category: str = "all",
     priced_only: bool = False,
     ending_soon: bool = False,
+    overlap_only: bool = False,
 ) -> dict[str, int]:
     counts = {slug: 0 for slug in retailers}
-    for offer in filter_offers(offers, set(), query, category, priced_only, ending_soon):
+    for offer in filter_offers(offers, set(), query, category, priced_only, ending_soon, overlap_only):
         if offer.retailer_slug in counts:
             counts[offer.retailer_slug] += 1
     return counts
