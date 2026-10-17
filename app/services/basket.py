@@ -195,10 +195,10 @@ class BasketItem:
 @dataclass(slots=True)
 class BasketCandidate:
     offer: Offer
-    score: int
-    matched_keywords: tuple[str, ...]
-    estimated_total: float | None
-    estimate_note: str
+    score: int = 0
+    matched_keywords: tuple[str, ...] = ()
+    estimated_total: float | None = None
+    estimate_note: str = ""
 
 
 @dataclass(slots=True)
@@ -355,3 +355,107 @@ def _normalize(value: str | None) -> str:
     value = "".join(char for char in value if not unicodedata.combining(char))
     value = value.replace("ß", "ss")
     return re.sub(r"\s+", " ", value).strip()
+
+
+def calculate_basket_store_totals(
+    recommendations: list[BasketRecommendation],
+    all_retailers: dict[str, str] | None = None,
+) -> dict:
+    if not recommendations:
+        return {
+            "stores": [],
+            "cheapest_store": None,
+            "smart_split": {
+                "total": 0.0,
+                "items": [],
+                "savings": 0.0,
+            },
+        }
+
+    total_basket_items = len(recommendations)
+    retailer_map: dict[str, str] = dict(all_retailers or {})
+    for rec in recommendations:
+        for c in rec.candidates:
+            retailer_map[c.offer.retailer_slug] = c.offer.retailer
+
+    store_summaries: list[dict] = []
+    for slug, name in retailer_map.items():
+        covered_items: list[dict] = []
+        missing_items: list[str] = []
+        store_total = 0.0
+
+        for rec in recommendations:
+            store_candidates = [
+                c for c in rec.candidates
+                if c.offer.retailer_slug == slug and c.estimated_total is not None
+            ]
+            if store_candidates:
+                best = min(store_candidates, key=lambda c: c.estimated_total)
+                store_total += best.estimated_total
+                covered_items.append({
+                    "item_name": rec.item.name,
+                    "title": best.offer.title,
+                    "price": best.estimated_total,
+                    "unit_price": best.offer.unit_price,
+                    "unit": best.offer.unit,
+                })
+            else:
+                missing_items.append(rec.item.name)
+
+        if covered_items:
+            store_summaries.append({
+                "retailer": name,
+                "retailer_slug": slug,
+                "total_price": round(store_total, 2),
+                "total_cost": round(store_total, 2),
+                "covered_count": len(covered_items),
+                "covered_items_count": len(covered_items),
+                "total_count": total_basket_items,
+                "total_requested_items": total_basket_items,
+                "coverage_pct": round(len(covered_items) / total_basket_items * 100),
+                "coverage_percent": round(len(covered_items) / total_basket_items * 100),
+                "missing_items": missing_items,
+                "missing_item_names": missing_items,
+                "items": covered_items,
+            })
+
+    store_summaries.sort(key=lambda s: (-s["covered_count"], s["total_price"]))
+
+    smart_items: list[dict] = []
+    smart_total = 0.0
+    for rec in recommendations:
+        priced_candidates = [c for c in rec.candidates if c.estimated_total is not None]
+        if priced_candidates:
+            best = min(priced_candidates, key=lambda c: c.estimated_total)
+            smart_total += best.estimated_total
+            smart_items.append({
+                "item_name": rec.item.name,
+                "retailer": best.offer.retailer,
+                "retailer_slug": best.offer.retailer_slug,
+                "title": best.offer.title,
+                "price": best.estimated_total,
+            })
+
+    cheapest_single_store = store_summaries[0] if store_summaries else None
+    savings = 0.0
+    if cheapest_single_store and cheapest_single_store["covered_count"] == total_basket_items:
+        savings = max(0.0, round(cheapest_single_store["total_price"] - smart_total, 2))
+    elif store_summaries:
+        savings = max(0.0, round(store_summaries[0]["total_price"] - smart_total, 2))
+
+    ref_price = cheapest_single_store["total_price"] if cheapest_single_store else 0.0
+    savings_pct = round((savings / ref_price * 100), 1) if ref_price > 0 and savings > 0 else 0.0
+
+    return {
+        "stores": store_summaries,
+        "cheapest_store": cheapest_single_store,
+        "total_requested_items": total_basket_items,
+        "smart_split": {
+            "total": round(smart_total, 2),
+            "total_cost": round(smart_total, 2),
+            "items": smart_items,
+            "savings": round(savings, 2),
+            "potential_savings": round(savings, 2),
+            "savings_percent": savings_pct,
+        },
+    }

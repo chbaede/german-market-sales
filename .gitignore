@@ -4,4 +4,6 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 data/cache/*.json
+data/cache/*.db
+data/cache/*.sqlite*
 !data/cache/.gitkeep

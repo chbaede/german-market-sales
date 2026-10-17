@@ -9,8 +9,9 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, url_for
 
 from app.models import Offer
-from app.services.basket import BasketRecommendation, recommend_basket_items
+from app.services.basket import BasketRecommendation, calculate_basket_store_totals, recommend_basket_items
 from app.services.offers import OfferService
+from app.services.price_history import normalize_product_key
 from app.services.translations import translate_text
 
 bp = Blueprint("main", __name__)
@@ -156,6 +157,16 @@ def render_offer_page(
     filtered = limit_offers_per_retailer(filtered, current_app.config["MAX_OFFERS_PER_RETAILER"])
     recommendations = pick_recommendations(filtered)
 
+    all_time_low_map = service.get_all_time_low_map() if hasattr(service, "get_all_time_low_map") else {}
+    for offer in filtered:
+        pkey = normalize_product_key(offer.title, offer.brand)
+        min_p = all_time_low_map.get(pkey)
+        is_atl = bool(offer.price is not None and min_p is not None and offer.price <= (min_p + 0.001))
+        setattr(offer, "product_key", pkey)
+        setattr(offer, "all_time_low", min_p)
+        setattr(offer, "is_all_time_low", is_atl)
+        setattr(offer, "recorded_at", result.fetched_at)
+
     return render_template(
         "offers.html",
         offers=filtered,
@@ -264,6 +275,8 @@ def api_basket_for(service: OfferService, week_labels: dict[str, dict[str, str]]
         ending_soon=ending_soon,
     )
     recommendations = recommend_basket_items(basket_query, offers)
+    retailers = getattr(service, "retailers", [])
+    store_totals = calculate_basket_store_totals(recommendations, retailers)
     return jsonify(
         {
             "zip_code": zip_code,
@@ -272,8 +285,118 @@ def api_basket_for(service: OfferService, week_labels: dict[str, dict[str, str]]
             "retailers": sorted(selected_retailers),
             "query": basket_query,
             "recommendations": [_basket_recommendation_to_dict(item) for item in recommendations],
+            "store_totals": store_totals,
         }
     )
+
+
+@bp.get("/api/price-history")
+def api_price_history():
+    q = (request.args.get("q") or "").strip()
+    brand = (request.args.get("brand") or "").strip() or None
+    price_val = request.args.get("price")
+    current_price = None
+    if price_val:
+        try:
+            current_price = float(price_val)
+        except ValueError:
+            current_price = None
+
+    service = offer_service()
+    stats = service.price_history.get_product_stats(q, brand, current_price)
+    return jsonify(stats)
+
+
+@bp.get("/api/compare")
+def api_compare():
+    q = (request.args.get("q") or "").strip()
+    zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+    selected_week = _clean_week(request.args.get("week"), WEEK_LABELS, "current")
+
+    supermarket_res = load_offers_for_request(offer_service(), zip_code)
+    drugstore_res = load_offers_for_request(drugstore_offer_service(), zip_code)
+    all_offers = filter_offers_by_week(supermarket_res.offers + drugstore_res.offers, selected_week)
+
+    service = offer_service()
+    result = service.price_history.compare_across_stores(q, all_offers)
+    return jsonify(result)
+
+
+@bp.route("/api/watchlist-deals", methods=["GET", "POST"])
+def api_watchlist_deals():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        items = data.get("items") or data.get("watchlist") or []
+        zip_code = _clean_zip(data.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+        selected_week = _clean_week(data.get("week"), WEEK_LABELS, "current")
+    else:
+        kw = request.args.get("keywords") or ""
+        items = [{"name": part.strip()} for part in kw.split(",") if part.strip()]
+        zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+        selected_week = _clean_week(request.args.get("week"), WEEK_LABELS, "current")
+
+    supermarket_res = load_offers_for_request(offer_service(), zip_code)
+    drugstore_res = load_offers_for_request(drugstore_offer_service(), zip_code)
+    all_offers = filter_offers_by_week(supermarket_res.offers + drugstore_res.offers, selected_week)
+
+    import re
+    matches = []
+    for item in items:
+        item_id = item.get("id") or ""
+        name = (item.get("name") or item.get("keyword") or "").strip()
+        if not name:
+            continue
+        raw_target = item.get("target_price")
+        target_price = None
+        if raw_target is not None:
+            try:
+                target_price = float(raw_target)
+            except (ValueError, TypeError):
+                target_price = None
+
+        tokens = [t.casefold() for t in re.split(r"\s+", name) if len(t) >= 2]
+        if not tokens:
+            tokens = [name.casefold()]
+
+        item_matches = []
+        for offer in all_offers:
+            haystack = f"{offer.title} {offer.brand or ''} {offer.description}".casefold()
+            if all(tok in haystack for tok in tokens):
+                is_hit = bool(target_price is not None and offer.price is not None and offer.price <= target_price)
+                item_matches.append({
+                    "id": offer.id,
+                    "retailer": offer.retailer,
+                    "retailer_slug": offer.retailer_slug,
+                    "title": offer.title,
+                    "price": offer.price,
+                    "old_price": offer.old_price,
+                    "discount_percent": offer.discount_percent,
+                    "unit_price": offer.unit_price,
+                    "unit": offer.unit,
+                    "valid_from": offer.valid_from,
+                    "valid_to": offer.valid_to,
+                    "source_url": offer.source_url,
+                    "is_target_hit": is_hit,
+                })
+
+        item_matches.sort(key=lambda m: (m["price"] is None, m["price"] or 999999))
+        item_summary = {
+            "id": item_id,
+            "name": name,
+            "keyword": name,
+            "target_price": target_price,
+            "deals_count": len(item_matches),
+            "best_deal": item_matches[0] if item_matches else None,
+            "all_deals": item_matches[:5],
+            "matches": item_matches[:5],
+        }
+        matches.append(item_summary)
+
+    return jsonify({
+        "items": matches,
+        "results": matches,
+        "total_active_alerts": sum(1 for m in matches if m["deals_count"] > 0)
+    })
 
 
 @bp.get("/health")
@@ -437,6 +560,7 @@ def build_stats(filtered: list[Offer], all_offers: list[Offer]) -> dict:
         "discounted": len(discounted),
         "best_discount": round(best),
         "ending_soon": sum(1 for offer in filtered if _ends_soon(offer)),
+        "all_time_low_count": sum(1 for offer in filtered if getattr(offer, "is_all_time_low", False)),
         "retailer_count": len({offer.retailer_slug for offer in filtered}),
     }
 

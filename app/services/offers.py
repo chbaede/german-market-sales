@@ -16,6 +16,7 @@ from app.providers.marktguru import MarktguruProvider
 from app.providers.rewe import ReweProvider
 from app.providers.rossmann import RossmannProvider
 from app.services.categories import categorize_offer
+from app.services.price_history import PriceHistoryService
 
 
 CACHE_SCHEMA_VERSION = 11
@@ -34,6 +35,7 @@ class OfferService:
         max_offers_per_retailer: int,
         cache_name: str = "offers.json",
     ) -> None:
+        self.cache_dir = cache_dir
         self.cache_file = cache_dir / cache_name
         self.retailers = retailers
         self.cache_ttl = timedelta(seconds=cache_ttl_seconds)
@@ -50,6 +52,11 @@ class OfferService:
         }
         self.max_offers_per_retailer = max_offers_per_retailer
         self.upstream_fetch_limit = max(max_offers_per_retailer * UPSTREAM_FETCH_MULTIPLIER, MIN_UPSTREAM_FETCH_LIMIT)
+        self.price_history = PriceHistoryService(cache_dir=cache_dir)
+        try:
+            self.price_history.seed_initial_history()
+        except Exception:
+            pass
 
     def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
         if not refresh:
@@ -94,6 +101,10 @@ class OfferService:
         offers = self._non_expired_offers(offers)
         offers = sorted(offers, key=lambda offer: (offer.retailer, offer.title.casefold()))
         self._write_cache(zip_code, fetched_at, offers, warnings)
+        try:
+            self.price_history.record_offers(offers, zip_code=zip_code, recorded_at=fetched_at)
+        except Exception:
+            pass
         return OfferResult(offers=offers, fetched_at=fetched_at, warnings=warnings)
 
     def _read_cache(self, zip_code: str) -> dict | None:
@@ -147,6 +158,12 @@ class OfferService:
             warnings=cached.get("warnings", []),
             from_cache=True,
         )
+
+    def get_all_time_low_map(self) -> dict[str, float]:
+        try:
+            return self.price_history.get_all_time_low_map()
+        except Exception:
+            return {}
 
     def _cached_offers(self, cached: dict) -> list[Offer]:
         offers = [Offer.from_dict(item) for item in cached["offers"]]

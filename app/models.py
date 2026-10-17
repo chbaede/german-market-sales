@@ -21,12 +21,18 @@ class Offer:
     image_url: str | None
     source_url: str
 
+    product_key: str | None = None
+    all_time_low: float | None = None
+    is_all_time_low: bool = False
+    recorded_at: str | None = None
+
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Offer":
-        return cls(**data)
+        filtered = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**filtered)
 
 
 @dataclass(slots=True)

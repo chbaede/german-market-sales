@@ -47,7 +47,20 @@
   '추천 복사': 'Copy recs',
   '맨 위로': 'Top',
   '메인': 'Main',
-  '허브': 'Hub'
+  '허브': 'Hub',
+  '가격 이력': 'Price history',
+  '가격 변동 이력': 'Price History & Stats',
+  '역대 최저가': 'All-Time Low',
+  '매장 비교': 'Compare Stores',
+  '매장별 가격 비교': 'Store Comparison',
+  '관심': 'Watch',
+  '관심 등록': 'Add Watch',
+  '관심 목록': 'Watchlist',
+  '관심 상품 & 가격 알림': 'Watchlist & Alerts',
+  '목표가 알림': 'Price alerts',
+  '스마트 분할': 'Smart split',
+  '비교': 'Compare',
+  '추가': 'Add'
 } %}
 
 {% macro render_ko(ko_str) -%}
@@ -72,6 +85,13 @@
       </nav>
     </div>
     <div class="topbar-actions">
+      <button class="topbar-btn compare-nav-button" type="button" data-open-compare-modal aria-label="Compare stores">
+        🏪 Vergleich <span>{{ render_ko("매장 비교") }}</span>
+      </button>
+      <button class="topbar-btn watchlist-nav-button" type="button" data-open-watchlist-modal aria-label="Watchlist and price alerts">
+        ⭐ Merkliste <span>{{ render_ko("관심/알림") }}</span>
+        <span class="watchlist-badge" data-watchlist-count hidden>0</span>
+      </button>
       <button class="share-page-button" type="button" data-share-page aria-label="Share page">
         Teilen <span>{{ render_ko("공유") }}</span>
       </button>
@@ -332,12 +352,17 @@
             data-title-ko="{{ title_ko }}"
             data-retailer="{{ offer.retailer }}"
             data-retailer-slug="{{ offer.retailer_slug }}"
-            data-price="{{ offer.price|eur }}"
+            data-brand="{{ offer.brand or '' }}"
+            data-price="{{ offer.price|eur if offer.price is not none else '' }}"
+            data-raw-price="{{ offer.price or '' }}"
             data-unit-price="{% if offer.unit_price %}{{ offer.unit_price|eur }} / {{ offer.unit or 'unit' }}{% endif %}"
             data-discount="{% if offer.discount_percent %}{{ offer.discount_percent|pct }}{% endif %}"
             data-valid="{{ valid_text }}"
             data-source-url="{{ offer.source_url }}"
             data-image-url="{{ offer.image_url or '' }}"
+            data-all-time-low="{{ offer.all_time_low or '' }}"
+            data-is-all-time-low="{{ '1' if offer.is_all_time_low else '0' }}"
+            data-recorded-at="{{ offer.recorded_at or '' }}"
           >
             <div class="image-wrap">
               {% if offer.image_url %}
@@ -345,7 +370,9 @@
               {% else %}
                 <div class="image-placeholder">{{ offer.retailer }}</div>
               {% endif %}
-              {% if offer.discount_percent %}
+              {% if offer.is_all_time_low %}
+                <span class="badge-atl" title="역대 최저가!">🔥 Tiefstpreis <span class="ko">{{ render_ko("역대 최저가") }}</span></span>
+              {% elif offer.discount_percent %}
                 <span class="discount-badge">{{ offer.discount_percent|pct }}</span>
               {% endif %}
             </div>
@@ -354,6 +381,9 @@
                 <span class="retailer-badge">{{ offer.retailer }}</span>
                 {% set category = category_labels.get(offer.category, category_labels.get("other")) %}
                 <span>{{ category.de }} <span class="ko">{% if lang == "en" %}{{ category.en }}{% else %}{{ category.ko }}{% endif %}</span></span>
+                {% if offer.all_time_low and not offer.is_all_time_low %}
+                  <span class="atl-hint" title="역대 최저가 이력">최저 {{ offer.all_time_low|eur }}</span>
+                {% endif %}
               </div>
               <h3>{{ offer.title }}</h3>
               {% if title_ko %}
@@ -369,6 +399,15 @@
                 {% endif %}
               </div>
               <div class="card-actions">
+                <button type="button" class="btn-card-action btn-history" data-price-history-btn data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" data-price="{{ offer.price or '' }}" title="가격 변동 내역">
+                  📈 <span>{{ render_ko("가격 이력") }}</span>
+                </button>
+                <button type="button" class="btn-card-action btn-compare" data-compare-btn data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" title="다른 마트 가격 비교">
+                  🏪 <span>{{ render_ko("매장 비교") }}</span>
+                </button>
+                <button type="button" class="btn-card-action btn-watchlist" data-watchlist-add-btn data-id="{{ offer.id }}" data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" data-price="{{ offer.price or '' }}" data-retailer="{{ offer.retailer }}" title="관심 상품 등록 / 가격 알림">
+                  ⭐ <span>{{ render_ko("관심") }}</span>
+                </button>
                 <a class="view-deal-button" href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">
                   Zum Angebot <span>{{ render_ko("바로가기") }} ↗</span>
                 </a>
@@ -379,7 +418,10 @@
               <p class="description">{{ offer.description }}</p>
               <div class="valid-row">
                 <span>Gültig <span class="ko">{{ render_ko("유효기간") }}</span>: {{ valid_text }}</span>
-                <a href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">Quelle <span class="ko">{{ render_ko("출처") }}</span></a>
+                {% if offer.recorded_at %}
+                  <span class="recorded-date" title="데이터 수집 일시">⏱ {{ offer.recorded_at[:10] }}</span>
+                {% endif %}
+                <a href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">Quelle <span class="ko">{{ render_ko("출처") }}</span> ↗</a>
               </div>
             </div>
           </article>
@@ -411,6 +453,61 @@
   </section>
 </main>
 
+<!-- Price History Modal -->
+<div class="custom-modal-backdrop" data-history-modal hidden>
+  <section class="custom-modal history-modal" role="dialog" aria-modal="true" aria-labelledby="history-modal-title">
+    <div class="custom-modal-header">
+      <div>
+        <p class="eyebrow">German Price Tracker</p>
+        <h2 id="history-modal-title">Preisverlauf <span class="ko">{{ render_ko("가격 변동 이력") }}</span></h2>
+      </div>
+      <button class="modal-close-button" type="button" data-history-modal-close aria-label="close">×</button>
+    </div>
+    <div class="custom-modal-body" data-history-modal-body></div>
+  </section>
+</div>
+
+<!-- Store Comparison Modal -->
+<div class="custom-modal-backdrop" data-compare-modal hidden>
+  <section class="custom-modal compare-modal" role="dialog" aria-modal="true" aria-labelledby="compare-modal-title">
+    <div class="custom-modal-header">
+      <div>
+        <p class="eyebrow">German Price Tracker</p>
+        <h2 id="compare-modal-title">Händlervergleich <span class="ko">{{ render_ko("매장별 가격 비교") }}</span></h2>
+      </div>
+      <button class="modal-close-button" type="button" data-compare-modal-close aria-label="close">×</button>
+    </div>
+    <div class="compare-modal-search">
+      <form data-compare-form class="compare-search-form">
+        <input type="text" data-compare-search-input placeholder="비교할 상품명 입력 (예: Nutella, Coca Cola, Barilla, Balea, 신라면)..." required>
+        <button type="submit" class="submit-button">Vergleichen <span>{{ render_ko("비교") }}</span></button>
+      </form>
+    </div>
+    <div class="custom-modal-body" data-compare-modal-body></div>
+  </section>
+</div>
+
+<!-- Watchlist & Price Alerts Modal -->
+<div class="custom-modal-backdrop" data-watchlist-modal hidden>
+  <section class="custom-modal watchlist-modal" role="dialog" aria-modal="true" aria-labelledby="watchlist-modal-title">
+    <div class="custom-modal-header">
+      <div>
+        <p class="eyebrow">German Price Tracker</p>
+        <h2 id="watchlist-modal-title">Merkliste & Preisalarm <span class="ko">{{ render_ko("관심 상품 & 가격 알림") }}</span></h2>
+      </div>
+      <button class="modal-close-button" type="button" data-watchlist-modal-close aria-label="close">×</button>
+    </div>
+    <div class="watchlist-modal-add">
+      <form data-watchlist-add-form class="watchlist-add-form">
+        <input type="text" name="keyword" placeholder="관심 키워드/상품명 (예: 신라면, Nutella, 기저귀)..." required>
+        <input type="number" step="0.01" min="0" name="target_price" placeholder="목표 가격 (€, 선택)">
+        <button type="submit" class="submit-button">+ Hinzufügen <span>{{ render_ko("추가") }}</span></button>
+      </form>
+    </div>
+    <div class="custom-modal-body" data-watchlist-modal-body></div>
+  </section>
+</div>
+
 <button class="back-to-top" id="back-to-top" type="button" aria-label="Nach oben" title="Nach oben">
   ↑ <span>{{ render_ko("맨 위로") }}</span>
 </button>
@@ -423,6 +520,9 @@
       <p class="footer-title">{{ page.heading }} · {% if lang == 'en' %}{{ page.heading_en }}{% else %}{{ page.heading_ko }}{% endif %}</p>
       <p class="footer-disclaimer">
         ⚠️ <strong>Hinweis / Disclaimer:</strong> Alle Preis- und Rabattangaben ohne Gewähr. Irrtümer und Änderungen vorbehalten. Gültigkeit und Verfügbarkeit können filialabhängig variieren.
+      </p>
+      <p class="footer-policy">
+        🛡️ <strong>Datenerfassung & Richtlinien / 데이터 수집 정책:</strong> 본 서비스는 독일 주요 유통사(REWE, EDEKA, Lidl, ALDI, DM, Rossmann, Kaufland 등)의 공식 주간 전단지(Prospekt) 및 공개 할인 정보를 정기적으로 분석·기록합니다. 로봇 배제 표준(robots.txt) 및 사이트별 접근 정책을 준수하며, 각 상품의 출처(Quelle) 및 수집 시점을 투명하게 제공합니다.
       </p>
       <p class="footer-update">
         📅 Zuletzt aktualisiert: {{ fetched_at|date_de }} · Wöchentliche Angebote direkt aus den Händler-Prospekten
