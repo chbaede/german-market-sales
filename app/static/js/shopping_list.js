@@ -33,7 +33,6 @@
           await navigator.share(shareData);
           return;
         } catch (e) {
-          // Fallback to clipboard if share was cancelled or unsupported
           if (e.name === "AbortError") return;
         }
       }
@@ -65,9 +64,15 @@
     });
   }
 
-  // Filter Retailer Presets (Standard / Alle / Keine)
+  // Filter Auto-Submit & Retailer Presets (Standard / Alle / Keine)
   const filterForm = document.querySelector("[data-filter-form]");
   if (filterForm) {
+    filterForm.addEventListener("change", (event) => {
+      if (event.target.matches("[data-auto-submit]")) {
+        filterForm.requestSubmit();
+      }
+    });
+
     filterForm.addEventListener("click", (event) => {
       const button = event.target.closest("[data-retailer-preset]");
       if (!button) {
@@ -84,6 +89,7 @@
         checkbox.checked =
           preset === "all" || (preset === "default" && defaultRetailers.has(checkbox.value));
       });
+      filterForm.requestSubmit();
     });
   }
 
@@ -154,11 +160,6 @@
         closeBasketModal();
       }
     });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !basketModal.hidden) {
-        closeBasketModal();
-      }
-    });
 
     if (basketCopy) {
       basketCopy.addEventListener("click", async () => {
@@ -221,6 +222,7 @@
   }
 
   function closeBasketModal() {
+    if (!basketModal) return;
     basketModal.hidden = true;
     document.body.classList.remove("modal-open");
   }
@@ -696,220 +698,30 @@
     `;
   }
 
-  // 3. Watchlist & Price Alerts Modal
-  const WATCHLIST_STORAGE_KEY = "german_market_watchlist_items";
-  const watchlistModal = document.querySelector("[data-watchlist-modal]");
-  const watchlistModalBody = document.querySelector("[data-watchlist-modal-body]");
-  const watchlistModalClose = document.querySelector("[data-watchlist-modal-close]");
-  const watchlistAddForm = document.querySelector("[data-watchlist-add-form]");
-  const watchlistCountBadges = document.querySelectorAll("[data-watchlist-count]");
-
-  function getWatchlist() {
-    try {
-      return JSON.parse(localStorage.getItem(WATCHLIST_STORAGE_KEY) || "[]");
-    } catch {
-      return [];
-    }
-  }
-
-  function saveWatchlist(items) {
-    localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(items));
-    updateWatchlistBadge();
-  }
-
-  function updateWatchlistBadge() {
-    const count = getWatchlist().length;
-    watchlistCountBadges.forEach(b => {
-      b.textContent = count;
-      b.hidden = count === 0;
-    });
-  }
-
-  const { open: openWatchlistModal, close: closeWatchlistModal } = createModalController(
-    watchlistModal,
-    watchlistModalClose,
-    loadWatchlistDeals
-  );
-
-  document.querySelector("[data-open-watchlist-modal]")?.addEventListener("click", openWatchlistModal);
-
-  watchlistAddForm?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const keywordInput = watchlistAddForm.querySelector('input[name="keyword"]');
-    const priceInput = watchlistAddForm.querySelector('input[name="target_price"]');
-    const keyword = (keywordInput?.value || "").trim();
-    const targetPrice = priceInput?.value ? parseFloat(priceInput.value) : null;
-
-    if (!keyword) return;
-    addToWatchlist({
-      id: "wl_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-      keyword,
-      target_price: targetPrice,
-      created_at: new Date().toISOString()
-    });
-
-    keywordInput.value = "";
-    if (priceInput) priceInput.value = "";
-    loadWatchlistDeals();
-    showToast(tk(`"${keyword}" 관심 상품이 등록되었습니다.`, `"${keyword}" added to watchlist.`));
-  });
-
-  function addToWatchlist(item) {
-    const list = getWatchlist();
-    list.unshift(item);
-    saveWatchlist(list);
-  }
-
-  function removeFromWatchlist(id) {
-    const list = getWatchlist().filter(i => i.id !== id);
-    saveWatchlist(list);
-    loadWatchlistDeals();
-  }
-
-  async function loadWatchlistDeals() {
-    const list = getWatchlist();
-    if (!watchlistModalBody) return;
-    if (!list.length) {
-      watchlistModalBody.innerHTML = `
-        <div class="empty-state">
-          <p>⭐ ${tk("등록된 관심 상품이 없습니다.", "No items in your watchlist.")}</p>
-          <small>${tk("위 입력창에서 키워드와 목표 가격을 입력하거나, 상품 카드의 ⭐ 버튼을 눌러 등록하세요.", "Add keywords above or click the ⭐ button on any deal card.")}</small>
-        </div>
-      `;
-      return;
-    }
-
-    watchlistModalBody.innerHTML = `<p class="tracker-loading">${tk("관심 상품의 최신 할인 및 가격 알림 확인 중...", "Checking active deals for your watchlist...")}</p>`;
-
-    try {
-      const zipCode = document.querySelector('input[name="zip_code"]')?.value || "14195";
-      const week = document.querySelector('input[name="week"]')?.value || "current";
-      const res = await fetch("/api/watchlist-deals", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          watchlist: list,
-          zip_code: zipCode,
-          week: week
-        })
-      });
-      if (!res.ok) throw new Error("Watchlist deals check failed");
-      const data = await res.json();
-      renderWatchlistModalContent(list, data.results || []);
-    } catch {
-      renderWatchlistModalContent(list, []);
-    }
-  }
-
-  function renderWatchlistModalContent(watchlist, results) {
-    const resultMap = new Map();
-    results.forEach(r => resultMap.set(r.id, r));
-
-    const itemsHtml = watchlist.map(item => {
-      const res = resultMap.get(item.id) || { matches: [] };
-      const matches = res.matches || [];
-      const targetHit = matches.some(m => m.is_target_hit);
-
-      let dealsHtml = "";
-      if (matches.length) {
-        dealsHtml = `
-          <div class="watchlist-item-deals">
-            ${matches.slice(0, 3).map(m => `
-              <div class="watchlist-deal-row ${m.is_target_hit ? 'is-target-hit' : ''}">
-                <span class="retailer-badge">${escapeHtml(m.retailer)}</span>
-                <span class="deal-name">${escapeHtml(m.title)}</span>
-                <strong>${m.price !== null ? m.price.toFixed(2) + " €" : "-"}</strong>
-                ${m.is_target_hit ? `<span class="badge-target">🎯 ${tk("목표가 달성!", "Target Met!")}</span>` : ""}
-                <a href="${escapeAttribute(m.source_url || '#')}" target="_blank" rel="noopener noreferrer">↗</a>
-              </div>
-            `).join("")}
-          </div>
-        `;
-      } else {
-        dealsHtml = `<p class="watchlist-item-no-deals">${tk("이번 주 일치하는 할인 상품 없음", "No active deals this week")}</p>`;
-      }
-
-      return `
-        <div class="watchlist-item-card ${targetHit ? 'has-target-hit' : ''}">
-          <div class="wic-head">
-            <div class="wic-info">
-              <strong>${escapeHtml(item.keyword)}</strong>
-              ${item.target_price ? `<span class="wic-target">🎯 ${tk("목표가: ", "Target: ")}${item.target_price.toFixed(2)} €</span>` : ""}
-            </div>
-            <button type="button" class="btn-delete" data-remove-watchlist="${item.id}" title="${tk("삭제", "Delete")}">×</button>
-          </div>
-          ${dealsHtml}
-        </div>
-      `;
-    }).join("");
-
-    watchlistModalBody.innerHTML = `
-      <div class="watchlist-list">
-        <div class="watchlist-list-header">
-          <span>${tk(`총 ${watchlist.length}개 관심 상품`, `${watchlist.length} Watched Items`)}</span>
-          <button type="button" class="btn-clear-all" data-clear-watchlist>${tk("전체 삭제", "Clear All")}</button>
-        </div>
-        ${itemsHtml}
-      </div>
-    `;
-
-    watchlistModalBody.querySelectorAll("[data-remove-watchlist]").forEach(btn => {
-      btn.addEventListener("click", () => removeFromWatchlist(btn.dataset.removeWatchlist));
-    });
-
-    watchlistModalBody.querySelector("[data-clear-watchlist]")?.addEventListener("click", () => {
-      if (confirm(tk("관심 목록을 모두 삭제하시겠습니까?", "Clear all items from watchlist?"))) {
-        saveWatchlist([]);
-        loadWatchlistDeals();
-      }
-    });
-  }
-
   // Card Event Delegation
   document.addEventListener("click", (e) => {
-    // 1. Price History button
     const historyBtn = e.target.closest("[data-price-history-btn]");
     if (historyBtn) {
-      const title = historyBtn.dataset.title;
-      const brand = historyBtn.dataset.brand;
-      const price = historyBtn.dataset.price;
-      loadPriceHistory(title, brand, price);
+      loadPriceHistory(
+        historyBtn.dataset.title,
+        historyBtn.dataset.brand,
+        historyBtn.dataset.price
+      );
       return;
     }
 
-    // 2. Compare button
     const compareBtn = e.target.closest("[data-compare-btn]");
     if (compareBtn) {
-      const title = compareBtn.dataset.title;
-      runCompare(title);
-      return;
-    }
-
-    // 3. Watchlist Add button on card
-    const watchBtn = e.target.closest("[data-watchlist-add-btn]");
-    if (watchBtn) {
-      const title = watchBtn.dataset.title;
-      const price = parseFloat(watchBtn.dataset.price) || null;
-      addToWatchlist({
-        id: "wl_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-        keyword: title,
-        target_price: price,
-        created_at: new Date().toISOString()
-      });
-      showToast(tk(`"${title}" 관심 상품에 추가되었습니다!`, `"${title}" added to watchlist!`));
-      return;
+      runCompare(compareBtn.dataset.title);
     }
   });
 
   // Global ESC Key Handler
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
+      closeBasketModal();
       closeHistoryModal();
       closeCompareModal();
-      closeWatchlistModal();
     }
   });
-
-  // Init badge count on page load
-  updateWatchlistBadge();
 })();

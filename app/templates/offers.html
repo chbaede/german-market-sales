@@ -14,7 +14,6 @@
   '할인 표시': 'Discounted',
   '최대 할인': 'Best discount',
   '마감 임박': 'Ending soon',
-  '우편번호': 'ZIP code',
   '검색': 'Search',
   '카테고리': 'Category',
   '정렬': 'Sort',
@@ -25,45 +24,33 @@
   '장보기 추천': 'Basket Advisor',
   '추천 보기': 'Get Recs',
   '추천 결과': 'Recommendations',
-  '전송': 'Send',
-  '생활 우선 후보': 'Essentials First',
+  '생활 우선 후보': 'Top Essentials',
   '식료품과 생활필수품을 먼저': 'Food & essentials first',
-  '마지막 갱신': 'Last updated',
-  '담기': 'Add',
+  '마지막 갱신': 'Updated',
   '유효기간': 'Valid',
-  '출처': 'Source',
+  '출처': 'Flyer',
   '조건에 맞는 할인 항목이 없습니다.': 'No offers found.',
   '다음 주 할인 보기': 'View next week',
-  '담은 항목': 'Saved offers',
-  '사고 싶은 항목의 담기 버튼을 눌러보세요.': 'Click Add to list offers.',
-  '비우기': 'Clear',
   '새로고침': 'Refresh',
   '다음 주 데이터 있음': 'Next week data available',
   '아직 소스에서 다음 주 상품이 안 넘어옴': 'Next week data missing',
   '가격 있는 상품만': 'Priced only',
   '공유': 'Share',
-  '링크 공유': 'Share link',
-  '바로가기': 'View deal',
+  '바로가기': 'Flyer',
   '추천 복사': 'Copy recs',
   '맨 위로': 'Top',
   '메인': 'Main',
-  '허브': 'Hub',
-  '가격 이력': 'Price history',
+  '가격 이력': 'History',
   '가격 변동 이력': 'Price History & Stats',
   '역대 최저가': 'All-Time Low',
-  '매장 비교': 'Compare Stores',
+  '매장 비교': 'Compare',
   '매장별 가격 비교': 'Store Comparison',
-  '관심': 'Watch',
-  '관심 등록': 'Add Watch',
-  '관심 목록': 'Watchlist',
-  '관심 상품 & 가격 알림': 'Watchlist & Alerts',
-  '목표가 알림': 'Price alerts',
-  '스마트 분할': 'Smart split',
   '비교': 'Compare',
-  '추가': 'Add',
   '동시 할인': 'Price duel',
-  '타 마트 동시 할인만': 'Multi-store deals only',
-  '이번 주 최저가': 'Best weekly price'
+  '타 마트 동시 할인만': 'Multi-store deals',
+  '이번 주 최저가': 'Best price',
+  '정렬 및 상세 필터': 'Sort & Filters',
+  '장보기 리스트로 최저가 마트 찾기': 'Find cheapest store for your list'
 } %}
 
 {% macro render_ko(ko_str) -%}
@@ -72,86 +59,35 @@
 
 <header class="topbar">
   <div class="topbar-inner">
-    <div class="topbar-title">
-      <p class="eyebrow">{{ page.eyebrow }}</p>
+    <div class="topbar-brand-row">
       <h1>{{ page.heading }} <span class="ko">{% if lang == "en" %}{{ page.heading_en }}{% else %}{{ page.heading_ko }}{% endif %}</span></h1>
-      <nav class="top-nav" aria-label="areas">
-        <a class="hub-link" href="https://main.yocto.co.kr/" title="Hub 메인 페이지로 이동">
-          🏠 Hub <span>{{ render_ko("메인") }}</span>
-        </a>
-        <a class="{% if page.active == 'supermarket' %}is-active{% endif %}" href="{{ url_for('main.index') }}">
-          Supermarkt <span>{{ render_ko("슈퍼") }}</span>
-        </a>
-        <a class="{% if page.active == 'drugstore' %}is-active{% endif %}" href="{{ url_for('main.drugstores') }}">
-          Drogerie <span>DM/ROSSMANN</span>
-        </a>
-      </nav>
+      <div class="topbar-actions">
+        <button class="topbar-btn compare-nav-button" type="button" data-open-compare-modal aria-label="Compare stores">
+          🏪 <span>{{ render_ko("매장 비교") }}</span>
+        </button>
+        <button class="share-page-button" type="button" data-share-page aria-label="Share page">
+          🔗 <span>{{ render_ko("공유") }}</span>
+        </button>
+        <button class="lang-toggle-button" type="button" onclick="document.cookie='lang=' + (document.cookie.includes('lang=en') ? 'ko' : 'en') + '; path=/; max-age=31536000'; window.location.reload();">
+          {% if lang == 'en' %}🇰🇷 KO{% else %}🇺🇸 EN{% endif %}
+        </button>
+      </div>
     </div>
-    <div class="topbar-actions">
-      <button class="topbar-btn compare-nav-button" type="button" data-open-compare-modal aria-label="Compare stores">
-        🏪 Vergleich <span>{{ render_ko("매장 비교") }}</span>
-      </button>
-      <button class="topbar-btn watchlist-nav-button" type="button" data-open-watchlist-modal aria-label="Watchlist and price alerts">
-        ⭐ Merkliste <span>{{ render_ko("관심/알림") }}</span>
-        <span class="watchlist-badge" data-watchlist-count hidden>0</span>
-      </button>
-      <button class="share-page-button" type="button" data-share-page aria-label="Share page">
-        Teilen <span>{{ render_ko("공유") }}</span>
-      </button>
-      <button class="lang-toggle-button" type="button" onclick="document.cookie='lang=' + (document.cookie.includes('lang=en') ? 'ko' : 'en') + '; path=/; max-age=31536000'; window.location.reload();">
-        {% if lang == 'en' %}🇰🇷 한국어로 보기{% else %}🇺🇸 Switch to English{% endif %}
-      </button>
-      <a class="refresh-link" href="{{ url_for(page.refresh_endpoint, **request.args) }}">Aktualisieren <span>{{ render_ko("새로고침") }}</span></a>
-    </div>
+    <nav class="top-nav" aria-label="areas">
+      <a class="hub-link" href="https://main.yocto.co.kr/" title="Hub 메인 페이지로 이동">
+        🏠 Hub <span>{{ render_ko("메인") }}</span>
+      </a>
+      <a class="{% if page.active == 'supermarket' %}is-active{% endif %}" href="{{ url_for('main.index') }}">
+        🛒 Supermarkt <span>{{ render_ko("슈퍼") }}</span>
+      </a>
+      <a class="{% if page.active == 'drugstore' %}is-active{% endif %}" href="{{ url_for('main.drugstores') }}">
+        🧴 Drogerie <span>DM/ROSSMANN</span>
+      </a>
+    </nav>
   </div>
 </header>
 
 <main class="layout">
-  {% if warnings %}
-    <details class="notice" aria-label="data warnings">
-      <summary>
-        <strong>Datenhinweise <span class="ko">{{ render_ko("수집 안내") }}</span></strong>
-        <span>{{ warnings|length }}</span>
-      </summary>
-      {% for warning in warnings %}
-        <p>{% if lang == "en" %}{{ warning|ko_text or warning }}{% else %}{{ warning }}{% endif %}</p>
-      {% endfor %}
-    </details>
-  {% endif %}
-
-  <section class="stats" aria-label="summary">
-    <div class="metric">
-      <span class="metric-label">Angezeigt <span class="ko">{{ render_ko("표시 항목") }}</span></span>
-      <strong>{{ stats.visible }}</strong>
-      <span>/ {{ stats.total }}</span>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Mit Rabatt <span class="ko">{{ render_ko("할인 표시") }}</span></span>
-      <strong>{{ stats.discounted }}</strong>
-      <span>items</span>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Bester Rabatt <span class="ko">{{ render_ko("최대 할인") }}</span></span>
-      <strong>{{ stats.best_discount }}%</strong>
-      <span>off</span>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Läuft bald ab <span class="ko">{{ render_ko("마감 임박") }}</span></span>
-      <strong>{{ stats.ending_soon }}</strong>
-      <span>items</span>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Preisduelle <span class="ko">{{ render_ko("동시 할인") }}</span></span>
-      <strong>{{ stats.overlapping_count }}</strong>
-      <span>items</span>
-    </div>
-    <div class="metric">
-      <span class="metric-label">PLZ</span>
-      <strong>{{ zip_code }}</strong>
-      <span>{% if from_cache %}cache{% else %}live{% endif %}</span>
-    </div>
-  </section>
-
   <nav class="week-switch" aria-label="offer week">
     {% for week_key, label in week_labels.items() %}
       <a class="week-tab {% if selected_week == week_key %}is-active{% endif %}" href="{{ week_links[week_key] }}">
@@ -180,69 +116,27 @@
 
   <form class="filters" method="get" data-filter-form>
     <input type="hidden" name="week" value="{{ selected_week }}">
+    <input type="hidden" name="zip_code" value="{{ zip_code }}">
     <input type="hidden" name="retailer_filter" value="1">
-    <label>
-      <span>Postleitzahl <span class="ko">{{ render_ko("우편번호") }}</span></span>
-      <input name="zip_code" value="{{ zip_code }}" inputmode="numeric" pattern="[0-9]{4,5}">
-    </label>
-    <label class="search-field">
-      <span>Suche <span class="ko">{{ render_ko("검색") }}</span></span>
-      <input name="q" value="{{ query }}" placeholder="{{ page.search_placeholder }}">
-    </label>
-    <label>
-      <span>Kategorie <span class="ko">{{ render_ko("카테고리") }}</span></span>
-      <select name="category">
-        <option value="all" {% if selected_category == "all" %}selected{% endif %}>{% if lang == "en" %}Alle / All{% else %}Alle / 전체{% endif %}</option>
+
+    <div class="filter-primary-row">
+      <div class="search-box">
+        <input name="q" value="{{ query }}" placeholder="{{ page.search_placeholder }}" aria-label="{{ render_ko('검색') }}">
+        <button class="submit-button search-submit-btn" type="submit">{{ render_ko("검색") }}</button>
+      </div>
+      <select name="category" class="category-select" aria-label="{{ render_ko('카테고리') }}" data-auto-submit>
+        <option value="all" {% if selected_category == "all" %}selected{% endif %}>{% if lang == "en" %}All Categories{% else %}전체 카테고리{% endif %}</option>
         {% for key, label in category_labels.items() %}
-          <option value="{{ key }}" {% if selected_category == key %}selected{% endif %}>{{ label.de }} / {% if lang == "en" %}{{ label.en }}{% else %}{{ label.ko }}{% endif %}</option>
+          <option value="{{ key }}" {% if selected_category == key %}selected{% endif %}>{{ label.de }} · {% if lang == "en" %}{{ label.en or label.de }}{% else %}{{ label.ko }}{% endif %}</option>
         {% endfor %}
       </select>
-    </label>
-    <label>
-      <span>Sortierung <span class="ko">{{ render_ko("정렬") }}</span></span>
-      <select name="sort">
-        <option value="essentials" {% if selected_sort == "essentials" %}selected{% endif %}>{% if lang == "en" %}Wocheneinkauf / Essentials{% else %}Wocheneinkauf / 생활우선{% endif %}</option>
-        <option value="discount" {% if selected_sort == "discount" %}selected{% endif %}>{% if lang == "en" %}Rabatt / Discount{% else %}Rabatt / 할인율{% endif %}</option>
-        <option value="unit" {% if selected_sort == "unit" %}selected{% endif %}>{% if lang == "en" %}Grundpreis / Unit price{% else %}Grundpreis / 단위가격{% endif %}</option>
-        <option value="price" {% if selected_sort == "price" %}selected{% endif %}>{% if lang == "en" %}Preis / Price{% else %}Preis / 판매가격{% endif %}</option>
-        <option value="valid_to" {% if selected_sort == "valid_to" %}selected{% endif %}>{% if lang == "en" %}Gültig bis / Valid until{% else %}Gültig bis / 마감일{% endif %}</option>
-        <option value="retailer" {% if selected_sort == "retailer" %}selected{% endif %}>{{ page.retailer_label.de }} / {% if lang == "en" %}{{ page.retailer_label.en }}{% else %}{{ page.retailer_label.ko }}{% endif %}</option>
-      </select>
-    </label>
-    <div class="filter-toggles">
-      <label class="filter-toggle">
-        <input type="checkbox" name="overlap" value="1" {% if overlap_only %}checked{% endif %}>
-        <span>
-          <strong>Preisduelle</strong>
-          <small>{{ render_ko("타 마트 동시 할인만") }}</small>
-        </span>
-      </label>
-      <label class="filter-toggle">
-        <input type="checkbox" name="priced" value="1" {% if priced_only %}checked{% endif %}>
-        <span>
-          <strong>Nur mit Preis</strong>
-          <small>{{ render_ko("가격 있는 상품만") }}</small>
-        </span>
-      </label>
-      <label class="filter-toggle">
-        <input type="checkbox" name="ending" value="1" {% if ending_soon %}checked{% endif %}>
-        <span>
-          <strong>Läuft bald ab</strong>
-          <small>{{ render_ko("마감 임박") }}</small>
-        </span>
-      </label>
     </div>
+
     <fieldset class="retailer-filter">
-      <legend>{{ page.retailer_label.de }} <span class="ko">{% if lang == "en" %}{{ page.retailer_label.en }}{% else %}{{ page.retailer_label.ko }}{% endif %}</span></legend>
       <div class="retailer-options">
-        <div class="filter-actions" data-default-retailers="{{ default_retailers|join(',') }}">
-          <button type="button" data-retailer-preset="default">Standard <span>{{ render_ko("기본") }}</span></button>
-          <button type="button" data-retailer-preset="all">Alle <span>{{ render_ko("전체") }}</span></button>
-          <button type="button" data-retailer-preset="none">Keine <span>{{ render_ko("해제") }}</span></button>
-        </div>
         {% for slug, label in retailers.items() %}
           <label class="check-pill retailer-theme retailer-{{ slug }}">
-            <input type="checkbox" name="retailer" value="{{ slug }}" {% if slug in selected_retailers %}checked{% endif %}>
+            <input type="checkbox" name="retailer" value="{{ slug }}" {% if slug in selected_retailers %}checked{% endif %} data-auto-submit>
             <span class="check-pill-ui">
               <span class="check-pill-label">{{ label }}</span>
               <span class="check-pill-count">{{ retailer_counts.get(slug, 0) }}</span>
@@ -251,10 +145,60 @@
         {% endfor %}
       </div>
     </fieldset>
-    <button class="submit-button" type="submit">Anwenden <span>{{ render_ko("적용") }}</span></button>
+
+    <details class="more-filters" {% if selected_sort != 'essentials' or overlap_only or priced_only or ending_soon %}open{% endif %}>
+      <summary>
+        <span>⚙️ {{ render_ko("정렬 및 상세 필터") }}</span>
+        <span class="more-filters-summary-meta">
+          {% if overlap_only %} · {{ render_ko("동시 할인") }}{% endif %}
+          {% if ending_soon %} · {{ render_ko("마감 임박") }}{% endif %}
+          {% if priced_only %} · {{ render_ko("가격 있는 상품만") }}{% endif %}
+        </span>
+      </summary>
+      <div class="more-filters-body">
+        <div class="more-filters-row">
+          <label class="sort-label">
+            <span>{{ render_ko("정렬") }}</span>
+            <select name="sort" data-auto-submit>
+              <option value="essentials" {% if selected_sort == "essentials" %}selected{% endif %}>{% if lang == "en" %}Wocheneinkauf / Essentials{% else %}생활필수품 우선{% endif %}</option>
+              <option value="discount" {% if selected_sort == "discount" %}selected{% endif %}>{% if lang == "en" %}Rabatt / Discount{% else %}할인율 높은순{% endif %}</option>
+              <option value="price" {% if selected_sort == "price" %}selected{% endif %}>{% if lang == "en" %}Preis / Price{% else %}낮은 가격순{% endif %}</option>
+              <option value="unit" {% if selected_sort == "unit" %}selected{% endif %}>{% if lang == "en" %}Grundpreis / Unit price{% else %}단위가격순{% endif %}</option>
+              <option value="valid_to" {% if selected_sort == "valid_to" %}selected{% endif %}>{% if lang == "en" %}Gültig bis / Valid until{% else %}마감일순{% endif %}</option>
+              <option value="retailer" {% if selected_sort == "retailer" %}selected{% endif %}>{{ page.retailer_label.de }} / {% if lang == "en" %}{{ page.retailer_label.en }}{% else %}{{ page.retailer_label.ko }}{% endif %}</option>
+            </select>
+          </label>
+
+          <div class="filter-actions" data-default-retailers="{{ default_retailers|join(',') }}">
+            <button type="button" data-retailer-preset="default">{{ render_ko("기본") }}</button>
+            <button type="button" data-retailer-preset="all">{{ render_ko("전체") }}</button>
+            <button type="button" data-retailer-preset="none">{{ render_ko("해제") }}</button>
+          </div>
+        </div>
+
+        <div class="filter-toggles">
+          <label class="filter-toggle">
+            <input type="checkbox" name="overlap" value="1" {% if overlap_only %}checked{% endif %} data-auto-submit>
+            <span>🔄 {{ render_ko("타 마트 동시 할인만") }} ({{ stats.overlapping_count }})</span>
+          </label>
+          <label class="filter-toggle">
+            <input type="checkbox" name="priced" value="1" {% if priced_only %}checked{% endif %} data-auto-submit>
+            <span>💶 {{ render_ko("가격 있는 상품만") }}</span>
+          </label>
+          <label class="filter-toggle">
+            <input type="checkbox" name="ending" value="1" {% if ending_soon %}checked{% endif %} data-auto-submit>
+            <span>⏳ {{ render_ko("마감 임박") }} ({{ stats.ending_soon }})</span>
+          </label>
+        </div>
+      </div>
+    </details>
   </form>
 
-  <section class="basket-advisor" aria-label="shopping basket advisor">
+  <details class="basket-advisor" aria-label="shopping basket advisor" {% if basket_query %}open{% endif %}>
+    <summary class="basket-advisor-summary">
+      <span>🛒 <strong>{{ render_ko("장보기 추천") }}</strong> · <small>{{ render_ko("장보기 리스트로 최저가 마트 찾기") }}</small></span>
+      <span class="basket-summary-arrow">▾</span>
+    </summary>
     <form class="basket-form" method="get" data-basket-form data-endpoint="{{ url_for(page.basket_endpoint) }}">
       <input type="hidden" name="zip_code" value="{{ zip_code }}">
       <input type="hidden" name="week" value="{{ selected_week }}">
@@ -270,9 +214,6 @@
       {% for retailer in selected_retailers %}
         <input type="hidden" name="retailer" value="{{ retailer }}">
       {% endfor %}
-      <label for="basket-input">
-        Einkauf planen <span class="ko">{{ render_ko("장보기 추천") }}</span>
-      </label>
       {% if page.basket_templates %}
         <div class="basket-template-row" aria-label="shopping templates">
           {% for template in page.basket_templates %}
@@ -285,12 +226,12 @@
       <textarea
         id="basket-input"
         name="basket"
-        rows="3"
+        rows="2"
         placeholder="{% if lang == 'en' %}{{ page.basket_placeholder_en }}{% else %}{{ page.basket_placeholder }}{% endif %}"
       >{{ basket_query }}</textarea>
-      <button class="submit-button" type="submit">Empfehlen <span>{{ render_ko("추천 보기") }}</span></button>
+      <button class="submit-button" type="submit">{{ render_ko("추천 보기") }}</button>
     </form>
-  </section>
+  </details>
 
   <div class="basket-modal-backdrop" data-basket-modal hidden>
     <section class="basket-modal" role="dialog" aria-modal="true" aria-labelledby="basket-modal-title">
@@ -318,8 +259,8 @@
   {% if recommendations %}
     <section class="recommendations" aria-label="recommendations">
       <div class="section-heading">
-        <h2>Wocheneinkauf zuerst <span class="ko">{{ render_ko("생활 우선 후보") }}</span></h2>
-        <p>Lebensmittel und Bedarf vor Nonfood <span class="ko">{{ render_ko("식료품과 생활필수품을 먼저") }}</span></p>
+        <h2>⭐ {{ render_ko("생활 우선 후보") }}</h2>
+        <p>{{ render_ko("식료품과 생활필수품을 먼저") }}</p>
       </div>
       <div class="deal-strip">
         {% for offer in recommendations %}
@@ -351,10 +292,35 @@
 
   <section class="offer-workspace">
     <div class="offers-column">
-      <section class="section-heading list-heading">
-        <h2>{{ selected_week_label.de }} <span class="ko">{% if lang == "en" %}{{ selected_week_label.en }}{% else %}{{ selected_week_label.ko }}{% endif %}</span></h2>
-        <p>Zuletzt aktualisiert <span class="ko">{{ render_ko("마지막 갱신") }}</span>: {{ fetched_at|date_de }}</p>
+      <section class="list-status-bar">
+        <div class="list-status-counts">
+          <strong>{{ stats.visible }}</strong><span>/ {{ stats.total }}</span>
+          {% if stats.best_discount %}
+            <span class="status-dot">·</span>
+            <span>{{ render_ko("최대 할인") }} <strong>-{{ stats.best_discount }}%</strong></span>
+          {% endif %}
+          {% if stats.overlapping_count %}
+            <span class="status-dot">·</span>
+            <span>{{ render_ko("동시 할인") }} <strong>{{ stats.overlapping_count }}</strong></span>
+          {% endif %}
+        </div>
+        <div class="list-status-meta">
+          <span>{{ render_ko("마지막 갱신") }}: {{ fetched_at|date_de }}</span>
+          <a class="inline-refresh-link" href="{{ url_for(page.refresh_endpoint, **request.args) }}">↻ {{ render_ko("새로고침") }}</a>
+        </div>
       </section>
+
+      {% if warnings %}
+        <details class="notice" aria-label="data warnings">
+          <summary>
+            <strong>Datenhinweise <span class="ko">{{ render_ko("수집 안내") }}</span></strong>
+            <span>{{ warnings|length }}</span>
+          </summary>
+          {% for warning in warnings %}
+            <p>{% if lang == "en" %}{{ warning|ko_text or warning }}{% else %}{{ warning }}{% endif %}</p>
+          {% endfor %}
+        </details>
+      {% endif %}
 
       <section class="offer-grid" aria-label="offers">
         {% for offer in offers %}
@@ -375,11 +341,6 @@
             data-valid="{{ valid_text }}"
             data-source-url="{{ offer.source_url }}"
             data-image-url="{{ offer.image_url or '' }}"
-            data-all-time-low="{{ offer.all_time_low or '' }}"
-            data-is-all-time-low="{{ '1' if offer.is_all_time_low else '0' }}"
-            data-recorded-at="{{ offer.recorded_at or '' }}"
-            data-has-competitors="{{ '1' if offer.competitors else '0' }}"
-            data-is-cheapest-in-week="{{ '1' if offer.is_cheapest_in_week else '0' }}"
           >
             <div class="image-wrap">
               {% if offer.image_url %}
@@ -388,10 +349,11 @@
                 <div class="image-placeholder">{{ offer.retailer }}</div>
               {% endif %}
               {% if offer.is_all_time_low %}
-                <span class="badge-atl" title="역대 최저가!">🔥 Tiefstpreis <span class="ko">{{ render_ko("역대 최저가") }}</span></span>
+                <span class="badge-atl" title="역대 최저가!">🔥 {{ render_ko("역대 최저가") }}</span>
               {% elif offer.is_cheapest_in_week and offer.competitors %}
-                <span class="badge-best-week" title="이번 주 타 마트 대비 최저가!">🏆 Bestpreis <span class="ko">{{ render_ko("이번 주 최저가") }}</span></span>
-              {% elif offer.discount_percent %}
+                <span class="badge-best-week" title="이번 주 타 마트 대비 최저가!">🏆 {{ render_ko("이번 주 최저가") }}</span>
+              {% endif %}
+              {% if offer.discount_percent %}
                 <span class="discount-badge">{{ offer.discount_percent|pct }}</span>
               {% endif %}
             </div>
@@ -399,38 +361,31 @@
               <div class="card-meta">
                 <span class="retailer-badge">{{ offer.retailer }}</span>
                 {% set category = category_labels.get(offer.category, category_labels.get("other")) %}
-                <span>{{ category.de }} <span class="ko">{% if lang == "en" %}{{ category.en }}{% else %}{{ category.ko }}{% endif %}</span></span>
-                {% if offer.all_time_low and not offer.is_all_time_low %}
-                  <span class="atl-hint" title="역대 최저가 이력">최저 {{ offer.all_time_low|eur }}</span>
+                <span class="card-category">{% if lang == "en" %}{{ category.en or category.de }}{% else %}{{ category.ko }}{% endif %}</span>
+              </div>
+
+              <div class="card-title-group">
+                <h3>{{ offer.title }}</h3>
+                {% if title_ko %}
+                  <p class="translation">{{ title_ko }}</p>
+                {% endif %}
+                {% if offer.brand %}
+                  <p class="brand">{{ offer.brand }}</p>
                 {% endif %}
               </div>
-              <h3>{{ offer.title }}</h3>
-              {% if title_ko %}
-                <p class="translation">{{ title_ko }}</p>
-              {% endif %}
-              {% if offer.brand %}
-                <p class="brand">{{ offer.brand }}</p>
-              {% endif %}
+
               <div class="price-row">
                 <strong>{{ offer.price|eur }}</strong>
                 {% if offer.old_price %}
                   <s>{{ offer.old_price|eur }}</s>
                 {% endif %}
+                {% if offer.unit_price %}
+                  <span class="unit-price">{{ offer.unit_price|eur }} / {{ offer.unit or "unit" }}</span>
+                {% endif %}
               </div>
+
               {% if offer.competitors %}
                 <div class="card-competitor-box {% if offer.is_cheapest_in_week %}is-cheapest{% elif offer.cheapest_competitor and offer.cheapest_competitor.price_diff and offer.cheapest_competitor.price_diff > 0 %}has-cheaper{% else %}is-same{% endif %}">
-                  <div class="ccb-header">
-                    {% if offer.is_cheapest_in_week %}
-                      <span class="ccb-badge ccb-badge-best">🏆 {{ render_ko("이번 주 최저가") }}</span>
-                      <span class="ccb-note">타 마트 대비 최저가!</span>
-                    {% elif offer.cheapest_competitor and offer.cheapest_competitor.price_diff and offer.cheapest_competitor.price_diff > 0 %}
-                      <span class="ccb-badge ccb-badge-cheaper">💡 타 마트 최저 {{ offer.cheapest_competitor.price|eur }}</span>
-                      <span class="ccb-note"><strong>{{ offer.cheapest_competitor.retailer }}</strong>이(가) {{ offer.cheapest_competitor.price_diff|eur }} 더 저렴</span>
-                    {% else %}
-                      <span class="ccb-badge ccb-badge-same">🔄 {{ render_ko("동시 할인") }}</span>
-                      <span class="ccb-note">다른 마트에서도 동시 세일 중</span>
-                    {% endif %}
-                  </div>
                   <div class="ccb-stores">
                     {% for c in offer.competitors %}
                       <a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer" class="comp-store-pill retailer-theme retailer-{{ c.retailer_slug }}" title="{{ c.retailer }}: {{ c.title }}">
@@ -446,30 +401,21 @@
                   </div>
                 </div>
               {% endif %}
-              <div class="card-actions">
-                <button type="button" class="btn-card-action btn-history" data-price-history-btn data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" data-price="{{ offer.price or '' }}" title="가격 변동 내역">
-                  📈 <span>{{ render_ko("가격 이력") }}</span>
-                </button>
-                <button type="button" class="btn-card-action btn-compare" data-compare-btn data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" title="다른 마트 가격 비교">
-                  🏪 <span>{{ render_ko("매장 비교") }}</span>
-                </button>
-                <button type="button" class="btn-card-action btn-watchlist" data-watchlist-add-btn data-id="{{ offer.id }}" data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" data-price="{{ offer.price or '' }}" data-retailer="{{ offer.retailer }}" title="관심 상품 등록 / 가격 알림">
-                  ⭐ <span>{{ render_ko("관심") }}</span>
-                </button>
-                <a class="view-deal-button" href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">
-                  Zum Angebot <span>{{ render_ko("바로가기") }} ↗</span>
-                </a>
-              </div>
-              {% if offer.unit_price %}
-                <p class="unit-price">{{ offer.unit_price|eur }} / {{ offer.unit or "unit" }}</p>
+
+              {% if offer.description %}
+                <p class="description">{{ offer.description }}</p>
               {% endif %}
-              <p class="description">{{ offer.description }}</p>
-              <div class="valid-row">
-                <span>Gültig <span class="ko">{{ render_ko("유효기간") }}</span>: {{ valid_text }}</span>
-                {% if offer.recorded_at %}
-                  <span class="recorded-date" title="데이터 수집 일시">⏱ {{ offer.recorded_at[:10] }}</span>
-                {% endif %}
-                <a href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">Quelle <span class="ko">{{ render_ko("출처") }}</span> ↗</a>
+
+              <div class="card-footer-row">
+                <span class="valid-dates">{{ valid_text }}</span>
+                <div class="card-footer-actions">
+                  <button type="button" class="btn-card-icon" data-price-history-btn data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" data-price="{{ offer.price or '' }}" title="{{ render_ko('가격 이력') }}">
+                    📈 <span>{{ render_ko("가격 이력") }}</span>
+                  </button>
+                  <a class="btn-card-link" href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">
+                    {{ render_ko("출처") }} ↗
+                  </a>
+                </div>
               </div>
             </div>
           </article>
@@ -527,32 +473,11 @@
     </div>
     <div class="compare-modal-search">
       <form data-compare-form class="compare-search-form">
-        <input type="text" data-compare-search-input placeholder="비교할 상품명 입력 (예: Nutella, Coca Cola, Barilla, Balea, 신라면)..." required>
-        <button type="submit" class="submit-button">Vergleichen <span>{{ render_ko("비교") }}</span></button>
+        <input type="text" data-compare-search-input placeholder="비교할 상품명 입력 (예: Nutella, Coca Cola, Barilla, Balea)..." required>
+        <button type="submit" class="submit-button">{{ render_ko("비교") }}</button>
       </form>
     </div>
     <div class="custom-modal-body" data-compare-modal-body></div>
-  </section>
-</div>
-
-<!-- Watchlist & Price Alerts Modal -->
-<div class="custom-modal-backdrop" data-watchlist-modal hidden>
-  <section class="custom-modal watchlist-modal" role="dialog" aria-modal="true" aria-labelledby="watchlist-modal-title">
-    <div class="custom-modal-header">
-      <div>
-        <p class="eyebrow">German Price Tracker</p>
-        <h2 id="watchlist-modal-title">Merkliste & Preisalarm <span class="ko">{{ render_ko("관심 상품 & 가격 알림") }}</span></h2>
-      </div>
-      <button class="modal-close-button" type="button" data-watchlist-modal-close aria-label="close">×</button>
-    </div>
-    <div class="watchlist-modal-add">
-      <form data-watchlist-add-form class="watchlist-add-form">
-        <input type="text" name="keyword" placeholder="관심 키워드/상품명 (예: 신라면, Nutella, 기저귀)..." required>
-        <input type="number" step="0.01" min="0" name="target_price" placeholder="목표 가격 (€, 선택)">
-        <button type="submit" class="submit-button">+ Hinzufügen <span>{{ render_ko("추가") }}</span></button>
-      </form>
-    </div>
-    <div class="custom-modal-body" data-watchlist-modal-body></div>
   </section>
 </div>
 
@@ -568,9 +493,6 @@
       <p class="footer-title">{{ page.heading }} · {% if lang == 'en' %}{{ page.heading_en }}{% else %}{{ page.heading_ko }}{% endif %}</p>
       <p class="footer-disclaimer">
         ⚠️ <strong>Hinweis / Disclaimer:</strong> Alle Preis- und Rabattangaben ohne Gewähr. Irrtümer und Änderungen vorbehalten. Gültigkeit und Verfügbarkeit können filialabhängig variieren.
-      </p>
-      <p class="footer-policy">
-        🛡️ <strong>Datenerfassung & Richtlinien / 데이터 수집 정책:</strong> 본 서비스는 독일 주요 유통사(REWE, EDEKA, Lidl, ALDI, DM, Rossmann, Kaufland 등)의 공식 주간 전단지(Prospekt) 및 공개 할인 정보를 정기적으로 분석·기록합니다. 로봇 배제 표준(robots.txt) 및 사이트별 접근 정책을 준수하며, 각 상품의 출처(Quelle) 및 수집 시점을 투명하게 제공합니다.
       </p>
       <p class="footer-update">
         📅 Zuletzt aktualisiert: {{ fetched_at|date_de }} · Wöchentliche Angebote direkt aus den Händler-Prospekten
