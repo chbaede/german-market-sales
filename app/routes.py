@@ -136,7 +136,10 @@ def render_offer_page(
     lang = request.cookies.get("lang", "ko")
     zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
     week_labels = page.get("week_labels", WEEK_LABELS)
-    selected_week = _clean_week(request.args.get("week"), week_labels, page.get("default_week", "current"))
+    default_week = page.get("default_week", "current")
+    if default_week == "current" and datetime.now(BERLIN_TZ).weekday() == 6:
+        default_week = "next"
+    selected_week = _clean_week(request.args.get("week"), week_labels, default_week)
     result = load_offers_for_request(service, zip_code)
 
     selected_retailers = _selected_retailers(retailers, page.get("default_retailers", ()))
@@ -354,7 +357,7 @@ def filter_offers_by_week(offers: list[Offer], week: str, today: date | None = N
     if week == "next":
         start = _next_week_start(today)
         end = start + timedelta(days=6)
-        return [offer for offer in offers if _starts_in_range(offer, start, end)]
+        return [offer for offer in offers if _is_relevant_for_next_week(offer, start, end)]
     return [offer for offer in offers if _is_active_on(offer, today)]
 
 
@@ -671,6 +674,20 @@ def _starts_in_range(offer: Offer, start: date, end: date) -> bool:
     if valid_from is None:
         return False
     return start <= valid_from <= end
+
+
+def _is_relevant_for_next_week(offer: Offer, start: date, end: date) -> bool:
+    valid_from = _offer_date(offer.valid_from)
+    valid_to = _offer_date(offer.valid_to)
+    if valid_from and valid_from > end:
+        return False
+    if valid_to and valid_to < start:
+        return False
+    if valid_from and start <= valid_from <= end:
+        return True
+    if valid_to and valid_to >= start:
+        return True
+    return False
 
 
 def _is_active_on(offer: Offer, day: date) -> bool:

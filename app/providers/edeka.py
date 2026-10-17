@@ -42,26 +42,50 @@ class EdekaProvider(OfferProvider):
             raise ValueError(f"{retailer_slug} is not supported by EdekaProvider.")
 
         warnings: list[str] = []
-        market_data, used_insecure = self._market_data(zip_code)
+        candidate_markets, used_insecure = self._candidate_markets(zip_code)
         if used_insecure:
             warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
-        offers_url, used_insecure = self._offers_url(market_data["url"])
-        if used_insecure:
-            warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
+        last_error: Exception | None = None
+        best_offers: list[Offer] = []
+        best_warnings: list[str] = list(warnings)
 
-        html, used_insecure = self._request_text(offers_url)
-        if used_insecure:
-            warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
+        for market in candidate_markets:
+            raw_url = (market.get("url") or "").strip()
+            if not raw_url:
+                continue
+            try:
+                offers_url, used_insecure_offers = self._offers_url(raw_url)
+                market_warnings = list(warnings)
+                if used_insecure_offers:
+                    market_warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
-        market_name = _clean_text(market_data.get("name"))
-        offers = self.offers_from_html(
-            html,
-            limit=limit,
-            source_url=offers_url,
-            market_name=market_name,
-        )
-        return offers, list(dict.fromkeys(warnings))
+                html, used_insecure_html = self._request_text(offers_url)
+                if used_insecure_html:
+                    market_warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
+
+                market_name = _clean_text(market.get("name"))
+                offers = self.offers_from_html(
+                    html,
+                    limit=limit,
+                    source_url=offers_url,
+                    market_name=market_name,
+                )
+                if len(offers) > len(best_offers):
+                    best_offers = offers
+                    best_warnings = market_warnings
+                if len(best_offers) >= min(limit, 30):
+                    break
+            except Exception as exc:
+                last_error = exc
+                continue
+
+        if best_offers:
+            return best_offers, list(dict.fromkeys(best_warnings))
+
+        if last_error:
+            raise ValueError(f"No EDEKA offers found for PLZ {zip_code}: {last_error}") from last_error
+        raise ValueError(f"No EDEKA offers found for PLZ {zip_code}.")
 
     @classmethod
     def offers_from_html(
@@ -130,24 +154,33 @@ class EdekaProvider(OfferProvider):
             source_url=source_url,
         )
 
-    def _market_data(self, zip_code: str) -> tuple[dict, bool]:
+    def _candidate_markets(self, zip_code: str) -> tuple[list[dict], bool]:
         payload, used_insecure = self._request_json(
             self.market_search_url,
             params={"searchstring": zip_code},
         )
         markets = payload.get("markets") or []
+        candidates: list[dict] = []
         for market in markets:
-            if market.get("isEdekaHomepageMarket") and market.get("url"):
-                return market, used_insecure
+            url = (market.get("url") or "").strip()
+            if market.get("isEdekaHomepageMarket") and url and (url.startswith("http://") or url.startswith("https://")):
+                candidates.append(market)
         for market in markets:
-            if market.get("url"):
-                return market, used_insecure
-        raise ValueError(f"No EDEKA market found for PLZ {zip_code}.")
+            url = (market.get("url") or "").strip()
+            if url and (url.startswith("http://") or url.startswith("https://")) and market not in candidates:
+                candidates.append(market)
+        if not candidates:
+            raise ValueError(f"No EDEKA market found for PLZ {zip_code}.")
+        return candidates[:8], used_insecure
+
+    def _market_data(self, zip_code: str) -> tuple[dict, bool]:
+        candidates, used_insecure = self._candidate_markets(zip_code)
+        return candidates[0], used_insecure
 
     def _offers_url(self, market_url: str) -> tuple[str, bool]:
-        response, used_insecure = self._request("GET", market_url)
+        response, used_insecure = self._request("GET", market_url.strip())
         response.raise_for_status()
-        market_page_url = response.url
+        market_page_url = response.url.strip()
         if not market_page_url.endswith("/"):
             market_page_url = f"{market_page_url}/"
         return urljoin(market_page_url, "angebote/"), used_insecure

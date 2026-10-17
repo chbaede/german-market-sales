@@ -62,3 +62,45 @@ class FrozenDateTime(datetime):
     @classmethod
     def now(cls, tz=None):
         return datetime(2026, 6, 4, tzinfo=tz)
+
+
+def test_filter_offers_by_week_includes_overlapping_next_week_offers():
+    today = date(2026, 5, 30)  # Saturday
+    # Next week starts Monday 2026-06-01 to Sunday 2026-06-07
+    spanning = _offer("spanning", "2026-05-28T00:00:00+02:00", "2026-06-03T23:59:59+02:00")
+    ends_this_week = _offer("ends_now", "2026-05-25T00:00:00+02:00", "2026-05-30T23:59:59+02:00")
+
+    next_offers = filter_offers_by_week([spanning, ends_this_week], "next", today=today)
+    assert spanning in next_offers
+    assert ends_this_week not in next_offers
+
+
+def test_supermarket_page_defaults_to_next_week_on_sunday(monkeypatch):
+    import app.routes as routes
+    from app import create_app
+    from app.models import OfferResult
+
+    class SundayDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 7, 10, 0, 0, tzinfo=tz)  # 2026-06-07 is Sunday
+
+    class FakeOfferService:
+        def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
+            return OfferResult(
+                offers=[
+                    _offer("Next Week Deal", "2026-06-08T00:00:00+02:00", "2026-06-14T23:59:59+02:00", "edeka"),
+                ],
+                fetched_at="2026-06-07T08:00:00+00:00",
+                warnings=[],
+            )
+
+    monkeypatch.setattr(routes, "datetime", SundayDateTime)
+    monkeypatch.setattr(routes, "offer_service", lambda: FakeOfferService())
+    app = create_app()
+    response = app.test_client().get("/")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    # The 'next' week pill should be active on Sunday by default
+    assert "week=next" in html or "Next Week Deal" in html
+

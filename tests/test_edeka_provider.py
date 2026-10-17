@@ -66,3 +66,41 @@ def test_edeka_app_price_uses_lower_price_and_regular_price_as_old_price():
     assert offer.old_price == 0.89
     assert offer.discount_percent == 19.1
     assert offer.unit_price == 7.2
+
+
+def test_edeka_fetch_offers_skips_empty_markets_and_uses_candidate_with_offers(monkeypatch):
+    provider = EdekaProvider()
+
+    def mock_candidate_markets(zip_code):
+        return [
+            {"name": "Market 1", "url": "https://www.edeka.de/m1/ "},
+            {"name": "Market 2", "url": "https://www.edeka.de/m2/"},
+        ], False
+
+    def mock_offers_url(url):
+        return f"{url.strip()}/angebote/", False
+
+    def mock_request_text(url):
+        if "m1" in url:
+            return "<html><body><section><p>No dialogs here</p></section></body></html>", False
+        return """
+        <html>
+          <body>
+            <p>Gültig vom 25.05.2026 bis zum 30.05.2026.</p>
+            <dialog id="dialog-angebot-1">
+              <h3><span>Angebot:</span> Bio Apfel</h3>
+              <div class="sr-only">Festpreis von 1.99 €</div>
+            </dialog>
+          </body>
+        </html>
+        """, False
+
+    monkeypatch.setattr(provider, "_candidate_markets", mock_candidate_markets)
+    monkeypatch.setattr(provider, "_offers_url", mock_offers_url)
+    monkeypatch.setattr(provider, "_request_text", mock_request_text)
+
+    offers, warnings = provider.fetch_offers("edeka", "50667", limit=10)
+    assert len(offers) == 1
+    assert offers[0].title == "Bio Apfel"
+    assert "Market 2" in offers[0].description
+

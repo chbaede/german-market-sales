@@ -207,3 +207,30 @@ class RecordingProvider:
                 source_url="https://example.test",
             )
         ], []
+
+
+def test_offer_service_falls_back_to_marktguru_when_specialized_provider_is_empty(tmp_path, monkeypatch):
+    class EmptyProvider:
+        def fetch_offers(self, retailer_slug, zip_code, limit):
+            return [], []
+
+    class MockMarktguru:
+        def fetch_offers(self, retailer_slug, zip_code, limit):
+            return [_offer("Marktguru Deal")], []
+
+    service = OfferService(
+        cache_dir=tmp_path,
+        retailers={"edeka": "EDEKA"},
+        cache_ttl_seconds=3600,
+        timeout=1,
+        verify_tls=False,
+        max_offers_per_retailer=60,
+    )
+    service.specialized_providers = {"edeka": EmptyProvider()}
+    monkeypatch.setattr(service, "_marketguru_provider", lambda: MockMarktguru())
+
+    offers, warnings = service._fetch_retailer_offers("edeka", "14195")
+    assert len(offers) == 1
+    assert offers[0].title == "Marktguru Deal"
+    assert any("Marktguru" in w for w in warnings)
+

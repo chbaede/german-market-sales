@@ -195,11 +195,25 @@ class OfferService:
     def _fetch_retailer_offers(self, retailer_slug: str, zip_code: str) -> tuple[list[Offer], list[str]]:
         provider = self.specialized_providers.get(retailer_slug) or self._marketguru_provider()
         try:
-            return provider.fetch_offers(
+            offers, warnings = provider.fetch_offers(
                 retailer_slug,
                 zip_code=zip_code,
                 limit=self.upstream_fetch_limit,
             )
+            if retailer_slug in self.specialized_providers and not offers:
+                retailer_name = self.retailers.get(retailer_slug, retailer_slug)
+                fallback_offers, fallback_warnings = self._try_marketguru_fallback(retailer_slug, zip_code)
+                if fallback_offers:
+                    fallback_offers = self._merge_cached_retailer_offers(zip_code, retailer_slug, fallback_offers)
+                    return (
+                        fallback_offers,
+                        [
+                            *warnings,
+                            *fallback_warnings,
+                            f"{retailer_name} 공식 데이터가 비어 있어 Marktguru 데이터로 대체했습니다.",
+                        ],
+                    )
+            return offers, warnings
         except Exception as exc:
             retailer_name = self.retailers.get(retailer_slug, retailer_slug)
             fallback_offers, fallback_warnings = self._try_marketguru_fallback(retailer_slug, zip_code)
