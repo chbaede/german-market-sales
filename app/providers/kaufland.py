@@ -2,22 +2,21 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
-
-import requests
-import urllib3
-from requests import Session
-from requests.exceptions import SSLError
-from urllib3.exceptions import InsecureRequestWarning
 
 from app.models import Offer
-from app.providers.base import OfferProvider
+from app.providers.base import (
+    BERLIN_TZ,
+    OfferProvider,
+    clean_text,
+    compute_discount_percent,
+    date_to_berlin_iso,
+    join_text,
+    source_offer_id_from_key,
+)
 from app.services.categories import categorize_offer
 
-
-BERLIN_TZ = ZoneInfo("Europe/Berlin")
 KAUFLAND_OFFERS_URL = "https://filiale.kaufland.de/angebote/uebersicht.html?kloffer-week=current"
 
 
@@ -25,20 +24,10 @@ class KauflandProvider(OfferProvider):
     retailer_name = "Kaufland"
     retailer_slug = "kaufland"
     offers_url = KAUFLAND_OFFERS_URL
-
-    def __init__(
-        self,
-        session: Session | None = None,
-        timeout: int = 15,
-        verify_tls: str | bool = "auto",
-    ) -> None:
-        self.session = session or requests.Session()
-        self.timeout = timeout
-        self.verify_tls = verify_tls
+    default_headers = {"Accept-Language": "de-DE,de;q=0.9,en;q=0.8"}
 
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
-        if retailer_slug != self.retailer_slug:
-            raise ValueError(f"{retailer_slug} is not supported by KauflandProvider.")
+        self._validate_retailer_slug(retailer_slug)
 
         html, used_insecure = self._request_text(self.offers_url)
         warnings: list[str] = []
@@ -82,7 +71,7 @@ class KauflandProvider(OfferProvider):
 
         for cycle in cycles:
             for category in cycle.get("categories") or []:
-                category_name = _clean_text(category.get("displayName") or category.get("name"))
+                category_name = clean_text(category.get("displayName") or category.get("name"))
                 for item in category.get("offers") or []:
                     offer = cls._offer_from_item(item, category_name)
                     if offer is None or offer.id in seen:
@@ -104,24 +93,20 @@ class KauflandProvider(OfferProvider):
 
     @classmethod
     def _offer_from_item(cls, item: dict, category_name: str) -> Offer | None:
-        source_key = _clean_text(item.get("offerId") or item.get("klNr"))
-        title = _clean_text(item.get("detailTitle") or item.get("title"))
+        source_key = clean_text(item.get("offerId") or item.get("klNr"))
+        title = clean_text(item.get("detailTitle") or item.get("title"))
         if not source_key or not title:
             return None
 
         price = _number_or_none(item.get("price")) or _number_or_none(item.get("formattedPrice"))
         old_price = _number_or_none(item.get("formattedOldPrice"))
-        discount_percent = _number_or_none(item.get("discount"))
-        if discount_percent == 0:
-            discount_percent = None
-        if discount_percent is None and old_price and price and old_price > price:
-            discount_percent = round((old_price - price) / old_price * 100, 1)
+        discount_percent = _number_or_none(item.get("discount")) or compute_discount_percent(price, old_price)
         unit_price, unit = _base_price(item)
         description = _description(item, category_name)
 
         return Offer(
             id=f"kaufland-{source_key}",
-            source_offer_id=_source_offer_id(source_key),
+            source_offer_id=source_offer_id_from_key(source_key, hash_fallback=True),
             retailer=cls.retailer_name,
             retailer_slug=cls.retailer_slug,
             title=title,
@@ -133,37 +118,11 @@ class KauflandProvider(OfferProvider):
             unit=unit,
             discount_percent=discount_percent,
             description=description,
-            valid_from=_date_iso(item.get("dateFrom"), end_of_day=False),
-            valid_to=_date_iso(item.get("dateTo"), end_of_day=True),
+            valid_from=date_to_berlin_iso(item.get("dateFrom"), end_of_day=False),
+            valid_to=date_to_berlin_iso(item.get("dateTo"), end_of_day=True),
             image_url=_image_url(item),
             source_url=cls.offers_url,
         )
-
-    def _request_text(self, url: str) -> tuple[str, bool]:
-        response, used_insecure = self._request("GET", url)
-        response.raise_for_status()
-        return response.text, used_insecure
-
-    def _request(self, method: str, url: str, **kwargs: Any) -> tuple[requests.Response, bool]:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36",
-            "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-            **kwargs.pop("headers", {}),
-        }
-        request_kwargs = {
-            "timeout": self.timeout,
-            "headers": headers,
-            **kwargs,
-        }
-
-        verify = _verify_value(self.verify_tls)
-        try:
-            return self.session.request(method, url, verify=verify, **request_kwargs), False
-        except SSLError:
-            if self.verify_tls != "auto":
-                raise
-            urllib3.disable_warnings(InsecureRequestWarning)
-            return self.session.request(method, url, verify=False, **request_kwargs), True
 
 
 def _json_object_end(text: str, start: int) -> int | None:
@@ -192,20 +151,6 @@ def _json_object_end(text: str, start: int) -> int | None:
     return None
 
 
-def _verify_value(value: str | bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value.casefold() in {"false", "0", "no"}:
-        return False
-    return True
-
-
-def _clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
-
-
 def _number_or_none(value: Any) -> float | None:
     if value is None:
         return None
@@ -222,32 +167,20 @@ def _number_or_none(value: Any) -> float | None:
 
 
 def _base_price(item: dict) -> tuple[float | None, str | None]:
-    text = _clean_text(item.get("formattedBasePrice") or item.get("basePrice"))
+    text = clean_text(item.get("formattedBasePrice") or item.get("basePrice"))
     match = re.search(r"\(?\s*([^=()]+?)\s*=\s*([0-9]+(?:[,.][0-9]+)?)", text)
     if not match:
         return None, None
-    return _number_or_none(match.group(2)), _clean_text(match.group(1))
+    return _number_or_none(match.group(2)), clean_text(match.group(1))
 
 
 def _description(item: dict, category_name: str) -> str:
-    parts = [
-        _clean_text(item.get("detailDescription")),
-        _clean_text(item.get("detailAction")).replace(";", " · "),
-        _clean_text(item.get("unit")),
+    return join_text(
+        clean_text(item.get("detailDescription")),
+        clean_text(item.get("detailAction")).replace(";", " · "),
+        clean_text(item.get("unit")),
         category_name,
-    ]
-    return " · ".join(part for part in parts if part)
-
-
-def _date_iso(value: str | None, end_of_day: bool) -> str | None:
-    if not value:
-        return None
-    try:
-        day = date.fromisoformat(value)
-    except ValueError:
-        return None
-    clock = time.max if end_of_day else time.min
-    return datetime.combine(day, clock, BERLIN_TZ).isoformat(timespec="seconds")
+    )
 
 
 def _date_from_iso(value: str | None) -> date | None:
@@ -263,11 +196,4 @@ def _image_url(item: dict) -> str | None:
     detail_images = item.get("detailImages") or []
     if detail_images:
         return detail_images[0]
-    return _clean_text(item.get("listImage")) or None
-
-
-def _source_offer_id(source_key: str) -> int:
-    digits = re.sub(r"\D", "", source_key)
-    if digits:
-        return int(digits[:12])
-    return abs(hash(source_key)) % 1_000_000_000
+    return clean_text(item.get("listImage")) or None

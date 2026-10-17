@@ -2,23 +2,23 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime, time
+from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
-import requests
-import urllib3
 from bs4 import BeautifulSoup
-from requests import Session
-from requests.exceptions import SSLError
-from urllib3.exceptions import InsecureRequestWarning
 
 from app.models import Offer
-from app.providers.base import OfferProvider
+from app.providers.base import (
+    BERLIN_TZ,
+    OfferProvider,
+    clean_text,
+    compute_discount_percent,
+    date_to_berlin_iso,
+    join_text,
+    parse_positive_float,
+    source_offer_id_from_key,
+)
 from app.services.categories import categorize_offer
-
-
-BERLIN_TZ = ZoneInfo("Europe/Berlin")
 
 
 class AldiNordProvider(OfferProvider):
@@ -26,19 +26,8 @@ class AldiNordProvider(OfferProvider):
     retailer_slug = "aldi-nord"
     offers_url = "https://www.aldi-nord.de/angebote.html"
 
-    def __init__(
-        self,
-        session: Session | None = None,
-        timeout: int = 15,
-        verify_tls: str | bool = "auto",
-    ) -> None:
-        self.session = session or requests.Session()
-        self.timeout = timeout
-        self.verify_tls = verify_tls
-
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
-        if retailer_slug != self.retailer_slug:
-            raise ValueError(f"{retailer_slug} is not supported by AldiNordProvider.")
+        self._validate_retailer_slug(retailer_slug)
 
         html, used_insecure = self._request_text(self.offers_url)
         warnings: list[str] = []
@@ -64,10 +53,10 @@ class AldiNordProvider(OfferProvider):
         offers: list[Offer] = []
         seen: set[str] = set()
         for action in categories:
-            fallback_from = _local_date_iso(action.get("startDate"), end_of_day=False)
-            fallback_to = _local_date_iso(action.get("endDate"), end_of_day=True)
+            fallback_from = date_to_berlin_iso(action.get("startDate"), end_of_day=False)
+            fallback_to = date_to_berlin_iso(action.get("endDate"), end_of_day=True)
             for section in action.get("content") or []:
-                section_title = _clean_text(section.get("title") or section.get("teaserTitle"))
+                section_title = clean_text(section.get("title") or section.get("teaserTitle"))
                 for product_id in section.get("productIds") or []:
                     object_id = str(product_id)
                     if object_id in seen:
@@ -109,23 +98,23 @@ class AldiNordProvider(OfferProvider):
         fallback_from: str | None,
         fallback_to: str | None,
     ) -> Offer | None:
-        title = _clean_text(product.get("name"))
+        title = clean_text(product.get("name"))
         if not title:
             return None
 
-        brand = _clean_text(product.get("brandName")) or None
-        short_description = _clean_text(product.get("shortDescription"))
-        sales_unit = _clean_text(product.get("salesUnit"))
-        description = _join_text(section_title, sales_unit, short_description)
+        brand = clean_text(product.get("brandName")) or None
+        short_description = clean_text(product.get("shortDescription"))
+        sales_unit = clean_text(product.get("salesUnit"))
+        description = join_text(section_title, sales_unit, short_description)
         price_data = _price_data(product)
-        price = _number_or_none(price_data.get("priceValue"))
+        price = parse_positive_float(price_data.get("priceValue"))
         old_price = _strike_price(price_data)
         unit_price, unit = _base_price(price_data)
         discount_percent = _discount_percent(price, old_price, price_data)
 
         return Offer(
             id=f"aldi-nord-{object_id}",
-            source_offer_id=_source_offer_id(object_id),
+            source_offer_id=source_offer_id_from_key(object_id),
             retailer=cls.retailer_name,
             retailer_slug=cls.retailer_slug,
             title=title,
@@ -143,39 +132,6 @@ class AldiNordProvider(OfferProvider):
             source_url=cls.offers_url,
         )
 
-    def _request_text(self, url: str) -> tuple[str, bool]:
-        response, used_insecure = self._request("GET", url)
-        response.raise_for_status()
-        return response.text, used_insecure
-
-    def _request(self, method: str, url: str, **kwargs: Any) -> tuple[requests.Response, bool]:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36",
-            **kwargs.pop("headers", {}),
-        }
-        request_kwargs = {
-            "timeout": self.timeout,
-            "headers": headers,
-            **kwargs,
-        }
-
-        verify = _verify_value(self.verify_tls)
-        try:
-            return self.session.request(method, url, verify=verify, **request_kwargs), False
-        except SSLError:
-            if self.verify_tls != "auto":
-                raise
-            urllib3.disable_warnings(InsecureRequestWarning)
-            return self.session.request(method, url, verify=False, **request_kwargs), True
-
-
-def _verify_value(value: str | bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value.casefold() in {"false", "0", "no"}:
-        return False
-    return True
-
 
 def _price_data(product: dict) -> dict:
     current = product.get("currentPrice")
@@ -188,19 +144,11 @@ def _price_data(product: dict) -> dict:
     return {}
 
 
-def _number_or_none(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if number > 0 else None
-
-
 def _strike_price(price_data: dict) -> float | None:
     strike_price = price_data.get("strikePrice")
     if not isinstance(strike_price, dict):
         return None
-    return _number_or_none(strike_price.get("strikePriceValue"))
+    return parse_positive_float(strike_price.get("strikePriceValue"))
 
 
 def _base_price(price_data: dict) -> tuple[float | None, str | None]:
@@ -210,7 +158,7 @@ def _base_price(price_data: dict) -> tuple[float | None, str | None]:
     first = base_prices[0]
     if not isinstance(first, dict):
         return None, None
-    return _number_or_none(first.get("basePriceValue")), _clean_text(first.get("basePriceScale")) or None
+    return parse_positive_float(first.get("basePriceValue")), clean_text(first.get("basePriceScale")) or None
 
 
 def _discount_percent(price: float | None, old_price: float | None, price_data: dict) -> float | None:
@@ -219,32 +167,19 @@ def _discount_percent(price: float | None, old_price: float | None, price_data: 
         match = re.search(r"(\d+(?:[,.]\d+)?)", str(label))
         if match:
             return float(match.group(1).replace(",", "."))
-    if old_price and price and old_price > price:
-        return round((old_price - price) / old_price * 100, 1)
-    return None
+    return compute_discount_percent(price, old_price)
 
 
 def _price_date(price_data: dict, key: str) -> str | None:
     value = price_data.get(key)
     if value is None:
         local_key = "validFromLocalDate" if key == "validFrom" else "validUntilLocalDate"
-        return _local_date_iso(price_data.get(local_key), end_of_day=key == "validUntil")
+        return date_to_berlin_iso(price_data.get(local_key), end_of_day=key == "validUntil")
     try:
         timestamp = int(value)
     except (TypeError, ValueError):
         return None
     return datetime.fromtimestamp(timestamp, BERLIN_TZ).isoformat(timespec="seconds")
-
-
-def _local_date_iso(value: str | None, end_of_day: bool) -> str | None:
-    if not value:
-        return None
-    try:
-        day = date.fromisoformat(value)
-    except ValueError:
-        return None
-    clock = time.max if end_of_day else time.min
-    return datetime.combine(day, clock, BERLIN_TZ).isoformat(timespec="seconds")
 
 
 def _primary_image(assets: list[dict]) -> str | None:
@@ -255,18 +190,3 @@ def _primary_image(assets: list[dict]) -> str | None:
         if asset.get("url"):
             return asset["url"]
     return None
-
-
-def _source_offer_id(object_id: str) -> int:
-    digits = re.sub(r"\D", "", object_id)
-    return int(digits[:12] or 0)
-
-
-def _join_text(*parts: str | None) -> str:
-    return " · ".join(part for part in parts if part)
-
-
-def _clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).strip()

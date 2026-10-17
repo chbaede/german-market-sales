@@ -3,27 +3,15 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
-
-import requests
-from requests import Session
-from requests.exceptions import SSLError
-from urllib3.exceptions import InsecureRequestWarning
-import urllib3
 
 from app.models import Offer
-from app.providers.base import OfferProvider
+from app.providers.base import BERLIN_TZ, OfferProvider, compute_discount_percent
 from app.services.categories import categorize_offer
 
 
 class DmProvider(OfferProvider):
     search_url = "https://product-search.services.dmtech.com/de/search"
     source_url = "https://www.dm.de/ausverkauf"
-
-    def __init__(self, session: Session | None = None, timeout: int = 15, verify_tls: str | bool = "auto") -> None:
-        self.session = session or requests.Session()
-        self.timeout = timeout
-        self.verify_tls = verify_tls
 
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
         warnings: list[str] = []
@@ -40,37 +28,17 @@ class DmProvider(OfferProvider):
 
     def _request_search(self, limit: int) -> tuple[dict, bool]:
         headers = {
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36",
             "x-dm-product-search-tags": "channel:web;presentation:grid;search-type:search",
             "x-dm-product-search-token": str(27 * int(datetime.now().timestamp() * 1000)),
         }
-        verify = self.verify_tls
-        if verify == "auto":
-            verify = True
-
-        request_kwargs = {
-            "params": {
-                "query": "angebot",
-                "pageSize": max(1, min(limit, 90)),
-                "searchType": "search-static",
-                "sort": "editorial_relevance",
-                "enablePharmacy": "true",
-            },
-            "headers": headers,
-            "timeout": self.timeout,
+        params = {
+            "query": "angebot",
+            "pageSize": max(1, min(limit, 90)),
+            "searchType": "search-static",
+            "sort": "editorial_relevance",
+            "enablePharmacy": "true",
         }
-        try:
-            response = self.session.get(self.search_url, verify=verify, **request_kwargs)
-            used_insecure_tls = False
-        except SSLError:
-            if self.verify_tls != "auto":
-                raise
-            urllib3.disable_warnings(InsecureRequestWarning)
-            response = self.session.get(self.search_url, verify=False, **request_kwargs)
-            used_insecure_tls = True
-        response.raise_for_status()
-        return response.json(), used_insecure_tls
+        return self._request_json(self.search_url, params=params, headers=headers)
 
     @classmethod
     def _offer_from_product(cls, product: dict[str, Any], retailer_slug: str) -> Offer:
@@ -81,9 +49,7 @@ class DmProvider(OfferProvider):
         current_price = _parse_price((price_data.get("current") or {}).get("value"))
         old_price = _parse_price((price_data.get("previous") or {}).get("value"))
         unit_price, unit = _parse_unit_price((tile.get("price") or {}).get("tileInfos") or [])
-        discount_percent = None
-        if old_price and current_price and old_price > current_price:
-            discount_percent = round((old_price - current_price) / old_price * 100, 1)
+        discount_percent = compute_discount_percent(current_price, old_price)
 
         title = (title_data.get("tileHeadline") or product.get("title") or "").strip()
         brand = (brand_data.get("name") or product.get("brandName") or "").strip() or None
@@ -112,7 +78,7 @@ class DmProvider(OfferProvider):
             unit=unit,
             discount_percent=discount_percent,
             description=description,
-            valid_from=datetime.now(ZoneInfo("Europe/Berlin")).date().isoformat(),
+            valid_from=datetime.now(BERLIN_TZ).date().isoformat(),
             valid_to=None,
             image_url=image_url,
             source_url=source_url,

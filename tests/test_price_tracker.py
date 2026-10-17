@@ -108,15 +108,46 @@ def test_basket_store_totals_and_smart_split():
     assert stores["REWE"]["total_cost"] == pytest.approx(3.28, 0.01)
 
 
-def test_price_tracker_apis(monkeypatch):
-    app = create_app()
+def test_price_tracker_apis(monkeypatch, tmp_path):
+    import app.routes as routes
+    from app.config import Config
+
+    class TestConfig(Config):
+        TESTING = True
+        AUTO_REFRESH_ENABLED = False
+        CACHE_DIR = tmp_path
+
+    fake_offers = [
+        _sample_offer("rewe-kaffee", "Eduscho Kaffee 500g", "REWE", 3.99, old_price=5.99, brand="Eduscho"),
+        _sample_offer("edeka-kaffee", "Eduscho Kaffee 500g", "EDEKA", 4.49, old_price=5.99, brand="Eduscho"),
+    ]
+    for o in fake_offers:
+        o.valid_to = "2099-12-31"
+    ph_service = PriceHistoryService(cache_dir=tmp_path)
+    ph_service.record_offers(fake_offers, zip_code="14195")
+
+    class FakeService:
+        price_history = ph_service
+
+        def get_cached_offers(self, zip_code: str):
+            return OfferResult(offers=fake_offers, fetched_at="2026-06-08T08:00:00+00:00", warnings=[], from_cache=True)
+
+        def get_offers(self, zip_code: str, refresh: bool = False):
+            return self.get_cached_offers(zip_code)
+
+    monkeypatch.setattr(routes, "offer_service", lambda: FakeService())
+    monkeypatch.setattr(routes, "drugstore_offer_service", lambda: FakeService())
+    monkeypatch.setattr(routes, "_queue_refresh", lambda service, zip_code: None)
+
+    app = create_app(TestConfig)
     client = app.test_client()
 
     # Test /api/price-history
-    res = client.get("/api/price-history?q=Nutella")
+    res = client.get("/api/price-history?q=Eduscho%20Kaffee&brand=Eduscho&price=3.99")
     assert res.status_code == 200
     data = res.get_json()
     assert "product_name" in data
+    assert "avg_price" in data
     assert "history" in data
 
     # Test /api/compare
@@ -124,6 +155,7 @@ def test_price_tracker_apis(monkeypatch):
     assert res.status_code == 200
     comp_data = res.get_json()
     assert "stores" in comp_data
+    assert comp_data["stores_count"] == 2
 
     # Test /api/watchlist-deals
     payload = {
@@ -138,6 +170,8 @@ def test_price_tracker_apis(monkeypatch):
     wl_data = res.get_json()
     assert "results" in wl_data
     assert len(wl_data["results"]) == 1
+    assert wl_data["results"][0]["deals_count"] >= 2
+
 
 
 def test_build_weekly_competitor_map():
@@ -167,5 +201,38 @@ def test_build_weekly_competitor_map():
 
     # Single-store item should have no competitors
     assert "other-1" not in comp_map
+
+
+def test_enrich_weekly_competitors_and_overlap_week_counts():
+    from datetime import date
+    from app.routes import build_week_counts, WEEK_LABELS
+    from app.services.price_history import enrich_weekly_competitors
+
+    rewe_pasta = _sample_offer("rewe-1", "Barilla Pasta 500g", "REWE", 0.99, brand="Barilla")
+    lidl_pasta = _sample_offer("lidl-1", "Barilla Pasta 500g", "Lidl", 0.89, brand="Barilla")
+    solo_item = _sample_offer("solo-1", "Bio Eier", "REWE", 2.49)
+    for o in (rewe_pasta, lidl_pasta, solo_item):
+        o.valid_from = "2026-01-01"
+        o.valid_to = "2099-12-31"
+
+    enriched = enrich_weekly_competitors([rewe_pasta, lidl_pasta, solo_item])
+    assert enriched[0].is_cheapest_in_week is False
+    assert enriched[1].is_cheapest_in_week is True
+    assert enriched[0].cheapest_competitor["retailer"] == "Lidl"
+    assert not enriched[2].competitors
+
+    # Verify build_week_counts with overlap_only=True works even on fresh un-enriched offers
+    fresh_offers = [
+        _sample_offer("rewe-2", "Barilla Pasta 500g", "REWE", 0.99, brand="Barilla"),
+        _sample_offer("lidl-2", "Barilla Pasta 500g", "Lidl", 0.89, brand="Barilla"),
+        _sample_offer("solo-2", "Bio Eier", "REWE", 2.49),
+    ]
+    for o in fresh_offers:
+        o.valid_from = "2026-01-01"
+        o.valid_to = "2099-12-31"
+
+    counts = build_week_counts(fresh_offers, WEEK_LABELS, overlap_only=True)
+    assert counts["current"] == 2
+
 
 

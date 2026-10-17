@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from functools import lru_cache
 import re
 import unicodedata
-from dataclasses import dataclass
 
 from app.models import Offer
 from app.services.translations import translate_text
+
 
 
 KOREAN_PRODUCT_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -348,6 +350,7 @@ def _normalize_unit(unit: str | None) -> str | None:
     }.get(unit, unit)
 
 
+@lru_cache(maxsize=4096)
 def _normalize(value: str | None) -> str:
     if not value:
         return ""
@@ -355,6 +358,7 @@ def _normalize(value: str | None) -> str:
     value = "".join(char for char in value if not unicodedata.combining(char))
     value = value.replace("ß", "ss")
     return re.sub(r"\s+", " ", value).strip()
+
 
 
 def calculate_basket_store_totals(

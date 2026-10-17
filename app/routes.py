@@ -8,10 +8,22 @@ from zoneinfo import ZoneInfo
 
 from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, url_for
 
-from app.models import Offer
+from app.config import DRUGSTORE_PAGE, SUPERMARKET_PAGE, WEEK_LABELS
+from app.models import Offer, OfferResult
 from app.services.basket import BasketRecommendation, calculate_basket_store_totals, recommend_basket_items
+from app.services.formatting import (
+    format_amount_with_unit as _format_amount,
+    format_date_de as _format_date_de,
+    format_eur_value as _format_eur,
+    format_percent_value as _format_percent,
+    parse_offer_date as _offer_date,
+)
 from app.services.offers import OfferService
-from app.services.price_history import build_weekly_competitor_map, normalize_product_key
+from app.services.price_history import (
+    build_weekly_competitor_map,
+    enrich_weekly_competitors,
+    normalize_product_key,
+)
 from app.services.translations import translate_text
 
 bp = Blueprint("main", __name__)
@@ -20,10 +32,7 @@ BERLIN_TZ = ZoneInfo("Europe/Berlin")
 BACKGROUND_REFRESH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="offer-refresh")
 BACKGROUND_REFRESH_LOCK = Lock()
 BACKGROUND_REFRESH_KEYS: set[tuple[str, str]] = set()
-WEEK_LABELS = {
-    "current": {"de": "Diese Woche", "ko": "이번 주", "en": "This week"},
-    "next": {"de": "Nächste Woche", "ko": "다음 주", "en": "Next week"},
-}
+
 ESSENTIAL_CATEGORY_PRIORITY = {
     "produce": 0,
     "dairy": 0,
@@ -42,75 +51,40 @@ RECOMMENDATION_CATEGORIES = frozenset(
     category for category in ESSENTIAL_CATEGORY_PRIORITY if category not in LOW_PRIORITY_RECOMMENDATION_CATEGORIES
 )
 PRICE_SORT_FALLBACK = 999999
-SUPERMARKET_PAGE = {
-    "title": "Supermarkt-Angebote · 독일 마트 할인",
-    "meta_description": "Wöchentliche Supermarkt-Angebote in Deutschland (ALDI, LIDL, REWE, EDEKA, Kaufland, Netto, PENNY) vergleichen und sparen. Aktuelle Prospekte, Rabatte und günstige Lebensmittel.",
-    "eyebrow": "ALDI · EDEKA · REWE · Lidl · Netto · PENNY · nahkauf · Kaufland",
-    "heading": "Wöchentliche Angebote",
-    "heading_ko": "이번 주 할인 생필품", "heading_en": "Weekly Essentials Deals",
-    "active": "supermarket",
-    "refresh_endpoint": "main.refresh",
-    "basket_endpoint": "main.api_basket",
-    "storage_key": "supermarketDealShoppingList",
-    "retailer_label": {"de": "Händler", "ko": "마트", "en": "Retailer"},
-    "search_placeholder": "butter, kaffee, pasta",
-    "basket_placeholder": "파 4개, 당근, 우유 2개",
-    "basket_placeholder_en": "4 green onions, carrots, 2 milk",
-    "week_labels": WEEK_LABELS,
-    "default_week": "current",
-    "default_retailers": ("aldi-nord", "edeka", "rewe", "lidl"),
-    "basket_templates": (
-        {"label": "Basis", "ko": "기본", "en": "Basic", "value": "우유 2개, 계란, 양파, 당근, 토마토, 바나나, 빵, 버터", "value_en": "2 milk, eggs, onions, carrots, tomatoes, bananas, bread, butter"},
-        {"label": "Kochen", "ko": "요리", "en": "Cooking", "value": "파 4개, 감자 1kg, 파스타, 쌀, 닭고기, 치즈", "value_en": "4 green onions, 1kg potatoes, pasta, rice, chicken, cheese"},
-        {"label": "Haushalt", "ko": "생활", "en": "Household", "value": "세제, 주방타월, 화장지, 쓰레기봉투", "value_en": "detergent, paper towels, toilet paper, trash bags"},
-    ),
-}
-DRUGSTORE_PAGE = {
-    "title": "Drogerie-Angebote · DM/ROSSMANN 할인",
-    "meta_description": "Aktuelle Drogerie-Angebote bei dm, ROSSMANN und budni vergleichen. Entdecken Sie Rabatte auf Kosmetik, Pflegeprodukte, Haushaltswaren und Babyartikel.",
-    "eyebrow": "dm · ROSSMANN · budni",
-    "heading": "Drogerie-Angebote",
-    "heading_ko": "DM/ROSSMANN 할인 생활용품", "heading_en": "DM/ROSSMANN Deals",
-    "active": "drugstore",
-    "refresh_endpoint": "main.drugstores_refresh",
-    "basket_endpoint": "main.api_drugstore_basket",
-    "storage_key": "drugstoreDealShoppingList",
-    "retailer_label": {"de": "Drogerie", "ko": "드럭스토어", "en": "Drugstore"},
-    "search_placeholder": "shampoo, zahnpasta, waschmittel",
-    "basket_placeholder": "샴푸 1개, 치약, 세제, 기저귀",
-    "basket_placeholder_en": "1 shampoo, toothpaste, detergent, diapers",
-    "week_labels": WEEK_LABELS,
-    "default_week": "current",
-    "default_retailers": ("dm-drogerie-markt", "rossmann"),
-    "basket_templates": (
-        {"label": "Basis", "ko": "기본", "en": "Basic", "value": "샴푸 1개, 치약, 바디워시, 비누, 데오", "value_en": "1 shampoo, toothpaste, body wash, soap, deodorant"},
-        {"label": "Haushalt", "ko": "생활", "en": "Household", "value": "세제, 화장지, 주방세제, 청소포", "value_en": "detergent, toilet paper, dish soap, cleaning wipes"},
-        {"label": "Baby", "ko": "유아", "en": "Baby", "value": "기저귀, 물티슈, 베이비크림", "value_en": "diapers, baby wipes, baby cream"},
-    ),
-}
+
+
+def _get_or_create_offer_service(retailers_key: str, cache_name: str = "offers.json") -> OfferService:
+    services: dict[tuple, OfferService] = current_app.extensions.setdefault("offer_services", {})
+    cfg = current_app.config
+    cache_key = (
+        cache_name,
+        str(cfg["CACHE_DIR"]),
+        cfg["CACHE_TTL_SECONDS"],
+        cfg["REQUEST_TIMEOUT_SECONDS"],
+        str(cfg["REQUEST_VERIFY_TLS"]),
+        cfg["MAX_OFFERS_PER_RETAILER"],
+    )
+    service = services.get(cache_key)
+    if service is None:
+        service = OfferService(
+            cache_dir=cfg["CACHE_DIR"],
+            retailers=cfg[retailers_key],
+            cache_ttl_seconds=cfg["CACHE_TTL_SECONDS"],
+            timeout=cfg["REQUEST_TIMEOUT_SECONDS"],
+            verify_tls=cfg["REQUEST_VERIFY_TLS"],
+            max_offers_per_retailer=cfg["MAX_OFFERS_PER_RETAILER"],
+            cache_name=cache_name,
+        )
+        services[cache_key] = service
+    return service
 
 
 def offer_service() -> OfferService:
-    return OfferService(
-        cache_dir=current_app.config["CACHE_DIR"],
-        retailers=current_app.config["RETAILERS"],
-        cache_ttl_seconds=current_app.config["CACHE_TTL_SECONDS"],
-        timeout=current_app.config["REQUEST_TIMEOUT_SECONDS"],
-        verify_tls=current_app.config["REQUEST_VERIFY_TLS"],
-        max_offers_per_retailer=current_app.config["MAX_OFFERS_PER_RETAILER"],
-    )
+    return _get_or_create_offer_service("RETAILERS", cache_name="offers.json")
 
 
 def drugstore_offer_service() -> OfferService:
-    return OfferService(
-        cache_dir=current_app.config["CACHE_DIR"],
-        retailers=current_app.config["DRUGSTORE_RETAILERS"],
-        cache_ttl_seconds=current_app.config["CACHE_TTL_SECONDS"],
-        timeout=current_app.config["REQUEST_TIMEOUT_SECONDS"],
-        verify_tls=current_app.config["REQUEST_VERIFY_TLS"],
-        max_offers_per_retailer=current_app.config["MAX_OFFERS_PER_RETAILER"],
-        cache_name="drugstore_offers.json",
-    )
+    return _get_or_create_offer_service("DRUGSTORE_RETAILERS", cache_name="drugstore_offers.json")
 
 
 @bp.get("/")
@@ -152,35 +126,13 @@ def render_offer_page(
     ending_soon = request.args.get("ending") == "1"
     overlap_only = request.args.get("overlap") == "1"
 
-    week_offers = filter_offers_by_week(result.offers, selected_week)
-    for offer in week_offers:
-        pkey = normalize_product_key(offer.title, offer.brand)
-        setattr(offer, "product_key", pkey)
-
-    competitor_map = build_weekly_competitor_map(week_offers)
-    for offer in week_offers:
-        comps = competitor_map.get(offer.id, [])
-        setattr(offer, "competitors", comps)
-        priced_comps = [c for c in comps if c["price"] is not None]
-        cheapest_comp = priced_comps[0] if priced_comps else None
-        setattr(offer, "cheapest_competitor", cheapest_comp)
-        is_cheapest = False
-        if comps and offer.price is not None:
-            is_cheapest = all(c["price"] is None or offer.price <= (c["price"] + 0.001) for c in comps)
-        setattr(offer, "is_cheapest_in_week", is_cheapest)
-
+    week_offers = enrich_weekly_competitors(filter_offers_by_week(result.offers, selected_week))
     filtered = filter_offers(week_offers, selected_retailers, query, category, priced_only, ending_soon, overlap_only)
     filtered = sort_offers(filtered, sort)
     filtered = limit_offers_per_retailer(filtered, current_app.config["MAX_OFFERS_PER_RETAILER"])
     recommendations = pick_recommendations(filtered)
 
-    all_time_low_map = service.get_all_time_low_map() if hasattr(service, "get_all_time_low_map") else {}
-    for offer in filtered:
-        min_p = all_time_low_map.get(offer.product_key)
-        is_atl = bool(offer.price is not None and min_p is not None and offer.price <= (min_p + 0.001))
-        setattr(offer, "all_time_low", min_p)
-        setattr(offer, "is_all_time_low", is_atl)
-        setattr(offer, "recorded_at", result.fetched_at)
+    _enrich_atl_if_needed(filtered, service, result.fetched_at)
 
     return render_template(
         "offers.html",
@@ -204,7 +156,9 @@ def render_offer_page(
             overlap_only,
         ),
         retailer_week_status=build_retailer_week_status(result.offers, retailers, selected_week, selected_retailers),
-        retailer_counts=build_retailer_counts(week_offers, retailers, query, category, priced_only, ending_soon, overlap_only),
+        retailer_counts=build_retailer_counts(
+            week_offers, retailers, query, category, priced_only, ending_soon, overlap_only
+        ),
         default_retailers=page.get("default_retailers", ()),
         week_labels=week_labels,
         week_links=build_week_links(page_endpoint, week_labels),
@@ -221,6 +175,20 @@ def render_offer_page(
         page=page,
         lang=lang,
     )
+
+
+def _enrich_atl_if_needed(offers: list[Offer], service: OfferService, fetched_at: str | None) -> None:
+    if not offers:
+        return
+    all_time_low_map = service.get_all_time_low_map() if hasattr(service, "get_all_time_low_map") else {}
+    for offer in offers:
+        if not offer.product_key:
+            offer.product_key = normalize_product_key(offer.title, offer.brand)
+        min_p = all_time_low_map.get(offer.product_key)
+        is_atl = bool(offer.price is not None and min_p is not None and offer.price <= (min_p + 0.001))
+        offer.all_time_low = min_p
+        offer.is_all_time_low = is_atl
+        offer.recorded_at = fetched_at
 
 
 @bp.get("/refresh")
@@ -324,18 +292,19 @@ def api_price_history():
     return jsonify(stats)
 
 
+def _load_combined_week_offers(zip_code: str, selected_week: str) -> list[Offer]:
+    supermarket_res = load_offers_for_request(offer_service(), zip_code)
+    drugstore_res = load_offers_for_request(drugstore_offer_service(), zip_code)
+    return filter_offers_by_week(supermarket_res.offers + drugstore_res.offers, selected_week)
+
+
 @bp.get("/api/compare")
 def api_compare():
     q = (request.args.get("q") or "").strip()
     zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
     selected_week = _clean_week(request.args.get("week"), WEEK_LABELS, "current")
-
-    supermarket_res = load_offers_for_request(offer_service(), zip_code)
-    drugstore_res = load_offers_for_request(drugstore_offer_service(), zip_code)
-    all_offers = filter_offers_by_week(supermarket_res.offers + drugstore_res.offers, selected_week)
-
-    service = offer_service()
-    result = service.price_history.compare_across_stores(q, all_offers)
+    all_offers = _load_combined_week_offers(zip_code, selected_week)
+    result = offer_service().price_history.compare_across_stores(q, all_offers)
     return jsonify(result)
 
 
@@ -352,68 +321,8 @@ def api_watchlist_deals():
         zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
         selected_week = _clean_week(request.args.get("week"), WEEK_LABELS, "current")
 
-    supermarket_res = load_offers_for_request(offer_service(), zip_code)
-    drugstore_res = load_offers_for_request(drugstore_offer_service(), zip_code)
-    all_offers = filter_offers_by_week(supermarket_res.offers + drugstore_res.offers, selected_week)
-
-    import re
-    matches = []
-    for item in items:
-        item_id = item.get("id") or ""
-        name = (item.get("name") or item.get("keyword") or "").strip()
-        if not name:
-            continue
-        raw_target = item.get("target_price")
-        target_price = None
-        if raw_target is not None:
-            try:
-                target_price = float(raw_target)
-            except (ValueError, TypeError):
-                target_price = None
-
-        tokens = [t.casefold() for t in re.split(r"\s+", name) if len(t) >= 2]
-        if not tokens:
-            tokens = [name.casefold()]
-
-        item_matches = []
-        for offer in all_offers:
-            haystack = f"{offer.title} {offer.brand or ''} {offer.description}".casefold()
-            if all(tok in haystack for tok in tokens):
-                is_hit = bool(target_price is not None and offer.price is not None and offer.price <= target_price)
-                item_matches.append({
-                    "id": offer.id,
-                    "retailer": offer.retailer,
-                    "retailer_slug": offer.retailer_slug,
-                    "title": offer.title,
-                    "price": offer.price,
-                    "old_price": offer.old_price,
-                    "discount_percent": offer.discount_percent,
-                    "unit_price": offer.unit_price,
-                    "unit": offer.unit,
-                    "valid_from": offer.valid_from,
-                    "valid_to": offer.valid_to,
-                    "source_url": offer.source_url,
-                    "is_target_hit": is_hit,
-                })
-
-        item_matches.sort(key=lambda m: (m["price"] is None, m["price"] or 999999))
-        item_summary = {
-            "id": item_id,
-            "name": name,
-            "keyword": name,
-            "target_price": target_price,
-            "deals_count": len(item_matches),
-            "best_deal": item_matches[0] if item_matches else None,
-            "all_deals": item_matches[:5],
-            "matches": item_matches[:5],
-        }
-        matches.append(item_summary)
-
-    return jsonify({
-        "items": matches,
-        "results": matches,
-        "total_active_alerts": sum(1 for m in matches if m["deals_count"] > 0)
-    })
+    all_offers = _load_combined_week_offers(zip_code, selected_week)
+    return jsonify(offer_service().price_history.match_watchlist_deals(items, all_offers))
 
 
 @bp.get("/health")
@@ -442,13 +351,11 @@ def api_scheduler_status():
 def api_scheduler_trigger():
     scheduler = current_app.extensions.get("auto_scheduler")
     if scheduler:
-        result = scheduler.execute_refresh()
-        return jsonify(result)
+        return jsonify(scheduler.execute_refresh())
     from app.services.scheduler import AutoRefreshScheduler
 
     runner = AutoRefreshScheduler(current_app)
-    result = runner.execute_refresh()
-    return jsonify(result)
+    return jsonify(runner.execute_refresh())
 
 
 @bp.get("/ads.txt")
@@ -503,6 +410,7 @@ def filter_offers(
     overlap_only: bool = False,
 ) -> list[Offer]:
     query_key = query.casefold()
+    today = datetime.now(BERLIN_TZ).date() if ending_soon else None
     filtered: list[Offer] = []
     for offer in offers:
         if selected_retailers and offer.retailer_slug not in selected_retailers:
@@ -511,7 +419,7 @@ def filter_offers(
             continue
         if priced_only and offer.price is None and offer.unit_price is None:
             continue
-        if ending_soon and not _ends_soon(offer):
+        if ending_soon and not _ends_soon(offer, today=today):
             continue
         if overlap_only and not getattr(offer, "competitors", None):
             continue
@@ -602,6 +510,7 @@ def _price_or_fallback(offer: Offer) -> float:
 
 
 def build_stats(filtered: list[Offer], all_offers: list[Offer]) -> dict:
+    today = datetime.now(BERLIN_TZ).date()
     discounted = [offer for offer in filtered if offer.discount_percent]
     best = max((offer.discount_percent or 0 for offer in filtered), default=0)
     return {
@@ -609,7 +518,7 @@ def build_stats(filtered: list[Offer], all_offers: list[Offer]) -> dict:
         "total": len(all_offers),
         "discounted": len(discounted),
         "best_discount": round(best),
-        "ending_soon": sum(1 for offer in filtered if _ends_soon(offer)),
+        "ending_soon": sum(1 for offer in filtered if _ends_soon(offer, today=today)),
         "all_time_low_count": sum(1 for offer in filtered if getattr(offer, "is_all_time_low", False)),
         "overlapping_count": sum(1 for offer in filtered if getattr(offer, "competitors", None)),
         "retailer_count": len({offer.retailer_slug for offer in filtered}),
@@ -626,10 +535,14 @@ def build_week_counts(
     ending_soon: bool = False,
     overlap_only: bool = False,
 ) -> dict[str, int]:
-    return {
-        week: len(
+    counts: dict[str, int] = {}
+    for week in week_labels:
+        week_subset = filter_offers_by_week(offers, week)
+        if overlap_only:
+            enrich_weekly_competitors(week_subset)
+        counts[week] = len(
             filter_offers(
-                filter_offers_by_week(offers, week),
+                week_subset,
                 selected_retailers or set(),
                 query,
                 category,
@@ -638,8 +551,7 @@ def build_week_counts(
                 overlap_only,
             )
         )
-        for week in week_labels
-    }
+    return counts
 
 
 def build_retailer_counts(
@@ -714,12 +626,13 @@ def _queue_refresh(service: OfferService, zip_code: str) -> None:
 
 def _refresh_cache(service: OfferService, zip_code: str, key: tuple[str, str]) -> None:
     try:
-        service.get_offers(zip_code=zip_code, refresh=True)
+        service.get_offers(zip_code=zip_code, refresh=False)
     except Exception:
         LOGGER.exception("Background offer refresh failed for zip_code=%s", zip_code)
     finally:
         with BACKGROUND_REFRESH_LOCK:
             BACKGROUND_REFRESH_KEYS.discard(key)
+
 
 
 def _refresh_key(service: OfferService, zip_code: str) -> tuple[str, str]:
@@ -776,43 +689,10 @@ def _clean_zip(value: str | None) -> str | None:
     return value if value.isdigit() and 4 <= len(value) <= 5 else None
 
 
-def _format_eur(value: float | int | None) -> str | None:
-    if value is None:
-        return None
-    return f"{value:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def _format_percent(value: float | int | None) -> str | None:
-    if value is None or value <= 0:
-        return None
-    return f"-{round(value)}%"
-
-
-def _format_amount(value: float | None, unit: str | None) -> str:
-    if value is None:
-        return ""
-    amount = str(int(value)) if float(value).is_integer() else str(value).replace(".", ",")
-    return " ".join(part for part in (amount, unit or "") if part)
-
-
 def _format_unit_price(offer: Offer) -> str | None:
     if offer.unit_price is None:
         return None
     return f"{_format_eur(offer.unit_price)} / {offer.unit or 'unit'}"
-
-
-def _format_date_de(value: str | None) -> str:
-    if not value:
-        return "-"
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        date_part = parsed.astimezone(BERLIN_TZ).date().isoformat()
-    except ValueError:
-        date_part = value.split("T", 1)[0]
-    parts = date_part.split("-")
-    if len(parts) != 3:
-        return value
-    return f"{parts[2]}.{parts[1]}.{parts[0]}"
 
 
 def _old_price(offer: Offer) -> float | None:
@@ -847,13 +727,6 @@ def _next_week_start(today: date) -> date:
     return today + timedelta(days=7 - today.weekday())
 
 
-def _starts_in_range(offer: Offer, start: date, end: date) -> bool:
-    valid_from = _offer_date(offer.valid_from)
-    if valid_from is None:
-        return False
-    return start <= valid_from <= end
-
-
 def _is_relevant_for_next_week(offer: Offer, start: date, end: date) -> bool:
     valid_from = _offer_date(offer.valid_from)
     valid_to = _offer_date(offer.valid_to)
@@ -884,15 +757,3 @@ def _ends_soon(offer: Offer, today: date | None = None) -> bool:
         return False
     today = today or datetime.now(BERLIN_TZ).date()
     return today <= valid_to <= today + timedelta(days=1)
-
-
-def _offer_date(value: str | None) -> date | None:
-    if not value:
-        return None
-    try:
-        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if timestamp.tzinfo is not None:
-        timestamp = timestamp.astimezone(BERLIN_TZ)
-    return timestamp.date()

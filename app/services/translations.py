@@ -321,18 +321,27 @@ WORDS_EN: dict[str, str] = {
 }
 
 TOKEN_RE = re.compile(r"[A-Za-zÄÖÜäöüß]+|[0-9]+(?:[,.][0-9]+)?|[^A-Za-zÄÖÜäöüß0-9]+")
+_COMPILED_PHRASES_KO: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(re.escape(source), re.IGNORECASE), target)
+    for source, target in sorted(PHRASES_KO, key=lambda pair: len(pair[0]), reverse=True)
+)
+_COMPILED_PHRASES_EN: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(re.escape(source), re.IGNORECASE), target)
+    for source, target in sorted(PHRASES_EN, key=lambda pair: len(pair[0]), reverse=True)
+)
+
 
 @lru_cache(maxsize=4096)
 def _translate_text_cached(text: str | None, lang: str) -> str:
     if not text:
         return ""
 
-    phrases = PHRASES_EN if lang == "en" else PHRASES_KO
+    phrases = _COMPILED_PHRASES_EN if lang == "en" else _COMPILED_PHRASES_KO
     words = WORDS_EN if lang == "en" else WORDS_KO
 
     translated = text
-    for source, target in sorted(phrases, key=lambda pair: len(pair[0]), reverse=True):
-        translated = re.sub(re.escape(source), target, translated, flags=re.IGNORECASE)
+    for pattern, target in phrases:
+        translated = pattern.sub(target, translated)
 
     parts: list[str] = []
     for token in TOKEN_RE.findall(translated):
@@ -349,6 +358,7 @@ def _translate_text_cached(text: str | None, lang: str) -> str:
     result = re.sub(r"\s+", " ", result).strip()
     return result if result != text else ""
 
+
 def translate_text(text: str | None, lang: str | None = None) -> str:
     if lang is None:
         try:
@@ -356,3 +366,4 @@ def translate_text(text: str | None, lang: str | None = None) -> str:
         except Exception:
             lang = "ko"
     return _translate_text_cached(text, lang)
+

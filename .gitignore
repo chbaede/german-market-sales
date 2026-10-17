@@ -6,4 +6,7 @@ __pycache__/
 data/cache/*.json
 data/cache/*.db
 data/cache/*.sqlite*
+data/cache/*.lock
+data/cache/.*.lock
 !data/cache/.gitkeep
+

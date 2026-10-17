@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import json
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, date, datetime, timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
-from zoneinfo import ZoneInfo
+import tempfile
 
 from app.models import Offer, OfferResult
 from app.providers.aldi_nord import AldiNordProvider
+from app.providers.base import BERLIN_TZ
 from app.providers.dm import DmProvider
 from app.providers.edeka import EdekaProvider
 from app.providers.kaufland import KauflandProvider
@@ -16,8 +17,8 @@ from app.providers.marktguru import MarktguruProvider
 from app.providers.rewe import ReweProvider
 from app.providers.rossmann import RossmannProvider
 from app.services.categories import categorize_offer
-from app.services.price_history import PriceHistoryService
-
+from app.services.formatting import parse_offer_date
+from app.services.price_history import PriceHistoryService, normalize_product_key
 
 CACHE_SCHEMA_VERSION = 11
 UPSTREAM_FETCH_MULTIPLIER = 10
@@ -48,10 +49,14 @@ class OfferService:
             "edeka": EdekaProvider(timeout=timeout, verify_tls=verify_tls),
             "kaufland": KauflandProvider(timeout=timeout, verify_tls=verify_tls),
             "rewe": ReweProvider(timeout=timeout, verify_tls=verify_tls),
-            "rossmann": RossmannProvider(timeout=timeout, verify_tls=verify_tls),
+            "rossmann": RossmannProvider(marketguru=self.provider, timeout=timeout, verify_tls=verify_tls),
         }
         self.max_offers_per_retailer = max_offers_per_retailer
-        self.upstream_fetch_limit = max(max_offers_per_retailer * UPSTREAM_FETCH_MULTIPLIER, MIN_UPSTREAM_FETCH_LIMIT)
+        self.upstream_fetch_limit = max(
+            max_offers_per_retailer * UPSTREAM_FETCH_MULTIPLIER,
+            MIN_UPSTREAM_FETCH_LIMIT,
+        )
+        self._memory_cache: tuple[int, str, str | None, list[str], list[Offer]] | None = None
         self.price_history = PriceHistoryService(cache_dir=cache_dir)
         try:
             self.price_history.seed_initial_history()
@@ -71,7 +76,7 @@ class OfferService:
 
         warnings: list[str] = []
         offers: list[Offer] = []
-        workers = min(len(self.retailers), 8)
+        workers = max(1, min(len(self.retailers), 8))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="offer-provider") as executor:
             futures = {
                 executor.submit(self._fetch_retailer_offers, retailer_slug, zip_code): retailer_slug
@@ -143,19 +148,46 @@ class OfferService:
                 temp_path = Path(handle.name)
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
             temp_path.replace(self.cache_file)
+            try:
+                mtime_ns = self.cache_file.stat().st_mtime_ns
+                self._memory_cache = (mtime_ns, zip_code, fetched_at, list(warnings), [replace(o) for o in offers])
+            except OSError:
+                self._memory_cache = None
         except Exception:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
             raise
 
     def get_cached_offers(self, zip_code: str) -> OfferResult | None:
+        if not self.cache_file.exists():
+            return None
+        try:
+            mtime_ns = self.cache_file.stat().st_mtime_ns
+        except OSError:
+            return None
+
+        if self._memory_cache is not None:
+            cached_mtime, cached_zip, fetched_at, warnings, base_offers = self._memory_cache
+            if cached_mtime == mtime_ns and cached_zip == zip_code:
+                offers = self._non_expired_offers([replace(o) for o in base_offers])
+                return OfferResult(
+                    offers=offers,
+                    fetched_at=fetched_at,
+                    warnings=list(warnings),
+                    from_cache=True,
+                )
+
         cached = self._read_cache(zip_code)
         if not cached:
             return None
+        offers = self._cached_offers(cached)
+        fetched_at = cached["fetched_at"]
+        warnings = cached.get("warnings", [])
+        self._memory_cache = (mtime_ns, zip_code, fetched_at, list(warnings), [replace(o) for o in offers])
         return OfferResult(
-            offers=self._cached_offers(cached),
-            fetched_at=cached["fetched_at"],
-            warnings=cached.get("warnings", []),
+            offers=offers,
+            fetched_at=fetched_at,
+            warnings=warnings,
             from_cache=True,
         )
 
@@ -179,24 +211,22 @@ class OfferService:
         return datetime.now(UTC) - timestamp > self.cache_ttl
 
     def _non_expired_offers(self, offers: list[Offer]) -> list[Offer]:
-        today = datetime.now(ZoneInfo("Europe/Berlin")).date()
+        today = datetime.now(BERLIN_TZ).date()
         current: list[Offer] = []
         for offer in offers:
             if not offer.valid_to:
                 current.append(offer)
                 continue
-            try:
-                valid_to = _local_date(offer.valid_to)
-            except ValueError:
-                current.append(offer)
-                continue
-            if valid_to >= today:
+            valid_to = parse_offer_date(offer.valid_to)
+            if valid_to is None or valid_to >= today:
                 current.append(offer)
         return current
 
     def _normalize_categories(self, offers: list[Offer]) -> list[Offer]:
         for offer in offers:
             offer.category = categorize_offer(offer.title, offer.brand, offer.description)
+            if not offer.product_key:
+                offer.product_key = normalize_product_key(offer.title, offer.brand)
         return offers
 
     def _try_marketguru_fallback(self, retailer_slug: str, zip_code: str) -> tuple[list[Offer], list[str]]:
@@ -267,10 +297,3 @@ class OfferService:
             merged.append(offer)
             seen.add(offer.id)
         return merged
-
-
-def _local_date(value: str) -> date:
-    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if timestamp.tzinfo is not None:
-        timestamp = timestamp.astimezone(ZoneInfo("Europe/Berlin"))
-    return timestamp.date()

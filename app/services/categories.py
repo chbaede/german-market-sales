@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 
 KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -162,18 +163,24 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 PRIORITY_CATEGORIES = ("nonfood", "personal_care", "baby")
-STRICT_KEYWORDS = {"eis", "mett", "obst", "öl", "reis", "tee"}
+STRICT_KEYWORDS = frozenset({"eis", "mett", "obst", "öl", "reis", "tee"})
+ORDERED_CATEGORY_KEYS = PRIORITY_CATEGORIES + tuple(
+    cat for cat in KEYWORDS if cat not in PRIORITY_CATEGORIES
+)
+
+_STRICT_PATTERNS: dict[str, re.Pattern[str]] = {
+    word: re.compile(rf"(?<![a-zäöüß]){re.escape(word)}(?![a-zäöüß])")
+    for words in KEYWORDS.values()
+    for word in words
+    if word in STRICT_KEYWORDS or len(word) <= 3
+}
 
 
+@lru_cache(maxsize=4096)
 def categorize_offer(title: str, brand: str | None = None, description: str | None = None) -> str:
     haystack = " ".join(part for part in (title, brand or "", description or "") if part).casefold()
-    for category in PRIORITY_CATEGORIES:
+    for category in ORDERED_CATEGORY_KEYS:
         if _matches_any(haystack, KEYWORDS[category]):
-            return category
-    for category, words in KEYWORDS.items():
-        if category in PRIORITY_CATEGORIES:
-            continue
-        if _matches_any(haystack, words):
             return category
     return "other"
 
@@ -183,6 +190,7 @@ def _matches_any(haystack: str, words: tuple[str, ...]) -> bool:
 
 
 def _matches_keyword(haystack: str, word: str) -> bool:
-    if word in STRICT_KEYWORDS or len(word) <= 3:
-        return re.search(rf"(?<![a-zäöüß]){re.escape(word)}(?![a-zäöüß])", haystack) is not None
+    pattern = _STRICT_PATTERNS.get(word)
+    if pattern is not None:
+        return pattern.search(haystack) is not None
     return word in haystack

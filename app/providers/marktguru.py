@@ -5,17 +5,12 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-import requests
 from bs4 import BeautifulSoup
 from requests import Session
-from requests.exceptions import SSLError
-from urllib3.exceptions import InsecureRequestWarning
-import urllib3
 
 from app.models import Offer
-from app.providers.base import OfferProvider
+from app.providers.base import OfferProvider, compute_discount_percent, parse_positive_float
 from app.services.categories import categorize_offer
-
 
 NO_BRAND_NAME = "thisisnobrand123"
 
@@ -37,9 +32,7 @@ class MarktguruProvider(OfferProvider):
         timeout: int = 15,
         verify_tls: str | bool = "auto",
     ) -> None:
-        self.session = session or requests.Session()
-        self.timeout = timeout
-        self.verify_tls = verify_tls
+        super().__init__(session=session, timeout=timeout, verify_tls=verify_tls)
         self._config: MarktguruConfig | None = None
 
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
@@ -89,38 +82,9 @@ class MarktguruProvider(OfferProvider):
         )
         return self._config
 
-    def _request_text(self, url: str) -> tuple[str, bool]:
-        response, used_insecure = self._request("GET", url)
-        response.raise_for_status()
-        return response.text, used_insecure
-
     def _request_json(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> dict:
-        response, _ = self._request("GET", url, params=params, headers=headers)
-        response.raise_for_status()
-        return response.json()
-
-    def _request(self, method: str, url: str, **kwargs: Any) -> tuple[requests.Response, bool]:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36",
-            **kwargs.pop("headers", {}),
-        }
-        request_kwargs = {
-            "timeout": self.timeout,
-            "headers": headers,
-            **kwargs,
-        }
-
-        verify = self.verify_tls
-        if verify == "auto":
-            verify = True
-
-        try:
-            return self.session.request(method, url, verify=verify, **request_kwargs), False
-        except SSLError:
-            if self.verify_tls != "auto":
-                raise
-            urllib3.disable_warnings(InsecureRequestWarning)
-            return self.session.request(method, url, verify=False, **request_kwargs), True
+        payload, _ = super()._request_json(url, params=params, headers=headers)
+        return payload
 
     @staticmethod
     def extract_bootstrap_json(html: str) -> dict:
@@ -151,12 +115,10 @@ class MarktguruProvider(OfferProvider):
         brand = (brand_data.get("name") or "").strip() or None
         if brand == NO_BRAND_NAME:
             brand = None
-        price = _number_or_none(item.get("price"))
-        old_price = _number_or_none(item.get("oldPrice"))
-        unit_price = _number_or_none(item.get("referencePrice"))
-        discount_percent = None
-        if old_price and price and old_price > price:
-            discount_percent = round((old_price - price) / old_price * 100, 1)
+        price = parse_positive_float(item.get("price"))
+        old_price = parse_positive_float(item.get("oldPrice"))
+        unit_price = parse_positive_float(item.get("referencePrice"))
+        discount_percent = compute_discount_percent(price, old_price)
         description = (item.get("description") or "").strip()
 
         return Offer(
@@ -178,14 +140,6 @@ class MarktguruProvider(OfferProvider):
             image_url=_image_url(source_offer_id, item),
             source_url=f"https://www.marktguru.de/r/{retailer_slug}",
         )
-
-
-def _number_or_none(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if number > 0 else None
 
 
 def _image_url(source_offer_id: int, item: dict) -> str | None:

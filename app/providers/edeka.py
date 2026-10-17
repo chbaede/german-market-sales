@@ -1,51 +1,38 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time
-from typing import Any
 from urllib.parse import urljoin
-from zoneinfo import ZoneInfo
 
-import requests
-import urllib3
 from bs4 import BeautifulSoup, Tag
-from requests import Session
-from requests.exceptions import SSLError
-from urllib3.exceptions import InsecureRequestWarning
 
 from app.models import Offer
-from app.providers.base import OfferProvider
+from app.providers.base import (
+    OfferProvider,
+    clean_text,
+    compute_discount_percent,
+    german_date_to_berlin_iso,
+    join_text,
+    source_offer_id_from_key,
+)
 from app.services.categories import categorize_offer
 
-
-BERLIN_TZ = ZoneInfo("Europe/Berlin")
 EDEKA_BASE_URL = "https://www.edeka.de"
 EDEKA_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
-EDEKA_BROWSER_IMPERSONATION = "chrome136"
 
 
 class EdekaProvider(OfferProvider):
     retailer_name = "EDEKA"
     retailer_slug = "edeka"
     market_search_url = f"{EDEKA_BASE_URL}/api/marketsearch/markets"
-
-    def __init__(
-        self,
-        session: Session | None = None,
-        timeout: int = 15,
-        verify_tls: str | bool = "auto",
-    ) -> None:
-        self.session = session or requests.Session()
-        self.timeout = timeout
-        self.verify_tls = verify_tls
-        self.browser_session: Any | None = None
+    user_agent = EDEKA_USER_AGENT
+    default_headers = {"Accept-Language": "de-DE,de;q=0.9,en;q=0.8"}
+    browser_impersonation = "chrome136"
 
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
-        if retailer_slug != self.retailer_slug:
-            raise ValueError(f"{retailer_slug} is not supported by EdekaProvider.")
+        self._validate_retailer_slug(retailer_slug)
 
         warnings: list[str] = []
         candidate_markets, used_insecure = self._candidate_markets(zip_code)
@@ -70,7 +57,7 @@ class EdekaProvider(OfferProvider):
                 if used_insecure_html:
                     market_warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
-                market_name = _clean_text(market.get("name"))
+                market_name = clean_text(market.get("name"))
                 offers = self.offers_from_html(
                     html,
                     limit=limit,
@@ -130,9 +117,7 @@ class EdekaProvider(OfferProvider):
             return None
 
         price, old_price, price_note = _prices(dialog)
-        discount_percent = _discount_percent(dialog)
-        if discount_percent is None and old_price and price and old_price > price:
-            discount_percent = round((old_price - price) / old_price * 100, 1)
+        discount_percent = _discount_percent(dialog) or compute_discount_percent(price, old_price)
         if old_price is None and price and discount_percent:
             old_price = round(price / (1 - discount_percent / 100), 2)
 
@@ -142,7 +127,7 @@ class EdekaProvider(OfferProvider):
 
         return Offer(
             id=f"edeka-{source_key}",
-            source_offer_id=_source_offer_id(source_key),
+            source_offer_id=source_offer_id_from_key(source_key, allow_hex=True),
             retailer=cls.retailer_name,
             retailer_slug=cls.retailer_slug,
             title=title,
@@ -179,10 +164,6 @@ class EdekaProvider(OfferProvider):
             raise ValueError(f"No EDEKA market found for PLZ {zip_code}.")
         return candidates[:8], used_insecure
 
-    def _market_data(self, zip_code: str) -> tuple[dict, bool]:
-        candidates, used_insecure = self._candidate_markets(zip_code)
-        return candidates[0], used_insecure
-
     def _offers_url(self, market_url: str) -> tuple[str, bool]:
         response, used_insecure = self._request("GET", market_url.strip())
         response.raise_for_status()
@@ -203,88 +184,28 @@ class EdekaProvider(OfferProvider):
             base = f"{base}/"
         return urljoin(base, "angebote/"), used_insecure
 
-    def _request_text(self, url: str) -> tuple[str, bool]:
-        response, used_insecure = self._request("GET", url)
-        response.raise_for_status()
-        return response.text, used_insecure
-
-    def _request_json(self, url: str, params: dict[str, Any]) -> tuple[dict, bool]:
-        response, used_insecure = self._request("GET", url, params=params, headers={"Accept": "application/json"})
-        response.raise_for_status()
-        return response.json(), used_insecure
-
-    def _request(self, method: str, url: str, **kwargs: Any) -> tuple[requests.Response, bool]:
-        headers = {
-            "User-Agent": EDEKA_USER_AGENT,
-            "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-            **kwargs.pop("headers", {}),
-        }
-        request_kwargs = {
-            "timeout": self.timeout,
-            "headers": headers,
-            **kwargs,
-        }
-
-        verify = _verify_value(self.verify_tls)
-        try:
-            response = self.session.request(method, url, verify=verify, **request_kwargs)
-            if response.status_code == 403:
-                return self._browser_request(method, url, verify=verify, **request_kwargs), False
-            return response, False
-        except SSLError:
-            if self.verify_tls != "auto":
-                raise
-            urllib3.disable_warnings(InsecureRequestWarning)
-            response = self.session.request(method, url, verify=False, **request_kwargs)
-            if response.status_code == 403:
-                return self._browser_request(method, url, verify=False, **request_kwargs), True
-            return response, True
-
-    def _browser_request(self, method: str, url: str, verify: bool, **request_kwargs: Any) -> Any:
-        try:
-            from curl_cffi import requests as browser_requests
-            from curl_cffi.requests.exceptions import CertificateVerifyError
-        except ImportError as exc:
-            raise RuntimeError(
-                "EDEKA 공식 페이지가 브라우저 검증으로 차단되었고 curl_cffi fallback을 사용할 수 없습니다."
-            ) from exc
-
-        if self.browser_session is None:
-            self.browser_session = browser_requests.Session(impersonate=EDEKA_BROWSER_IMPERSONATION)
-        try:
-            return self.browser_session.request(method, url, verify=verify, **request_kwargs)
-        except CertificateVerifyError:
-            if self.verify_tls == "auto":
-                return self.browser_session.request(method, url, verify=False, **request_kwargs)
-            raise
-
-
-def _verify_value(value: str | bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value.casefold() in {"false", "0", "no"}:
-        return False
-    return True
-
 
 def _page_validity(soup: BeautifulSoup) -> tuple[str | None, str | None]:
     text = soup.get_text(" ", strip=True)
     match = re.search(r"Gültig vom\s+(\d{2}\.\d{2}\.\d{4})\s+bis zum\s+(\d{2}\.\d{2}\.\d{4})", text)
     if not match:
         return None, None
-    return _german_date_iso(match.group(1), end_of_day=False), _german_date_iso(match.group(2), end_of_day=True)
+    return (
+        german_date_to_berlin_iso(match.group(1), end_of_day=False),
+        german_date_to_berlin_iso(match.group(2), end_of_day=True),
+    )
 
 
 def _title(dialog: Tag) -> str:
     headline = dialog.find("h3")
     if not headline:
         return ""
-    return _clean_text(headline.get_text(" ", strip=True).replace("Angebot:", "", 1))
+    return clean_text(headline.get_text(" ", strip=True).replace("Angebot:", "", 1))
 
 
 def _prices(dialog: Tag) -> tuple[float | None, float | None, str]:
     price_notes = [
-        _clean_text(node.get_text(" ", strip=True))
+        clean_text(node.get_text(" ", strip=True))
         for node in dialog.find_all(class_="sr-only")
         if "preis von" in node.get_text(" ", strip=True).casefold()
     ]
@@ -325,33 +246,18 @@ def _unit_price(dialog: Tag) -> tuple[float | None, str | None]:
 
 
 def _description(dialog: Tag, price_note: str, market_name: str | None) -> str:
-    parts: list[str] = []
     detail = dialog.find("p", class_=lambda value: value and "line-clmap" in str(value))
-    if detail:
-        parts.append(_clean_text(detail.get_text(" ", strip=True)))
-    if price_note:
-        parts.append(price_note)
-    if market_name:
-        parts.append(market_name)
-    return " · ".join(part for part in parts if part)
+    detail_text = clean_text(detail.get_text(" ", strip=True)) if detail else ""
+    return join_text(detail_text, price_note, market_name)
 
 
 def _valid_from(dialog: Tag) -> str | None:
     for node in dialog.find_all("strong"):
-        text = _clean_text(node.get_text(" ", strip=True))
+        text = clean_text(node.get_text(" ", strip=True))
         match = re.search(r"Gültig ab\s+(\d{2}\.\d{2}\.\d{4})", text)
         if match:
-            return _german_date_iso(match.group(1), end_of_day=False)
+            return german_date_to_berlin_iso(match.group(1), end_of_day=False)
     return None
-
-
-def _german_date_iso(value: str, end_of_day: bool) -> str | None:
-    try:
-        day = date.fromisoformat("-".join(reversed(value.split("."))))
-    except ValueError:
-        return None
-    clock = time.max if end_of_day else time.min
-    return datetime.combine(day, clock, BERLIN_TZ).isoformat(timespec="seconds")
 
 
 def _image_url(dialog: Tag) -> str | None:
@@ -362,19 +268,5 @@ def _image_url(dialog: Tag) -> str | None:
     return str(src) if src else None
 
 
-def _source_offer_id(source_key: str) -> int:
-    hex_digits = re.sub(r"[^0-9a-fA-F]", "", source_key)
-    if hex_digits:
-        return int(hex_digits[:12], 16)
-    digits = re.sub(r"\D", "", source_key)
-    return int(digits[:12] or 0)
-
-
 def _decimal(value: str) -> float:
     return float(value.replace(",", "."))
-
-
-def _clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).strip()

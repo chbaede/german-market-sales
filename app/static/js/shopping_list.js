@@ -471,28 +471,35 @@
     `;
   }
 
+  // Shared Modal Controller Helper
+  function createModalController(modalEl, closeBtnEl, onOpen) {
+    function open() {
+      if (!modalEl) return;
+      modalEl.hidden = false;
+      document.body.classList.add("modal-open");
+      closeBtnEl?.focus();
+      if (onOpen) onOpen();
+    }
+    function close() {
+      if (!modalEl) return;
+      modalEl.hidden = true;
+      document.body.classList.remove("modal-open");
+    }
+    closeBtnEl?.addEventListener("click", close);
+    modalEl?.addEventListener("click", (e) => {
+      if (e.target === modalEl) close();
+    });
+    return { open, close };
+  }
+
   // 1. Price History Modal
   const historyModal = document.querySelector("[data-history-modal]");
   const historyModalBody = document.querySelector("[data-history-modal-body]");
   const historyModalClose = document.querySelector("[data-history-modal-close]");
-
-  function openHistoryModal() {
-    if (!historyModal) return;
-    historyModal.hidden = false;
-    document.body.classList.add("modal-open");
-    historyModalClose?.focus();
-  }
-
-  function closeHistoryModal() {
-    if (!historyModal) return;
-    historyModal.hidden = true;
-    document.body.classList.remove("modal-open");
-  }
-
-  historyModalClose?.addEventListener("click", closeHistoryModal);
-  historyModal?.addEventListener("click", (e) => {
-    if (e.target === historyModal) closeHistoryModal();
-  });
+  const { open: openHistoryModal, close: closeHistoryModal } = createModalController(
+    historyModal,
+    historyModalClose
+  );
 
   async function loadPriceHistory(title, brand, currentPrice) {
     openHistoryModal();
@@ -517,7 +524,8 @@
   function renderPriceHistory(data) {
     const isAtl = data.is_all_time_low;
     const history = data.history || [];
-    
+    const avgPrice = data.average_price ?? data.avg_price;
+
     let statsHtml = `
       <div class="tracker-stats-grid">
         <div class="tracker-stat ${isAtl ? 'is-best' : ''}">
@@ -527,7 +535,7 @@
         </div>
         <div class="tracker-stat">
           <span class="label">${tk("평균 가격", "Average Price")}</span>
-          <strong>${data.avg_price ? data.avg_price.toFixed(2) + " €" : "-"}</strong>
+          <strong>${avgPrice ? avgPrice.toFixed(2) + " €" : "-"}</strong>
         </div>
         <div class="tracker-stat">
           <span class="label">${tk("현재/최근가", "Current Deal")}</span>
@@ -589,24 +597,10 @@
   const compareModalClose = document.querySelector("[data-compare-modal-close]");
   const compareForm = document.querySelector("[data-compare-form]");
   const compareSearchInput = document.querySelector("[data-compare-search-input]");
-
-  function openCompareModal() {
-    if (!compareModal) return;
-    compareModal.hidden = false;
-    document.body.classList.add("modal-open");
-    compareModalClose?.focus();
-  }
-
-  function closeCompareModal() {
-    if (!compareModal) return;
-    compareModal.hidden = true;
-    document.body.classList.remove("modal-open");
-  }
-
-  compareModalClose?.addEventListener("click", closeCompareModal);
-  compareModal?.addEventListener("click", (e) => {
-    if (e.target === compareModal) closeCompareModal();
-  });
+  const { open: openCompareModal, close: closeCompareModal } = createModalController(
+    compareModal,
+    compareModalClose
+  );
 
   document.querySelector("[data-open-compare-modal]")?.addEventListener("click", () => {
     openCompareModal();
@@ -731,24 +725,11 @@
     });
   }
 
-  function openWatchlistModal() {
-    if (!watchlistModal) return;
-    watchlistModal.hidden = false;
-    document.body.classList.add("modal-open");
-    watchlistModalClose?.focus();
-    loadWatchlistDeals();
-  }
-
-  function closeWatchlistModal() {
-    if (!watchlistModal) return;
-    watchlistModal.hidden = true;
-    document.body.classList.remove("modal-open");
-  }
-
-  watchlistModalClose?.addEventListener("click", closeWatchlistModal);
-  watchlistModal?.addEventListener("click", (e) => {
-    if (e.target === watchlistModal) closeWatchlistModal();
-  });
+  const { open: openWatchlistModal, close: closeWatchlistModal } = createModalController(
+    watchlistModal,
+    watchlistModalClose,
+    loadWatchlistDeals
+  );
 
   document.querySelector("[data-open-watchlist-modal]")?.addEventListener("click", openWatchlistModal);
 

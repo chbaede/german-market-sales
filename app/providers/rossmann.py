@@ -4,11 +4,7 @@ import re
 import struct
 from dataclasses import dataclass
 
-import requests
 from requests import Session
-from requests.exceptions import SSLError
-from urllib3.exceptions import InsecureRequestWarning
-import urllib3
 
 from app.models import Offer
 from app.providers.base import OfferProvider
@@ -35,10 +31,8 @@ class RossmannProvider(OfferProvider):
         timeout: int = 15,
         verify_tls: str | bool = "auto",
     ) -> None:
-        self.session = session or requests.Session()
+        super().__init__(session=session, timeout=timeout, verify_tls=verify_tls)
         self.marketguru = marketguru or MarktguruProvider(timeout=timeout, verify_tls=verify_tls)
-        self.timeout = timeout
-        self.verify_tls = verify_tls
 
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
         offers, warnings = self.marketguru.fetch_offers(retailer_slug, zip_code, limit)
@@ -112,39 +106,10 @@ class RossmannProvider(OfferProvider):
         return False
 
     def _request_text(self, url: str) -> tuple[str, bool]:
-        response, used_insecure = self._request("GET", url)
-        response.raise_for_status()
-        if "Client Challenge" in response.text:
+        text, used_insecure = super()._request_text(url)
+        if "Client Challenge" in text:
             raise ValueError("공식 ROSSMANN 페이지가 Client Challenge를 반환했습니다.")
-        return response.text, used_insecure
-
-    def _request_bytes(self, url: str) -> bytes:
-        response, _ = self._request("GET", url)
-        response.raise_for_status()
-        return response.content
-
-    def _request(self, method: str, url: str, **kwargs) -> tuple[requests.Response, bool]:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36",
-            **kwargs.pop("headers", {}),
-        }
-        request_kwargs = {
-            "timeout": self.timeout,
-            "headers": headers,
-            **kwargs,
-        }
-
-        verify = self.verify_tls
-        if verify == "auto":
-            verify = True
-
-        try:
-            return self.session.request(method, url, verify=verify, **request_kwargs), False
-        except SSLError:
-            if self.verify_tls != "auto":
-                raise
-            urllib3.disable_warnings(InsecureRequestWarning)
-            return self.session.request(method, url, verify=False, **request_kwargs), True
+        return text, used_insecure
 
 
 class _BinaryReader:
