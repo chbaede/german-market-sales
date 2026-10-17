@@ -48,3 +48,20 @@ def test_category_detection_for_household_items():
     assert categorize_offer("Foundation Buttermelt Glaze mit LSF 30") == "personal_care"
     assert categorize_offer("Swirl Staubfilterbeutel MicroPor Plus", description="Rabattierter Preis") == "household"
     assert categorize_offer("Eis-Box") == "pantry"
+
+
+def test_aldi_sued_uses_southern_zip_when_northern_zip_passed(monkeypatch):
+    from app.providers.marktguru import MarktguruConfig
+
+    provider = MarktguruProvider()
+    provider._config = MarktguruConfig(api_host="api.example.test", api_key="k", client_key="c")
+    captured_params = {}
+
+    def fake_request_json(url, params, headers):
+        captured_params.update(params)
+        return {"results": []}
+
+    monkeypatch.setattr(provider, "_request_json", fake_request_json)
+    provider.fetch_offers("aldi-sued", zip_code="14195", limit=50)
+
+    assert captured_params["zipCode"] == "80331"

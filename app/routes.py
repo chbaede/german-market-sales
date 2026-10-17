@@ -122,22 +122,21 @@ def render_offer_page(
     basket_query = (request.args.get("basket") or "").strip()
     category = request.args.get("category") or "all"
     sort = request.args.get("sort") or "essentials"
-    priced_only = request.args.get("priced") == "1"
+    priced_only = True
     ending_soon = request.args.get("ending") == "1"
     overlap_only = request.args.get("overlap") == "1"
 
-    week_offers = enrich_weekly_competitors(filter_offers_by_week(result.offers, selected_week))
+    priced_offers = [offer for offer in result.offers if offer.price is not None]
+    week_offers = enrich_weekly_competitors(filter_offers_by_week(priced_offers, selected_week))
     filtered = filter_offers(week_offers, selected_retailers, query, category, priced_only, ending_soon, overlap_only)
     filtered = sort_offers(filtered, sort)
     filtered = limit_offers_per_retailer(filtered, current_app.config["MAX_OFFERS_PER_RETAILER"])
-    recommendations = pick_recommendations(filtered)
 
     _enrich_atl_if_needed(filtered, service, result.fetched_at)
 
     return render_template(
         "offers.html",
         offers=filtered,
-        recommendations=recommendations,
         basket_query=basket_query,
         stats=build_stats(filtered, week_offers),
         retailers=retailers,
@@ -146,7 +145,7 @@ def render_offer_page(
         selected_week=selected_week,
         selected_week_label=week_labels[selected_week],
         week_counts=build_week_counts(
-            result.offers,
+            priced_offers,
             week_labels,
             selected_retailers,
             query,
@@ -155,7 +154,7 @@ def render_offer_page(
             ending_soon,
             overlap_only,
         ),
-        retailer_week_status=build_retailer_week_status(result.offers, retailers, selected_week, selected_retailers),
+        retailer_week_status=build_retailer_week_status(priced_offers, retailers, selected_week, selected_retailers),
         retailer_counts=build_retailer_counts(
             week_offers, retailers, query, category, priced_only, ending_soon, overlap_only
         ),

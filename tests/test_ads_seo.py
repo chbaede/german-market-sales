@@ -77,7 +77,6 @@ def test_supermarket_page_seo_and_ads(monkeypatch):
 
     # Public portal features
     assert "data-share-page" in html
-    assert "data-basket-copy" in html
     assert "back-to-top" in html
     assert "site-footer" in html
     assert "whatsapp" not in html.lower()
@@ -110,7 +109,7 @@ def test_drogerie_page_seo_and_ads(monkeypatch):
     assert '<div class="topbar-inner">' in html
     assert '<meta name="description"' in html
     assert "data-share-page" in html
-    assert "data-basket-copy" in html
     assert "site-footer" in html
     assert "whatsapp" not in html.lower()
     assert "https://main.yocto.co.kr/" in html
+    assert "hub-link" in html

@@ -11,7 +11,7 @@ def test_supermarket_page_lists_added_berlin_retailers(monkeypatch):
         def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
             return OfferResult(
                 offers=[
-                    _offer("ALDI default item", "aldi-nord"),
+                    _offer("EDEKA default item", "edeka"),
                     _offer("PENNY extra item", "penny"),
                 ],
                 fetched_at="2026-06-04T08:00:00+00:00",
@@ -27,16 +27,20 @@ def test_supermarket_page_lists_added_berlin_retailers(monkeypatch):
     assert response.status_code == 200
     assert "PENNY" in html
     assert "nahkauf" in html
-    assert 'name="retailer" value="aldi-nord" checked' in html
+    assert "ALDI Nord" in html
+    assert "ALDI Süd" in html
+    assert ">Netto<" in html
+    assert "Netto Marken-Discount" not in html
     assert 'name="retailer" value="edeka" checked' in html
-    assert 'name="retailer" value="rewe" checked' in html
-    assert 'name="retailer" value="lidl" checked' in html
+    assert 'name="retailer" value="aldi-nord" checked' not in html
+    assert 'name="retailer" value="aldi-sued" checked' not in html
+    assert 'name="retailer" value="rewe" checked' not in html
+    assert 'name="retailer" value="lidl" checked' not in html
     assert 'name="retailer" value="penny" checked' not in html
     assert 'name="retailer_filter" value="1"' in html
-    assert "ALDI default item" in html
+    assert "EDEKA default item" in html
     assert "PENNY extra item" not in html
     assert '<span class="check-pill-count">1</span>' in html
-    assert 'data-basket-template="우유 2개, 계란, 양파, 당근, 토마토, 바나나, 빵, 버터"' in html
     assert "data-share-page" in html
     assert "site-footer" in html
 
@@ -48,7 +52,7 @@ def test_supermarket_default_sort_prioritizes_weekly_essentials(monkeypatch):
         def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
             return OfferResult(
                 offers=[
-                    _offer("Sneaker Aktion", "aldi-nord", category="nonfood", discount_percent=80),
+                    _offer("Sneaker Aktion", "edeka", category="nonfood", discount_percent=80),
                     _offer("Frische Milch", "edeka", category="dairy", discount_percent=5),
                 ],
                 fetched_at="2026-06-04T08:00:00+00:00",
@@ -83,11 +87,10 @@ def test_supermarket_page_can_hide_offers_without_prices(monkeypatch):
     monkeypatch.setattr(routes, "datetime", FrozenDateTime)
     monkeypatch.setattr(routes, "offer_service", lambda: FakeOfferService())
     app = create_app()
-    response = app.test_client().get("/?priced=1")
+    response = app.test_client().get("/")
 
     html = response.get_data(as_text=True)
     assert response.status_code == 200
-    assert 'name="priced" value="1" checked' in html
     assert "Frische Milch" in html
     assert "Preis folgt" not in html
     assert '<span class="check-pill-count">1</span>' in html
@@ -115,11 +118,9 @@ def test_supermarket_page_can_filter_offers_ending_soon(monkeypatch):
 
     html = response.get_data(as_text=True)
     assert response.status_code == 200
-    assert 'name="ending" value="1" checked' in html
     assert "Heute endet" in html
     assert "Morgen endet" in html
     assert "Noch Zeit" not in html
-    assert "마감 임박" in html
 
 
 def test_supermarket_page_uses_cached_offers_and_queues_refresh_by_default(monkeypatch):

@@ -8,48 +8,34 @@
 {% block body %}
 
 {% set t = {
-  '슈퍼': 'Super',
-  '드러그': 'Drugstore',
+  '슈퍼마켓': 'Supermarket',
+  '드러그스토어': 'Drugstore',
   '수집 안내': 'Data notices',
-  '표시 항목': 'Shown items',
-  '할인 표시': 'Discounted',
-  '최대 할인': 'Best discount',
-  '마감 임박': 'Ending soon',
+  '최대 할인': 'Up to',
   '검색': 'Search',
   '카테고리': 'Category',
   '정렬': 'Sort',
   '전체': 'All',
   '기본': 'Default',
-  '해제': 'None',
-  '적용': 'Apply',
-  '장보기 추천': 'Basket Advisor',
-  '추천 보기': 'Get Recs',
-  '추천 결과': 'Recommendations',
-  '마지막 갱신': 'Updated',
+  '해제': 'Clear',
   '유효기간': 'Valid',
-  '출처': 'Flyer',
+  '전단지': 'Flyer',
   '조건에 맞는 할인 항목이 없습니다.': 'No offers found.',
   '다음 주 할인 보기': 'View next week',
   '새로고침': 'Refresh',
-  '다음 주 데이터 있음': 'Next week data available',
-  '아직 소스에서 다음 주 상품이 안 넘어옴': 'Next week data missing',
-  '가격 있는 상품만': 'Priced only',
+  '다음 주 데이터 있음': 'Next week available',
+  '아직 소스에서 다음 주 상품이 안 넘어옴': 'Next week not yet published',
   '공유': 'Share',
-  '바로가기': 'Flyer',
-  '추천 복사': 'Copy recs',
   '맨 위로': 'Top',
-  '메인': 'Main',
   '가격 이력': 'History',
   '가격 변동 이력': 'Price History & Stats',
   '역대 최저가': 'All-Time Low',
   '매장 비교': 'Compare',
   '매장별 가격 비교': 'Store Comparison',
   '비교': 'Compare',
-  '동시 할인': 'Multi-store',
-  '타 마트 동시 할인만': 'Multi-store deals',
   '이번 주 최저가': 'Best price',
   '마트 선택': 'Stores',
-  '장보기 리스트로 최저가 마트 찾기': 'Find cheapest store for your list'
+  '개 할인 상품': ' deals'
 } %}
 
 {% macro render_ko(ko_str) -%}
@@ -59,221 +45,134 @@
 <header class="topbar">
   <div class="topbar-inner">
     <div class="topbar-brand-row">
-      <div class="brand-heading">
+      <div class="brand-left">
+        <a class="hub-link" href="https://main.yocto.co.kr/" title="Hub 메인 페이지로 이동">← Hub</a>
         <h1>{{ page.heading }}</h1>
-        <p class="brand-subtitle ko">{% if lang == "en" %}{{ page.heading_en }}{% else %}{{ page.heading_ko }}{% endif %}</p>
       </div>
       <div class="topbar-actions">
         <button class="topbar-btn compare-nav-button" type="button" data-open-compare-modal aria-label="Compare stores">
-          <span>{{ render_ko("매장 비교") }}</span>
+          {{ render_ko("매장 비교") }}
         </button>
         <button class="share-page-button" type="button" data-share-page aria-label="Share page">
-          <span>{{ render_ko("공유") }}</span>
+          {{ render_ko("공유") }}
         </button>
         <button class="lang-toggle-button" type="button" onclick="document.cookie='lang=' + (document.cookie.includes('lang=en') ? 'ko' : 'en') + '; path=/; max-age=31536000'; window.location.reload();">
           {% if lang == 'en' %}KO{% else %}EN{% endif %}
         </button>
       </div>
     </div>
+
     <nav class="top-nav" aria-label="areas">
-      <a class="hub-link" href="https://main.yocto.co.kr/" title="Hub 메인 페이지로 이동">
-        Hub <span>{{ render_ko("메인") }}</span>
-      </a>
       <a class="{% if page.active == 'supermarket' %}is-active{% endif %}" href="{{ url_for('main.index') }}">
-        Supermarkt <span>{{ render_ko("슈퍼") }}</span>
+        Supermarkt <span>{{ render_ko("슈퍼마켓") }}</span>
       </a>
       <a class="{% if page.active == 'drugstore' %}is-active{% endif %}" href="{{ url_for('main.drugstores') }}">
-        Drogerie <span>{{ render_ko("드러그") }}</span>
+        Drogerie <span>{{ render_ko("드러그스토어") }}</span>
       </a>
     </nav>
   </div>
 </header>
 
 <main class="layout">
-  <nav class="week-switch" aria-label="offer week">
-    {% for week_key, label in week_labels.items() %}
-      <a class="week-tab {% if selected_week == week_key %}is-active{% endif %}" href="{{ week_links[week_key] }}">
-        <span class="week-tab-text">
-          <span class="week-tab-de">{{ label.de }}</span>
-          <span class="ko">{% if lang == "en" %}{{ label.en }}{% else %}{{ label.ko }}{% endif %}</span>
-        </span>
-        <strong>{{ week_counts[week_key] }}</strong>
-      </a>
-    {% endfor %}
-  </nav>
-
-  {% if selected_week == "next" and retailer_week_status.missing %}
-    <section class="availability-note" aria-label="next week retailer availability">
-      {% if retailer_week_status.available %}
-        <p>
-          <strong>Nächste Woche verfügbar:</strong>
-          <span>{{ retailer_week_status.available | map(attribute="label") | join(", ") }}</span>
-          <span class="ko">({{ render_ko("다음 주 데이터 있음") }})</span>
-        </p>
-      {% endif %}
-      <p>
-        <strong>Noch nicht veröffentlicht:</strong>
-        <span>{{ retailer_week_status.missing | map(attribute="label") | join(", ") }}</span>
-        <span class="ko">({{ render_ko("아직 소스에서 다음 주 상품이 안 넘어옴") }})</span>
-      </p>
-    </section>
-  {% endif %}
-
-  <form class="filters" method="get" data-filter-form>
-    <input type="hidden" name="week" value="{{ selected_week }}">
-    <input type="hidden" name="zip_code" value="{{ zip_code }}">
-    <input type="hidden" name="retailer_filter" value="1">
-
-    <div class="filter-primary-row">
-      <div class="search-box">
-        <input type="search" name="q" value="{{ query }}" placeholder="{{ page.search_placeholder }}" aria-label="{{ render_ko('검색') }}">
-        <button class="submit-button search-submit-btn" type="submit">{{ render_ko("검색") }}</button>
-      </div>
-      <div class="filter-select-row">
-        <select name="category" class="category-select" aria-label="{{ render_ko('카테고리') }}" data-auto-submit>
-          <option value="all" {% if selected_category == "all" %}selected{% endif %}>{% if lang == "en" %}All Categories{% else %}전체 카테고리{% endif %}</option>
-          {% for key, label in category_labels.items() %}
-            <option value="{{ key }}" {% if selected_category == key %}selected{% endif %}>{% if lang == "en" %}{{ label.en or label.de }}{% else %}{{ label.ko }}{% endif %} ({{ label.de }})</option>
-          {% endfor %}
-        </select>
-        <select name="sort" class="sort-select" aria-label="{{ render_ko('정렬') }}" data-auto-submit>
-          <option value="essentials" {% if selected_sort == "essentials" %}selected{% endif %}>{% if lang == "en" %}Essentials first{% else %}생활필수품순{% endif %}</option>
-          <option value="discount" {% if selected_sort == "discount" %}selected{% endif %}>{% if lang == "en" %}Highest discount{% else %}할인율 높은순{% endif %}</option>
-          <option value="price" {% if selected_sort == "price" %}selected{% endif %}>{% if lang == "en" %}Lowest price{% else %}낮은 가격순{% endif %}</option>
-          <option value="unit" {% if selected_sort == "unit" %}selected{% endif %}>{% if lang == "en" %}Unit price{% else %}단위가격순{% endif %}</option>
-          <option value="valid_to" {% if selected_sort == "valid_to" %}selected{% endif %}>{% if lang == "en" %}Ending soon{% else %}마감일순{% endif %}</option>
-          <option value="retailer" {% if selected_sort == "retailer" %}selected{% endif %}>{% if lang == "en" %}{{ page.retailer_label.en }}{% else %}{{ page.retailer_label.ko }}{% endif %}</option>
-        </select>
-      </div>
-    </div>
-
-    <fieldset class="retailer-filter">
-      <div class="retailer-filter-header">
-        <span class="retailer-filter-title">{{ render_ko("마트 선택") }}</span>
-        <div class="filter-actions" data-default-retailers="{{ default_retailers|join(',') }}">
-          <button type="button" data-retailer-preset="default">{{ render_ko("기본") }}</button>
-          <button type="button" data-retailer-preset="all">{{ render_ko("전체") }}</button>
-          <button type="button" data-retailer-preset="none">{{ render_ko("해제") }}</button>
-        </div>
-      </div>
-      <div class="retailer-options">
-        {% for slug, label in retailers.items() %}
-          <label class="check-pill retailer-theme retailer-{{ slug }}">
-            <input type="checkbox" name="retailer" value="{{ slug }}" {% if slug in selected_retailers %}checked{% endif %} data-auto-submit>
-            <span class="check-pill-ui">
-              <span class="check-pill-label">{{ label }}</span>
-              <span class="check-pill-count">{{ retailer_counts.get(slug, 0) }}</span>
-            </span>
-          </label>
-        {% endfor %}
-      </div>
-    </fieldset>
-
-    <div class="filter-toggles">
-      <label class="filter-toggle {% if overlap_only %}is-checked{% endif %}">
-        <input type="checkbox" name="overlap" value="1" {% if overlap_only %}checked{% endif %} data-auto-submit>
-        <span>{{ render_ko("타 마트 동시 할인만") }} <strong>{{ stats.overlapping_count }}</strong></span>
-      </label>
-      <label class="filter-toggle {% if ending_soon %}is-checked{% endif %}">
-        <input type="checkbox" name="ending" value="1" {% if ending_soon %}checked{% endif %} data-auto-submit>
-        <span>{{ render_ko("마감 임박") }} <strong>{{ stats.ending_soon }}</strong></span>
-      </label>
-      <label class="filter-toggle {% if priced_only %}is-checked{% endif %}">
-        <input type="checkbox" name="priced" value="1" {% if priced_only %}checked{% endif %} data-auto-submit>
-        <span>{{ render_ko("가격 있는 상품만") }}</span>
-      </label>
-    </div>
-  </form>
-
-  <details class="basket-advisor" aria-label="shopping basket advisor" {% if basket_query %}open{% endif %}>
-    <summary class="basket-advisor-summary">
-      <span class="basket-summary-text">
-        <strong>{{ render_ko("장보기 추천") }}</strong>
-        <small>{{ render_ko("장보기 리스트로 최저가 마트 찾기") }}</small>
-      </span>
-      <span class="basket-summary-arrow" aria-hidden="true">▾</span>
-    </summary>
-    <form class="basket-form" method="get" data-basket-form data-endpoint="{{ url_for(page.basket_endpoint) }}">
-      <input type="hidden" name="zip_code" value="{{ zip_code }}">
-      <input type="hidden" name="week" value="{{ selected_week }}">
-      <input type="hidden" name="q" value="{{ query }}">
-      <input type="hidden" name="category" value="{{ selected_category }}">
-      <input type="hidden" name="sort" value="{{ selected_sort }}">
-      {% if priced_only %}
-        <input type="hidden" name="priced" value="1">
-      {% endif %}
-      {% if ending_soon %}
-        <input type="hidden" name="ending" value="1">
-      {% endif %}
-      {% for retailer in selected_retailers %}
-        <input type="hidden" name="retailer" value="{{ retailer }}">
+  <section class="control-card">
+    <nav class="week-switch" aria-label="offer week">
+      {% for week_key, label in week_labels.items() %}
+        <a class="week-tab {% if selected_week == week_key %}is-active{% endif %}" href="{{ week_links[week_key] }}">
+          <span class="week-tab-text">
+            <span class="week-tab-main">{% if lang == "en" %}{{ label.en }}{% else %}{{ label.ko }}{% endif %}</span>
+            <span class="week-tab-sub">{{ label.de }}</span>
+          </span>
+          <strong>{{ week_counts[week_key] }}</strong>
+        </a>
       {% endfor %}
-      {% if page.basket_templates %}
-        <div class="basket-template-row" aria-label="shopping templates">
-          {% for template in page.basket_templates %}
-            <button type="button" data-basket-template="{% if lang == 'en' %}{{ template.value_en }}{% else %}{{ template.value }}{% endif %}">
-              {{ template.label }} <span>{% if lang == "en" %}{{ template.en }}{% else %}{{ template.ko }}{% endif %}</span>
-            </button>
+    </nav>
+
+    {% if selected_week == "next" and retailer_week_status.missing %}
+      <section class="availability-note" aria-label="next week retailer availability">
+        {% if retailer_week_status.available %}
+          <p>
+            <strong>{{ render_ko("다음 주 데이터 있음") }}:</strong>
+            <span>{{ retailer_week_status.available | map(attribute="label") | join(", ") }}</span>
+          </p>
+        {% endif %}
+        <p>
+          <strong>{{ render_ko("아직 소스에서 다음 주 상품이 안 넘어옴") }}:</strong>
+          <span>{{ retailer_week_status.missing | map(attribute="label") | join(", ") }}</span>
+        </p>
+      </section>
+    {% endif %}
+
+    <form class="filters" method="get" data-filter-form>
+      <input type="hidden" name="week" value="{{ selected_week }}">
+      <input type="hidden" name="zip_code" value="{{ zip_code }}">
+      <input type="hidden" name="retailer_filter" value="1">
+
+      <fieldset class="retailer-filter">
+        <div class="retailer-filter-header">
+          <span class="retailer-filter-title">{{ render_ko("마트 선택") }}</span>
+          <div class="filter-actions" data-default-retailers="{{ default_retailers|join(',') }}">
+            <button type="button" data-retailer-preset="default">{{ render_ko("기본") }}</button>
+            <button type="button" data-retailer-preset="all">{{ render_ko("전체") }}</button>
+            <button type="button" data-retailer-preset="none">{{ render_ko("해제") }}</button>
+          </div>
+        </div>
+        <div class="retailer-options">
+          {% for slug, label in retailers.items() %}
+            <label class="check-pill retailer-theme retailer-{{ slug }}">
+              <input type="checkbox" name="retailer" value="{{ slug }}" {% if slug in selected_retailers %}checked{% endif %} data-auto-submit>
+              <span class="check-pill-ui">
+                <span class="check-pill-label">{{ label }}</span>
+                <span class="check-pill-count">{{ retailer_counts.get(slug, 0) }}</span>
+              </span>
+            </label>
           {% endfor %}
         </div>
-      {% endif %}
-      <textarea
-        id="basket-input"
-        name="basket"
-        rows="2"
-        placeholder="{% if lang == 'en' %}{{ page.basket_placeholder_en }}{% else %}{{ page.basket_placeholder }}{% endif %}"
-      >{{ basket_query }}</textarea>
-      <button class="submit-button" type="submit">{{ render_ko("추천 보기") }}</button>
-    </form>
-  </details>
+      </fieldset>
 
-  <div class="basket-modal-backdrop" data-basket-modal hidden>
-    <section class="basket-modal" role="dialog" aria-modal="true" aria-labelledby="basket-modal-title">
-      <div class="basket-modal-header">
-        <div>
-          <p class="eyebrow">Einkauf planen</p>
-          <h2 id="basket-modal-title">Empfehlungen <span class="ko">{{ render_ko("추천 결과") }}</span></h2>
+      <div class="filter-primary-row">
+        <div class="search-box">
+          <input type="search" name="q" value="{{ query }}" placeholder="{{ page.search_placeholder }}" aria-label="{{ render_ko('검색') }}">
+          <button class="submit-button search-submit-btn" type="submit">{{ render_ko("검색") }}</button>
         </div>
-        <div class="basket-modal-actions">
-          <button
-            class="copy-button is-disabled"
-            type="button"
-            data-basket-copy
-            aria-label="Copy recommendations"
-            disabled
-          >Kopieren <span>{{ render_ko("추천 복사") }}</span></button>
-          <button class="modal-close-button" type="button" data-basket-modal-close aria-label="close">×</button>
+        <div class="filter-select-row">
+          <select name="category" class="category-select" aria-label="{{ render_ko('카테고리') }}" data-auto-submit>
+            <option value="all" {% if selected_category == "all" %}selected{% endif %}>{% if lang == "en" %}All Categories{% else %}전체 카테고리{% endif %}</option>
+            {% for key, label in category_labels.items() %}
+              <option value="{{ key }}" {% if selected_category == key %}selected{% endif %}>{% if lang == "en" %}{{ label.en or label.de }}{% else %}{{ label.ko }}{% endif %}</option>
+            {% endfor %}
+          </select>
+          <select name="sort" class="sort-select" aria-label="{{ render_ko('정렬') }}" data-auto-submit>
+            <option value="essentials" {% if selected_sort == "essentials" %}selected{% endif %}>{% if lang == "en" %}Essentials first{% else %}생활필수품순{% endif %}</option>
+            <option value="discount" {% if selected_sort == "discount" %}selected{% endif %}>{% if lang == "en" %}Highest discount{% else %}할인율 높은순{% endif %}</option>
+            <option value="price" {% if selected_sort == "price" %}selected{% endif %}>{% if lang == "en" %}Lowest price{% else %}낮은 가격순{% endif %}</option>
+            <option value="unit" {% if selected_sort == "unit" %}selected{% endif %}>{% if lang == "en" %}Unit price{% else %}단위가격순{% endif %}</option>
+            <option value="valid_to" {% if selected_sort == "valid_to" %}selected{% endif %}>{% if lang == "en" %}Ending soon{% else %}마감일순{% endif %}</option>
+            <option value="retailer" {% if selected_sort == "retailer" %}selected{% endif %}>{% if lang == "en" %}{{ page.retailer_label.en }}{% else %}{{ page.retailer_label.ko }}{% endif %}</option>
+          </select>
         </div>
       </div>
-      <p class="basket-modal-status" data-basket-modal-status></p>
-      <div class="basket-modal-body" data-basket-modal-body></div>
-    </section>
-  </div>
+    </form>
+  </section>
 
   <section class="offer-workspace">
     <div class="offers-column">
-      <section class="list-status-bar">
+      <div class="list-status-bar">
         <div class="list-status-counts">
-          <span>{{ render_ko("표시 항목") }} <strong>{{ stats.visible }}</strong> / {{ stats.total }}</span>
+          <strong>{{ stats.visible }}</strong><span>{{ render_ko("개 할인 상품") }}</span>
           {% if stats.best_discount %}
             <span class="status-dot">·</span>
             <span>{{ render_ko("최대 할인") }} <strong>-{{ stats.best_discount }}%</strong></span>
           {% endif %}
-          {% if stats.overlapping_count %}
-            <span class="status-dot">·</span>
-            <span>{{ render_ko("동시 할인") }} <strong>{{ stats.overlapping_count }}</strong></span>
-          {% endif %}
         </div>
         <div class="list-status-meta">
-          <span class="updated-date">{{ fetched_at|date_de }}</span>
           <a class="inline-refresh-link" href="{{ url_for(page.refresh_endpoint, **request.args) }}">↻ {{ render_ko("새로고침") }}</a>
         </div>
-      </section>
+      </div>
 
       {% if warnings %}
         <details class="notice" aria-label="data warnings">
           <summary>
-            <strong>Datenhinweise <span class="ko">{{ render_ko("수집 안내") }}</span></strong>
+            <strong>{{ render_ko("수집 안내") }}</strong>
             <span>{{ warnings|length }}</span>
           </summary>
           {% for warning in warnings %}
@@ -285,7 +184,7 @@
       <section class="offer-grid" aria-label="offers">
         {% for offer in offers %}
           {% set title_ko = offer.title|ko_text %}
-          {% set valid_text = offer.valid_from|date_de ~ " - " ~ offer.valid_to|date_de %}
+          {% set valid_text = offer.valid_from|date_de ~ " – " ~ offer.valid_to|date_de %}
           <article
             class="offer-card retailer-theme retailer-{{ offer.retailer_slug }}"
             data-offer-id="{{ offer.id }}"
@@ -296,11 +195,6 @@
             data-brand="{{ offer.brand or '' }}"
             data-price="{{ offer.price|eur if offer.price is not none else '' }}"
             data-raw-price="{{ offer.price or '' }}"
-            data-unit-price="{% if offer.unit_price %}{{ offer.unit_price|eur }} / {{ offer.unit or 'unit' }}{% endif %}"
-            data-discount="{% if offer.discount_percent %}{{ offer.discount_percent|pct }}{% endif %}"
-            data-valid="{{ valid_text }}"
-            data-source-url="{{ offer.source_url }}"
-            data-image-url="{{ offer.image_url or '' }}"
           >
             <div class="image-wrap">
               {% if offer.image_url %}
@@ -309,6 +203,7 @@
                 <div class="image-placeholder">{{ offer.retailer }}</div>
               {% endif %}
             </div>
+
             <div class="card-body">
               <div class="card-meta">
                 <div class="card-meta-left">
@@ -321,11 +216,12 @@
 
               <div class="card-title-group">
                 <h3>{{ offer.title }}</h3>
-                {% if title_ko %}
-                  <p class="translation">{{ title_ko }}</p>
-                {% endif %}
-                {% if offer.brand %}
-                  <p class="brand">{{ offer.brand }}</p>
+                {% if title_ko or offer.brand %}
+                  <p class="card-subtitle">
+                    {% if title_ko %}<span class="translation">{{ title_ko }}</span>{% endif %}
+                    {% if title_ko and offer.brand %}<span class="subtitle-sep">·</span>{% endif %}
+                    {% if offer.brand %}<span class="brand">{{ offer.brand }}</span>{% endif %}
+                  </p>
                 {% endif %}
               </div>
 
@@ -366,16 +262,12 @@
                 </div>
               {% endif %}
 
-              {% if offer.description %}
-                <p class="description">{{ offer.description }}</p>
-              {% endif %}
-
               <div class="card-footer-row">
                 <button type="button" class="btn-card-icon" data-price-history-btn data-title="{{ offer.title }}" data-brand="{{ offer.brand or '' }}" data-price="{{ offer.price or '' }}">
-                  <span>{{ render_ko("가격 이력") }}</span>
+                  {{ render_ko("가격 이력") }}
                 </button>
                 <a class="btn-card-link" href="{{ offer.source_url }}" target="_blank" rel="noopener noreferrer">
-                  {{ render_ko("출처") }} ↗
+                  {{ render_ko("전단지") }} ↗
                 </a>
               </div>
             </div>
@@ -470,5 +362,5 @@
 {% endblock %}
 
 {% block scripts %}
-  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261017-2') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261017-3') }}" defer></script>
 {% endblock %}

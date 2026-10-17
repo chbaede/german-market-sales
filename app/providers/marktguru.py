@@ -41,12 +41,16 @@ class MarktguruProvider(OfferProvider):
         if config.used_insecure_tls:
             warnings.append("TLS 인증서 검증 실패로 Marktguru 요청을 한 번 비검증 모드로 재시도했습니다.")
 
+        effective_zip = zip_code
+        if retailer_slug == "aldi-sued" and zip_code.startswith(("0", "1", "2", "3", "49")):
+            effective_zip = "80331"
+
         endpoint = f"https://{config.api_host}/api/v1/publishers/retailer/{retailer_slug}/offers"
         payload = self._request_json(
             endpoint,
             params={
                 "as": "mobile",
-                "zipCode": zip_code,
+                "zipCode": effective_zip,
                 "limit": limit,
                 "offset": 0,
             },

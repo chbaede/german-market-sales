@@ -20,7 +20,7 @@ from app.services.categories import categorize_offer
 from app.services.formatting import parse_offer_date
 from app.services.price_history import PriceHistoryService, normalize_product_key
 
-CACHE_SCHEMA_VERSION = 11
+CACHE_SCHEMA_VERSION = 12
 UPSTREAM_FETCH_MULTIPLIER = 10
 MIN_UPSTREAM_FETCH_LIMIT = 500
 
@@ -224,6 +224,8 @@ class OfferService:
 
     def _normalize_categories(self, offers: list[Offer]) -> list[Offer]:
         for offer in offers:
+            if offer.retailer_slug in self.retailers:
+                offer.retailer = self.retailers[offer.retailer_slug]
             offer.category = categorize_offer(offer.title, offer.brand, offer.description)
             if not offer.product_key:
                 offer.product_key = normalize_product_key(offer.title, offer.brand)
