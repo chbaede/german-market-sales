@@ -32,7 +32,7 @@ def test_offer_service_normalizes_cached_categories(tmp_path):
     cache_file.write_text(
         json.dumps(
             {
-                "schema_version": 10,
+                "schema_version": offers_module.CACHE_SCHEMA_VERSION,
                 "zip_code": "14195",
                 "fetched_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "warnings": [],
@@ -81,7 +81,7 @@ def test_offer_service_can_return_stale_cache_for_fast_start(tmp_path):
     cache_file.write_text(
         json.dumps(
             {
-                "schema_version": 10,
+                "schema_version": offers_module.CACHE_SCHEMA_VERSION,
                 "zip_code": "14195",
                 "fetched_at": "2020-01-01T00:00:00+00:00",
                 "warnings": ["old warning"],

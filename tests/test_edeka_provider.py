@@ -104,3 +104,28 @@ def test_edeka_fetch_offers_skips_empty_markets_and_uses_candidate_with_offers(m
     assert offers[0].title == "Bio Apfel"
     assert "Market 2" in offers[0].description
 
+
+def test_edeka_request_falls_back_to_browser_on_403(monkeypatch):
+    import requests
+    provider = EdekaProvider()
+
+    mock_resp = requests.Response()
+    mock_resp.status_code = 403
+    monkeypatch.setattr(provider.session, "request", lambda *args, **kwargs: mock_resp)
+
+    browser_called = False
+
+    def mock_browser_request(method, url, verify, **kwargs):
+        nonlocal browser_called
+        browser_called = True
+        resp = requests.Response()
+        resp.status_code = 200
+        return resp
+
+    monkeypatch.setattr(provider, "_browser_request", mock_browser_request)
+
+    response, used_insecure = provider._request("GET", "https://www.edeka.de/test")
+    assert browser_called is True
+    assert response.status_code == 200
+
+

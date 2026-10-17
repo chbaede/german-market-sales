@@ -18,7 +18,7 @@ from app.providers.rossmann import RossmannProvider
 from app.services.categories import categorize_offer
 
 
-CACHE_SCHEMA_VERSION = 10
+CACHE_SCHEMA_VERSION = 11
 UPSTREAM_FETCH_MULTIPLIER = 10
 MIN_UPSTREAM_FETCH_LIMIT = 500
 
@@ -229,9 +229,7 @@ class OfferService:
             return [], [f"{retailer_name} 데이터를 가져오지 못했습니다: {exc}"]
 
     def _marketguru_provider(self) -> MarktguruProvider:
-        if type(self.provider) is not MarktguruProvider:
-            return self.provider
-        return MarktguruProvider(timeout=self.timeout, verify_tls=self.verify_tls)
+        return self.provider
 
     def _merge_cached_retailer_offers(
         self,

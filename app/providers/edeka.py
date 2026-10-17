@@ -20,6 +20,11 @@ from app.services.categories import categorize_offer
 
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 EDEKA_BASE_URL = "https://www.edeka.de"
+EDEKA_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+EDEKA_BROWSER_IMPERSONATION = "chrome136"
 
 
 class EdekaProvider(OfferProvider):
@@ -36,6 +41,7 @@ class EdekaProvider(OfferProvider):
         self.session = session or requests.Session()
         self.timeout = timeout
         self.verify_tls = verify_tls
+        self.browser_session: Any | None = None
 
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
         if retailer_slug != self.retailer_slug:
@@ -180,10 +186,22 @@ class EdekaProvider(OfferProvider):
     def _offers_url(self, market_url: str) -> tuple[str, bool]:
         response, used_insecure = self._request("GET", market_url.strip())
         response.raise_for_status()
-        market_page_url = response.url.strip()
-        if not market_page_url.endswith("/"):
-            market_page_url = f"{market_page_url}/"
-        return urljoin(market_page_url, "angebote/"), used_insecure
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if re.search(r"/maerkte/\d+/angebote", href):
+                return urljoin(response.url, href), used_insecure
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if "angebote" in href.lower() and not href.startswith("#"):
+                return urljoin(response.url, href), used_insecure
+
+        base = re.sub(r"/[^/]+\.(?:jsp|html?)$", "/", response.url.strip())
+        if not base.endswith("/"):
+            base = f"{base}/"
+        return urljoin(base, "angebote/"), used_insecure
 
     def _request_text(self, url: str) -> tuple[str, bool]:
         response, used_insecure = self._request("GET", url)
@@ -197,7 +215,7 @@ class EdekaProvider(OfferProvider):
 
     def _request(self, method: str, url: str, **kwargs: Any) -> tuple[requests.Response, bool]:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36",
+            "User-Agent": EDEKA_USER_AGENT,
             "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
             **kwargs.pop("headers", {}),
         }
@@ -209,12 +227,36 @@ class EdekaProvider(OfferProvider):
 
         verify = _verify_value(self.verify_tls)
         try:
-            return self.session.request(method, url, verify=verify, **request_kwargs), False
+            response = self.session.request(method, url, verify=verify, **request_kwargs)
+            if response.status_code == 403:
+                return self._browser_request(method, url, verify=verify, **request_kwargs), False
+            return response, False
         except SSLError:
             if self.verify_tls != "auto":
                 raise
             urllib3.disable_warnings(InsecureRequestWarning)
-            return self.session.request(method, url, verify=False, **request_kwargs), True
+            response = self.session.request(method, url, verify=False, **request_kwargs)
+            if response.status_code == 403:
+                return self._browser_request(method, url, verify=False, **request_kwargs), True
+            return response, True
+
+    def _browser_request(self, method: str, url: str, verify: bool, **request_kwargs: Any) -> Any:
+        try:
+            from curl_cffi import requests as browser_requests
+            from curl_cffi.requests.exceptions import CertificateVerifyError
+        except ImportError as exc:
+            raise RuntimeError(
+                "EDEKA 공식 페이지가 브라우저 검증으로 차단되었고 curl_cffi fallback을 사용할 수 없습니다."
+            ) from exc
+
+        if self.browser_session is None:
+            self.browser_session = browser_requests.Session(impersonate=EDEKA_BROWSER_IMPERSONATION)
+        try:
+            return self.browser_session.request(method, url, verify=verify, **request_kwargs)
+        except CertificateVerifyError:
+            if self.verify_tls == "auto":
+                return self.browser_session.request(method, url, verify=False, **request_kwargs)
+            raise
 
 
 def _verify_value(value: str | bool) -> bool:
