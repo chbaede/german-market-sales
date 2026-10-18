@@ -35,7 +35,12 @@
   '비교': 'Compare',
   '이번 주 최저가': 'Best price',
   '마트 선택': 'Stores',
-  '개 할인 상품': ' deals'
+  '개 할인 상품': ' deals',
+  '변경': 'Edit',
+  '현위치': 'Locate',
+  '적용': 'Apply',
+  '독일 우편번호 (PLZ)': 'German Postal Code (PLZ)',
+  '현재 위치로 우편번호 자동 설정': 'Detect current postal code'
 } %}
 
 {% macro render_ko(ko_str) -%}
@@ -104,8 +109,50 @@
 
     <form class="filters" method="get" data-filter-form>
       <input type="hidden" name="week" value="{{ selected_week }}">
-      <input type="hidden" name="zip_code" value="{{ zip_code }}">
       <input type="hidden" name="retailer_filter" value="1">
+
+      <div class="location-bar" data-location-bar data-current-plz="{{ zip_code }}" data-has-saved-plz="{{ '1' if has_saved_plz else '0' }}">
+        <div class="location-summary">
+          <button type="button" class="location-pill-trigger" data-toggle-plz-editor aria-expanded="false">
+            <span class="location-pin" aria-hidden="true">📍</span>
+            <strong class="location-plz" data-location-plz>{{ zip_code }}</strong>
+            <span class="location-city" data-location-city>{{ location_info.city }}</span>
+            <span class="location-edit-hint">{{ render_ko("변경") }}</span>
+          </button>
+          <button type="button" class="location-gps-btn" data-detect-location title="{{ render_ko('현재 위치로 우편번호 자동 설정') }}">
+            {{ render_ko("현위치") }}
+          </button>
+        </div>
+
+        <div class="location-editor" data-plz-editor hidden>
+          <div class="location-input-row">
+            <input
+              type="text"
+              name="zip_code"
+              value="{{ zip_code }}"
+              inputmode="numeric"
+              pattern="[0-9]{4,5}"
+              maxlength="5"
+              placeholder="PLZ (z.B. 80331)"
+              aria-label="{{ render_ko('독일 우편번호 (PLZ)') }}"
+              data-plz-input
+            >
+            <button type="submit" class="submit-button plz-apply-btn">{{ render_ko("적용") }}</button>
+          </div>
+          <div class="location-quick-cities" aria-label="major cities">
+            {% for item in quick_cities %}
+              <button
+                type="button"
+                class="city-chip {% if zip_code == item.zip_code %}is-active{% endif %}"
+                data-quick-plz="{{ item.zip_code }}"
+              >
+                <span>{{ item.city }}</span>
+                <small>{{ item.zip_code }}</small>
+              </button>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
 
       <fieldset class="retailer-filter">
         <div class="retailer-filter-header">
@@ -362,5 +409,5 @@
 {% endblock %}
 
 {% block scripts %}
-  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261017-3') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261018-1') }}" defer></script>
 {% endblock %}

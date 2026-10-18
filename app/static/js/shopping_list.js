@@ -64,9 +64,56 @@
     });
   }
 
-  // Filter Auto-Submit & Retailer Presets
+  // Filter Auto-Submit, Retailer Presets & Regional PLZ Selector
   const filterForm = document.querySelector("[data-filter-form]");
+  const locationBar = document.querySelector("[data-location-bar]");
+  const plzEditor = document.querySelector("[data-plz-editor]");
+  const plzInput = document.querySelector("[data-plz-input]");
+  const togglePlzBtn = document.querySelector("[data-toggle-plz-editor]");
+  const detectLocationBtn = document.querySelector("[data-detect-location]");
+  const locationPlzEl = document.querySelector("[data-location-plz]");
+  const locationCityEl = document.querySelector("[data-location-city]");
+
+  function savePlzCookie(plz) {
+    if (!plz || !/^\d{4,5}$/.test(plz)) return;
+    document.cookie = `plz=${plz}; path=/; max-age=31536000; samesite=Lax`;
+  }
+
+  function applyPlzAndSubmit(plz, cityText) {
+    const cleaned = String(plz || "").trim();
+    if (!/^\d{4,5}$/.test(cleaned)) return;
+    savePlzCookie(cleaned);
+    if (plzInput) plzInput.value = cleaned;
+    if (locationPlzEl) locationPlzEl.textContent = cleaned;
+    if (cityText && locationCityEl) locationCityEl.textContent = cityText;
+    if (filterForm) {
+      filterForm.requestSubmit();
+    } else {
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set("zip_code", cleaned);
+      window.location.assign(nextUrl.toString());
+    }
+  }
+
+  if (togglePlzBtn && plzEditor) {
+    togglePlzBtn.addEventListener("click", () => {
+      const willOpen = plzEditor.hidden;
+      plzEditor.hidden = !willOpen;
+      togglePlzBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+      if (willOpen && plzInput) {
+        plzInput.focus();
+        plzInput.select();
+      }
+    });
+  }
+
   if (filterForm) {
+    filterForm.addEventListener("submit", () => {
+      if (plzInput && /^\d{4,5}$/.test(plzInput.value.trim())) {
+        savePlzCookie(plzInput.value.trim());
+      }
+    });
+
     filterForm.addEventListener("change", (event) => {
       if (event.target.matches("[data-auto-submit]")) {
         filterForm.requestSubmit();
@@ -74,6 +121,13 @@
     });
 
     filterForm.addEventListener("click", (event) => {
+      const quickBtn = event.target.closest("[data-quick-plz]");
+      if (quickBtn) {
+        const targetPlz = quickBtn.dataset.quickPlz;
+        applyPlzAndSubmit(targetPlz);
+        return;
+      }
+
       const button = event.target.closest("[data-retailer-preset]");
       if (!button) {
         return;
@@ -90,6 +144,112 @@
           preset === "all" || (preset === "default" && defaultRetailers.has(checkbox.value));
       });
       filterForm.requestSubmit();
+    });
+  }
+
+  async function detectViaClientIp() {
+    try {
+      const ipRes = await fetch("https://ipwho.is/", { cache: "no-store" });
+      if (ipRes.ok) {
+        const ipData = await ipRes.json();
+        if (ipData && ipData.success !== false && String(ipData.country_code || "").toUpperCase() === "DE") {
+          const locateUrl = new URL("/api/locate", window.location.origin);
+          if (ipData.postal) locateUrl.searchParams.set("zip_code", String(ipData.postal));
+          if (ipData.city) locateUrl.searchParams.set("city", String(ipData.city));
+          if (typeof ipData.latitude === "number" && typeof ipData.longitude === "number") {
+            locateUrl.searchParams.set("lat", String(ipData.latitude));
+            locateUrl.searchParams.set("lon", String(ipData.longitude));
+          }
+          const normRes = await fetch(locateUrl);
+          if (normRes.ok) {
+            return await normRes.json();
+          }
+        }
+      }
+    } catch (e) {
+      // Fallback to server-side /api/locate
+    }
+    try {
+      const res = await fetch("/api/locate");
+      if (res.ok) return await res.json();
+    } catch (e) {
+      // Ignore
+    }
+    return null;
+  }
+
+  async function detectViaGpsOrIp() {
+    if (navigator.geolocation) {
+      try {
+        const pos = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: false,
+            timeout: 5000,
+            maximumAge: 300000,
+          });
+        });
+        const locateUrl = new URL("/api/locate", window.location.origin);
+        locateUrl.searchParams.set("lat", String(pos.coords.latitude));
+        locateUrl.searchParams.set("lon", String(pos.coords.longitude));
+        const res = await fetch(locateUrl);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.detected && data.zip_code) {
+            return data;
+          }
+        }
+      } catch (e) {
+        // Fall through to IP detection
+      }
+    }
+    return await detectViaClientIp();
+  }
+
+  if (detectLocationBtn) {
+    detectLocationBtn.addEventListener("click", async () => {
+      const originalText = detectLocationBtn.textContent;
+      detectLocationBtn.disabled = true;
+      detectLocationBtn.textContent = tk("확인중...", "Locating...");
+      try {
+        const result = await detectViaGpsOrIp();
+        if (result && result.detected && result.zip_code) {
+          showToast(
+            tk(
+              `📍 ${result.zip_code} ${result.city || ""} 지역으로 설정합니다.`,
+              `📍 Set to ${result.zip_code} ${result.city || ""}.`
+            )
+          );
+          applyPlzAndSubmit(result.zip_code, result.city);
+          return;
+        }
+        showToast(
+          tk(
+            "독일 내 위치를 확인하지 못했습니다. 우편번호를 직접 입력해 주세요.",
+            "Could not detect German location. Please enter PLZ manually."
+          )
+        );
+        if (plzEditor && plzEditor.hidden) {
+          plzEditor.hidden = false;
+          plzInput?.focus();
+        }
+      } finally {
+        detectLocationBtn.disabled = false;
+        detectLocationBtn.textContent = originalText;
+      }
+    });
+  }
+
+  // Auto-detect German PLZ on first visit when no PLZ cookie/query is saved
+  if (locationBar && locationBar.dataset.hasSavedPlz === "0") {
+    const currentPlz = locationBar.dataset.currentPlz || "";
+    detectViaClientIp().then((result) => {
+      if (!result || !result.detected || !result.zip_code) return;
+      savePlzCookie(result.zip_code);
+      if (result.zip_code !== currentPlz) {
+        applyPlzAndSubmit(result.zip_code, result.city);
+      } else if (result.city && locationCityEl) {
+        locationCityEl.textContent = result.city;
+      }
     });
   }
 

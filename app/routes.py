@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from threading import Lock
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, Response, current_app, jsonify, make_response, redirect, render_template, request, url_for
 
 from app.config import DRUGSTORE_PAGE, SUPERMARKET_PAGE, WEEK_LABELS
 from app.models import Offer, OfferResult
@@ -17,6 +17,14 @@ from app.services.formatting import (
     format_eur_value as _format_eur,
     format_percent_value as _format_percent,
     parse_offer_date as _offer_date,
+)
+from app.services.location import (
+    QUICK_CITIES,
+    get_location_info,
+    locate_from_coordinates,
+    locate_from_ip,
+    normalize_german_plz,
+    resolve_plz_city,
 )
 from app.services.offers import OfferService
 from app.services.price_history import (
@@ -87,6 +95,18 @@ def drugstore_offer_service() -> OfferService:
     return _get_or_create_offer_service("DRUGSTORE_RETAILERS", cache_name="drugstore_offers.json")
 
 
+def _resolve_request_zip_code() -> tuple[str, bool]:
+    explicit_zip = _clean_zip(request.args.get("zip_code"))
+    if explicit_zip:
+        normalized = normalize_german_plz(explicit_zip) or explicit_zip
+        return normalized, True
+    cookie_zip = _clean_zip(request.cookies.get("plz"))
+    if cookie_zip:
+        normalized = normalize_german_plz(cookie_zip) or cookie_zip
+        return normalized, False
+    return current_app.config["DEFAULT_ZIP_CODE"], False
+
+
 @bp.get("/")
 def index():
     return render_offer_page(offer_service(), current_app.config["RETAILERS"], SUPERMARKET_PAGE, "main.index")
@@ -109,7 +129,9 @@ def render_offer_page(
     page_endpoint: str,
 ):
     lang = request.cookies.get("lang", "ko")
-    zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+    zip_code, has_explicit_zip = _resolve_request_zip_code()
+    location_info = get_location_info(zip_code)
+    has_saved_plz = has_explicit_zip or bool(_clean_zip(request.cookies.get("plz")))
     week_labels = page.get("week_labels", WEEK_LABELS)
     default_week = page.get("default_week", "current")
     if default_week == "current" and datetime.now(BERLIN_TZ).weekday() == 6:
@@ -134,7 +156,7 @@ def render_offer_page(
 
     _enrich_atl_if_needed(filtered, service, result.fetched_at)
 
-    return render_template(
+    rendered = render_template(
         "offers.html",
         offers=filtered,
         basket_query=basket_query,
@@ -168,12 +190,19 @@ def render_offer_page(
         overlap_only=overlap_only,
         query=query,
         zip_code=zip_code,
+        location_info=location_info,
+        quick_cities=QUICK_CITIES,
+        has_saved_plz=has_saved_plz,
         fetched_at=result.fetched_at,
         warnings=result.warnings,
         from_cache=result.from_cache,
         page=page,
         lang=lang,
     )
+    response = make_response(rendered)
+    if has_explicit_zip:
+        response.set_cookie("plz", zip_code, max_age=31536000, path="/", samesite="Lax")
+    return response
 
 
 def _enrich_atl_if_needed(offers: list[Offer], service: OfferService, fetched_at: str | None) -> None:
@@ -215,7 +244,7 @@ def api_drugstore_offers():
 
 
 def api_offers_for(service: OfferService, week_labels: dict[str, dict[str, str]], default_week: str = "current"):
-    zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+    zip_code = _resolve_request_zip_code()[0]
     selected_week = _clean_week(request.args.get("week"), week_labels, default_week)
     result = load_offers_for_request(service, zip_code)
     offers = filter_offers_by_week(result.offers, selected_week)
@@ -231,6 +260,56 @@ def api_offers_for(service: OfferService, week_labels: dict[str, dict[str, str]]
     )
 
 
+@bp.get("/api/locate")
+def api_locate():
+    lat_raw = request.args.get("lat")
+    lon_raw = request.args.get("lon")
+    zip_raw = request.args.get("zip_code")
+    city_hint = (request.args.get("city") or "").strip() or None
+
+    result: dict | None = None
+    if lat_raw is not None and lon_raw is not None:
+        try:
+            result = locate_from_coordinates(float(lat_raw), float(lon_raw))
+        except ValueError:
+            result = None
+
+    if result is None and (zip_raw or city_hint):
+        normalized = normalize_german_plz(_clean_zip(zip_raw), city_hint=city_hint)
+        if normalized:
+            city = resolve_plz_city(normalized, allow_remote=True)
+            result = {
+                "zip_code": normalized,
+                "city": city,
+                "detected": True,
+                "source": "zip",
+            }
+
+    if result is None:
+        forwarded = (
+            request.headers.get("CF-Connecting-IP")
+            or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP")
+            or request.remote_addr
+        )
+        result = locate_from_ip(forwarded)
+
+    if result is None:
+        default_zip = current_app.config["DEFAULT_ZIP_CODE"]
+        return jsonify(
+            {
+                "zip_code": default_zip,
+                "city": resolve_plz_city(default_zip),
+                "detected": False,
+                "source": "default",
+            }
+        )
+
+    response = make_response(jsonify(result))
+    response.set_cookie("plz", result["zip_code"], max_age=31536000, path="/", samesite="Lax")
+    return response
+
+
 @bp.get("/api/basket")
 def api_basket():
     return api_basket_for(offer_service(), WEEK_LABELS)
@@ -242,7 +321,7 @@ def api_drugstore_basket():
 
 
 def api_basket_for(service: OfferService, week_labels: dict[str, dict[str, str]], default_week: str = "current"):
-    zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+    zip_code = _resolve_request_zip_code()[0]
     selected_week = _clean_week(request.args.get("week"), week_labels, default_week)
     selected_retailers = set(request.args.getlist("retailer"))
     basket_query = (request.args.get("basket") or "").strip()
@@ -300,7 +379,7 @@ def _load_combined_week_offers(zip_code: str, selected_week: str) -> list[Offer]
 @bp.get("/api/compare")
 def api_compare():
     q = (request.args.get("q") or "").strip()
-    zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+    zip_code = _resolve_request_zip_code()[0]
     selected_week = _clean_week(request.args.get("week"), WEEK_LABELS, "current")
     all_offers = _load_combined_week_offers(zip_code, selected_week)
     result = offer_service().price_history.compare_across_stores(q, all_offers)
@@ -312,12 +391,12 @@ def api_watchlist_deals():
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
         items = data.get("items") or data.get("watchlist") or []
-        zip_code = _clean_zip(data.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+        zip_code = _clean_zip(data.get("zip_code")) or _resolve_request_zip_code()[0]
         selected_week = _clean_week(data.get("week"), WEEK_LABELS, "current")
     else:
         kw = request.args.get("keywords") or ""
         items = [{"name": part.strip()} for part in kw.split(",") if part.strip()]
-        zip_code = _clean_zip(request.args.get("zip_code")) or current_app.config["DEFAULT_ZIP_CODE"]
+        zip_code = _resolve_request_zip_code()[0]
         selected_week = _clean_week(request.args.get("week"), WEEK_LABELS, "current")
 
     all_offers = _load_combined_week_offers(zip_code, selected_week)

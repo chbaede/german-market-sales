@@ -9,6 +9,7 @@ import tempfile
 
 from app.models import Offer, OfferResult
 from app.providers.aldi_nord import AldiNordProvider
+from app.providers.aldi_sued import AldiSuedProvider
 from app.providers.base import BERLIN_TZ
 from app.providers.dm import DmProvider
 from app.providers.edeka import EdekaProvider
@@ -23,6 +24,7 @@ from app.services.price_history import PriceHistoryService, normalize_product_ke
 CACHE_SCHEMA_VERSION = 12
 UPSTREAM_FETCH_MULTIPLIER = 10
 MIN_UPSTREAM_FETCH_LIMIT = 500
+DEFAULT_CACHE_ZIP = "14195"
 
 
 class OfferService:
@@ -45,6 +47,7 @@ class OfferService:
         self.provider = MarktguruProvider(timeout=timeout, verify_tls=verify_tls)
         self.specialized_providers = {
             "aldi-nord": AldiNordProvider(timeout=timeout, verify_tls=verify_tls),
+            "aldi-sued": AldiSuedProvider(timeout=timeout, verify_tls=verify_tls),
             "dm-drogerie-markt": DmProvider(timeout=timeout, verify_tls=verify_tls),
             "edeka": EdekaProvider(timeout=timeout, verify_tls=verify_tls),
             "kaufland": KauflandProvider(timeout=timeout, verify_tls=verify_tls),
@@ -56,12 +59,18 @@ class OfferService:
             max_offers_per_retailer * UPSTREAM_FETCH_MULTIPLIER,
             MIN_UPSTREAM_FETCH_LIMIT,
         )
-        self._memory_cache: tuple[int, str, str | None, list[str], list[Offer]] | None = None
+        self._memory_cache: dict[str, tuple[int, str | None, list[str], list[Offer]]] = {}
         self.price_history = PriceHistoryService(cache_dir=cache_dir)
         try:
             self.price_history.seed_initial_history()
         except Exception:
             pass
+
+    def _cache_file_for_zip(self, zip_code: str) -> Path:
+        cleaned = (zip_code or "").strip()
+        if not cleaned or cleaned == DEFAULT_CACHE_ZIP:
+            return self.cache_file
+        return self.cache_file.with_name(f"{self.cache_file.stem}_{cleaned}{self.cache_file.suffix}")
 
     def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
         if not refresh:
@@ -113,18 +122,22 @@ class OfferService:
         return OfferResult(offers=offers, fetched_at=fetched_at, warnings=warnings)
 
     def _read_cache(self, zip_code: str) -> dict | None:
-        if not self.cache_file.exists():
-            return None
-        try:
-            with self.cache_file.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            return None
-        if data.get("schema_version") != CACHE_SCHEMA_VERSION:
-            return None
-        if data.get("zip_code") != zip_code:
-            return None
-        return data
+        target_file = self._cache_file_for_zip(zip_code)
+        candidates = [target_file] if target_file == self.cache_file else [target_file, self.cache_file]
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            try:
+                with candidate.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if data.get("schema_version") != CACHE_SCHEMA_VERSION:
+                continue
+            if data.get("zip_code") != zip_code:
+                continue
+            return data
+        return None
 
     def _write_cache(self, zip_code: str, fetched_at: str, offers: list[Offer], warnings: list[str]) -> None:
         payload = {
@@ -134,41 +147,45 @@ class OfferService:
             "warnings": warnings,
             "offers": [offer.to_dict() for offer in offers],
         }
-        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file = self._cache_file_for_zip(zip_code)
+        target_file.parent.mkdir(parents=True, exist_ok=True)
         temp_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",
-                dir=self.cache_file.parent,
-                prefix=f"{self.cache_file.name}.",
+                dir=target_file.parent,
+                prefix=f"{target_file.name}.",
                 suffix=".tmp",
                 delete=False,
             ) as handle:
                 temp_path = Path(handle.name)
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
-            temp_path.replace(self.cache_file)
+            temp_path.replace(target_file)
             try:
-                mtime_ns = self.cache_file.stat().st_mtime_ns
-                self._memory_cache = (mtime_ns, zip_code, fetched_at, list(warnings), [replace(o) for o in offers])
+                mtime_ns = target_file.stat().st_mtime_ns
+                self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [replace(o) for o in offers])
             except OSError:
-                self._memory_cache = None
+                self._memory_cache.pop(zip_code, None)
         except Exception:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
             raise
 
     def get_cached_offers(self, zip_code: str) -> OfferResult | None:
-        if not self.cache_file.exists():
+        target_file = self._cache_file_for_zip(zip_code)
+        active_file = target_file if target_file.exists() else (self.cache_file if self.cache_file.exists() else None)
+        if active_file is None:
             return None
         try:
-            mtime_ns = self.cache_file.stat().st_mtime_ns
+            mtime_ns = active_file.stat().st_mtime_ns
         except OSError:
             return None
 
-        if self._memory_cache is not None:
-            cached_mtime, cached_zip, fetched_at, warnings, base_offers = self._memory_cache
-            if cached_mtime == mtime_ns and cached_zip == zip_code:
+        mem_entry = self._memory_cache.get(zip_code)
+        if mem_entry is not None:
+            cached_mtime, fetched_at, warnings, base_offers = mem_entry
+            if cached_mtime == mtime_ns:
                 offers = self._non_expired_offers([replace(o) for o in base_offers])
                 return OfferResult(
                     offers=offers,
@@ -183,7 +200,7 @@ class OfferService:
         offers = self._cached_offers(cached)
         fetched_at = cached["fetched_at"]
         warnings = cached.get("warnings", [])
-        self._memory_cache = (mtime_ns, zip_code, fetched_at, list(warnings), [replace(o) for o in offers])
+        self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [replace(o) for o in offers])
         return OfferResult(
             offers=offers,
             fetched_at=fetched_at,

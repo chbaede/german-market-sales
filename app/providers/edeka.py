@@ -146,23 +146,45 @@ class EdekaProvider(OfferProvider):
         )
 
     def _candidate_markets(self, zip_code: str) -> tuple[list[dict], bool]:
-        payload, used_insecure = self._request_json(
-            self.market_search_url,
-            params={"searchstring": zip_code},
-        )
-        markets = payload.get("markets") or []
-        candidates: list[dict] = []
-        for market in markets:
-            url = (market.get("url") or "").strip()
-            if market.get("isEdekaHomepageMarket") and url and (url.startswith("http://") or url.startswith("https://")):
-                candidates.append(market)
-        for market in markets:
-            url = (market.get("url") or "").strip()
-            if url and (url.startswith("http://") or url.startswith("https://")) and market not in candidates:
-                candidates.append(market)
-        if not candidates:
-            raise ValueError(f"No EDEKA market found for PLZ {zip_code}.")
-        return candidates[:8], used_insecure
+        from app.services.location import normalize_german_plz, resolve_plz_city
+
+        search_queries: list[str] = [zip_code]
+        normalized = normalize_german_plz(zip_code)
+        if normalized and normalized not in search_queries:
+            search_queries.append(normalized)
+        city = resolve_plz_city(normalized or zip_code)
+        if city and city != "Deutschland" and city not in search_queries:
+            search_queries.append(city)
+        if len(zip_code) >= 3 and zip_code[:3] not in search_queries:
+            search_queries.append(zip_code[:3])
+
+        any_insecure = False
+        for query in search_queries:
+            try:
+                payload, used_insecure = self._request_json(
+                    self.market_search_url,
+                    params={"searchstring": query},
+                )
+                any_insecure = any_insecure or used_insecure
+            except Exception:
+                if query == search_queries[0] and len(search_queries) == 1:
+                    raise
+                continue
+
+            markets = payload.get("markets") or []
+            candidates: list[dict] = []
+            for market in markets:
+                url = (market.get("url") or "").strip()
+                if market.get("isEdekaHomepageMarket") and url and (url.startswith("http://") or url.startswith("https://")):
+                    candidates.append(market)
+            for market in markets:
+                url = (market.get("url") or "").strip()
+                if url and (url.startswith("http://") or url.startswith("https://")) and market not in candidates:
+                    candidates.append(market)
+            if candidates:
+                return candidates[:8], any_insecure
+
+        raise ValueError(f"No EDEKA market found for PLZ {zip_code}.")
 
     def _offers_url(self, market_url: str) -> tuple[str, bool]:
         response, used_insecure = self._request("GET", market_url.strip())

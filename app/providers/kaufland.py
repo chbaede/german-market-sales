@@ -18,18 +18,30 @@ from app.providers.base import (
 from app.services.categories import categorize_offer
 
 KAUFLAND_OFFERS_URL = "https://filiale.kaufland.de/angebote/uebersicht.html?kloffer-week=current"
+KAUFLAND_STOREFINDER_URL = "https://filiale.kaufland.de/.klstorefinder.json"
 
 
 class KauflandProvider(OfferProvider):
     retailer_name = "Kaufland"
     retailer_slug = "kaufland"
     offers_url = KAUFLAND_OFFERS_URL
+    storefinder_url = KAUFLAND_STOREFINDER_URL
     default_headers = {"Accept-Language": "de-DE,de;q=0.9,en;q=0.8"}
+    _stores_cache: list[dict[str, Any]] | None = None
 
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
         self._validate_retailer_slug(retailer_slug)
 
-        html, used_insecure = self._request_text(self.offers_url)
+        headers: dict[str, str] | None = None
+        store_id = self._resolve_store_id(zip_code)
+        if store_id:
+            headers = {"Cookie": f"x-aem-variant={store_id}; kl_store={store_id}"}
+
+        html, used_insecure = (
+            self._request_text(self.offers_url, headers=headers)
+            if headers
+            else self._request_text(self.offers_url)
+        )
         warnings: list[str] = []
         if used_insecure:
             warnings.append("Kaufland 공식 페이지 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
@@ -39,6 +51,46 @@ class KauflandProvider(OfferProvider):
         if not offers:
             raise ValueError("Kaufland official offers were empty.")
         return offers, warnings
+
+    def _resolve_store_id(self, zip_code: str) -> str | None:
+        cleaned = (zip_code or "").strip()
+        if not cleaned or not cleaned.isdigit():
+            return None
+        stores = self._load_stores()
+        if not stores:
+            return None
+        for prefix_len in (5, 4, 3, 2):
+            prefix = cleaned[:prefix_len]
+            for store in stores:
+                pc = str(store.get("pc") or "").strip()
+                store_id = str(store.get("n") or "").strip()
+                if store_id and pc.startswith(prefix):
+                    return store_id
+        # Closest numeric PLZ fallback
+        target_num = int(cleaned)
+        best_store_id: str | None = None
+        best_diff: int | None = None
+        for store in stores:
+            pc = str(store.get("pc") or "").strip()
+            store_id = str(store.get("n") or "").strip()
+            if store_id and pc.isdigit():
+                diff = abs(int(pc) - target_num)
+                if best_diff is None or diff < best_diff:
+                    best_diff = diff
+                    best_store_id = store_id
+        return best_store_id
+
+    def _load_stores(self) -> list[dict[str, Any]]:
+        if KauflandProvider._stores_cache is not None:
+            return KauflandProvider._stores_cache
+        try:
+            payload, _ = self._request_json(self.storefinder_url)
+            if isinstance(payload, list):
+                KauflandProvider._stores_cache = payload
+                return payload
+        except Exception:
+            pass
+        return []
 
     @classmethod
     def extract_offer_template_payload(cls, html: str) -> dict:
