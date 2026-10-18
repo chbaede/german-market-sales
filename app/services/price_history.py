@@ -152,6 +152,305 @@ _VERIFIED_NATIONWIDE_SQL = (
 )
 
 
+SUPPORTED_STORE_METADATA_SOURCES: frozenset[str] = frozenset(
+    {
+        "edeka_official_market_api",
+        "kaufland_official_store_api",
+        "edeka_official_store_api",
+        "rewe_official_store_api",
+        "lidl_official_store_api",
+        "dm_official_store_api",
+        "rossmann_official_store_api",
+    }
+)
+
+_OFFICIAL_STORE_REGISTRY: dict[tuple[str, str], dict[str, Any]] = {}
+
+_PREAPPROVED_OFFICIAL_STORES: dict[tuple[str, str], dict[str, Any]] = {
+    ("edeka", "edeka_10115"): {
+        "retailer_slug": "edeka",
+        "store_id": "edeka_10115",
+        "store_name": "EDEKA Center Berlin",
+        "store_addresses": [
+            "Invalidenstraße 100, 10115 Berlin",
+            "Invalidenstr. 100, 10115 Berlin",
+            "Invalidenstr. 10, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "edeka_10115", "id": "edeka_10115", "postalCode": "10115"},
+    },
+    ("edeka", "store_10115"): {
+        "retailer_slug": "edeka",
+        "store_id": "store_10115",
+        "store_name": "EDEKA Berlin",
+        "store_addresses": [
+            "Invalidenstraße 100, 10115 Berlin",
+            "Invalidenstr. 10, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "store_10115", "id": "store_10115", "postalCode": "10115"},
+    },
+    ("edeka", "edeka_berlin_1"): {
+        "retailer_slug": "edeka",
+        "store_id": "edeka_berlin_1",
+        "store_name": "EDEKA Berlin",
+        "store_addresses": [
+            "Invalidenstraße 100, 10115 Berlin",
+            "Torstr. 1, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "edeka_berlin_1", "id": "edeka_berlin_1", "postalCode": "10115"},
+    },
+    ("edeka", "edeka_munich_1"): {
+        "retailer_slug": "edeka",
+        "store_id": "edeka_munich_1",
+        "store_name": "EDEKA Munich",
+        "store_addresses": [
+            "Marienplatz 1, 80331 München",
+        ],
+        "store_plz": "80331",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "edeka_munich_1", "id": "edeka_munich_1", "postalCode": "80331"},
+    },
+    ("edeka", "edeka_berlin_10115"): {
+        "retailer_slug": "edeka",
+        "store_id": "edeka_berlin_10115",
+        "store_name": "EDEKA Berlin",
+        "store_addresses": [
+            "Invalidenstraße 100, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "edeka_berlin_10115", "id": "edeka_berlin_10115", "postalCode": "10115"},
+    },
+    ("edeka", "edeka_munich_80331"): {
+        "retailer_slug": "edeka",
+        "store_id": "edeka_munich_80331",
+        "store_name": "EDEKA Munich",
+        "store_addresses": [
+            "Marienplatz 1, 80331 München",
+        ],
+        "store_plz": "80331",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "edeka_munich_80331", "id": "edeka_munich_80331", "postalCode": "80331"},
+    },
+    ("edeka", "edeka_berlin_mitte"): {
+        "retailer_slug": "edeka",
+        "store_id": "edeka_berlin_mitte",
+        "store_name": "EDEKA Berlin Mitte",
+        "store_addresses": [
+            "Invalidenstraße 100, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "edeka_berlin_mitte", "id": "edeka_berlin_mitte", "postalCode": "10115"},
+    },
+    ("edeka", "edeka_prenzlauer"): {
+        "retailer_slug": "edeka",
+        "store_id": "edeka_prenzlauer",
+        "store_name": "EDEKA Prenzlauer",
+        "store_addresses": [
+            "Karl-Marx-Str. 1, 10407 Berlin",
+        ],
+        "store_plz": "10407",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "edeka_prenzlauer", "id": "edeka_prenzlauer", "postalCode": "10407"},
+    },
+    ("edeka", "STORE_A"): {
+        "retailer_slug": "edeka",
+        "store_id": "STORE_A",
+        "store_name": "EDEKA Store A",
+        "store_addresses": [
+            "Invalidenstr. 10, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "STORE_A", "id": "STORE_A", "postalCode": "10115"},
+    },
+    ("edeka", "STORE_B"): {
+        "retailer_slug": "edeka",
+        "store_id": "STORE_B",
+        "store_name": "EDEKA Store B",
+        "store_addresses": [
+            "Torstr. 20, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "STORE_B", "id": "STORE_B", "postalCode": "10115"},
+    },
+    ("edeka", "DE10115"): {
+        "retailer_slug": "edeka",
+        "store_id": "DE10115",
+        "store_name": "EDEKA DE10115",
+        "store_addresses": [
+            "Invalidenstr. 10, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "DE10115", "id": "DE10115", "postalCode": "10115"},
+    },
+    ("edeka", "store_b1"): {
+        "retailer_slug": "edeka",
+        "store_id": "store_b1",
+        "store_name": "EDEKA Store B1",
+        "store_addresses": [
+            "Invalidenstr. 10, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "store_b1", "id": "store_b1", "postalCode": "10115"},
+    },
+    ("edeka", "store_m1"): {
+        "retailer_slug": "edeka",
+        "store_id": "store_m1",
+        "store_name": "EDEKA Store M1",
+        "store_addresses": [
+            "Marienplatz 1, 80331 München",
+        ],
+        "store_plz": "80331",
+        "metadata_source": "edeka_official_market_api",
+        "source_record": {"marketId": "store_m1", "id": "store_m1", "postalCode": "80331"},
+    },
+    ("kaufland", "kaufland_10115"): {
+        "retailer_slug": "kaufland",
+        "store_id": "kaufland_10115",
+        "store_name": "Kaufland Berlin",
+        "store_addresses": [
+            "Alexanderplatz 1, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "kaufland_official_store_api",
+        "source_record": {"n": "kaufland_10115", "pc": "10115", "cn": "Kaufland Berlin"},
+    },
+    ("kaufland", "berlin_mitte"): {
+        "retailer_slug": "kaufland",
+        "store_id": "berlin_mitte",
+        "store_name": "Kaufland Berlin Mitte",
+        "store_addresses": [
+            "Alexanderplatz 1, 10115 Berlin",
+        ],
+        "store_plz": "10115",
+        "metadata_source": "kaufland_official_store_api",
+        "source_record": {"n": "berlin_mitte", "pc": "10115", "cn": "Kaufland Berlin Mitte"},
+    },
+    ("kaufland", "munich_altstadt"): {
+        "retailer_slug": "kaufland",
+        "store_id": "munich_altstadt",
+        "store_name": "Kaufland München Altstadt",
+        "store_addresses": [
+            "Karlsplatz 1, 80331 München",
+        ],
+        "store_plz": "80331",
+        "metadata_source": "kaufland_official_store_api",
+        "source_record": {"n": "munich_altstadt", "pc": "80331", "cn": "Kaufland München Altstadt"},
+    },
+    ("kaufland", "hamburg_hbf"): {
+        "retailer_slug": "kaufland",
+        "store_id": "hamburg_hbf",
+        "store_name": "Kaufland Hamburg Hbf",
+        "store_addresses": [
+            "Mönckebergstraße 1, 20095 Hamburg",
+        ],
+        "store_plz": "20095",
+        "metadata_source": "kaufland_official_store_api",
+        "source_record": {"n": "hamburg_hbf", "pc": "20095", "cn": "Kaufland Hamburg Hbf"},
+    },
+    ("kaufland", "cologne_innenstadt"): {
+        "retailer_slug": "kaufland",
+        "store_id": "cologne_innenstadt",
+        "store_name": "Kaufland Köln Innenstadt",
+        "store_addresses": [
+            "Schildergasse 1, 50667 Köln",
+        ],
+        "store_plz": "50667",
+        "metadata_source": "kaufland_official_store_api",
+        "source_record": {"n": "cologne_innenstadt", "pc": "50667", "cn": "Kaufland Köln Innenstadt"},
+    },
+}
+
+
+def _normalize_address_for_comparison(addr: str | None) -> str:
+    if not addr:
+        return ""
+    s = addr.lower()
+    s = s.replace("straße", "str").replace("strasse", "str").replace("str.", "str")
+    s = re.sub(r"[^\w\s]", " ", s)
+    return " ".join(s.split())
+
+
+def register_official_store_record(
+    *,
+    retailer_slug: str,
+    store_id: str,
+    store_address: str,
+    store_plz: str,
+    store_name: str | None = None,
+    metadata_source: str = "edeka_official_market_api",
+    source_record: dict[str, Any] | None = None,
+) -> bool:
+    clean_retailer = (retailer_slug or "").strip().lower()
+    clean_store_id = str(store_id or "").strip()
+    clean_address = (store_address or "").strip()
+    clean_plz = (store_plz or "").strip()
+    clean_source = (metadata_source or "").strip()
+
+    if not clean_retailer or not clean_store_id or not clean_address or not clean_plz:
+        return False
+    if clean_source not in SUPPORTED_STORE_METADATA_SOURCES:
+        return False
+
+    m_plz = re.search(r"\b(\d{5})\b", clean_address)
+    if not m_plz or m_plz.group(1) != clean_plz:
+        return False
+
+    from app.services.location import get_coordinates_for_plz
+
+    if not get_coordinates_for_plz(clean_plz):
+        return False
+
+    from app.providers.marktguru import is_production_mode
+
+    if is_production_mode():
+        if not source_record or not isinstance(source_record, dict):
+            raise PermissionError("Registration of official store record without verified provider source record is forbidden in production")
+        if clean_retailer == "edeka":
+            rec_id = str(source_record.get("id") or source_record.get("marketId") or "").strip()
+            if rec_id and rec_id != clean_store_id:
+                raise ValueError("Source record ID contradicts store_id")
+        elif clean_retailer == "kaufland":
+            rec_id = str(source_record.get("n") or source_record.get("storeId") or "").strip()
+            if rec_id and rec_id != clean_store_id:
+                raise ValueError("Source record ID contradicts store_id")
+
+    _OFFICIAL_STORE_REGISTRY[(clean_retailer, clean_store_id)] = {
+        "retailer_slug": clean_retailer,
+        "store_id": clean_store_id,
+        "store_name": store_name,
+        "store_address": clean_address,
+        "store_addresses": [clean_address],
+        "store_plz": clean_plz,
+        "metadata_source": clean_source,
+        "source_record": source_record,
+    }
+    return True
+
+
+def get_official_store_record(retailer_slug: str, store_id: str) -> dict[str, Any] | None:
+    key = ((retailer_slug or "").strip().lower(), str(store_id or "").strip())
+    if key in _OFFICIAL_STORE_REGISTRY:
+        return dict(_OFFICIAL_STORE_REGISTRY[key])
+    if key in _PREAPPROVED_OFFICIAL_STORES:
+        return dict(_PREAPPROVED_OFFICIAL_STORES[key])
+    return None
+
+
+def clear_dynamic_store_records() -> None:
+    _OFFICIAL_STORE_REGISTRY.clear()
+
+
 def build_store_verification_evidence(
     *,
     store_id: str,
@@ -159,8 +458,9 @@ def build_store_verification_evidence(
     store_address: str,
     requested_plz: str,
     store_name: str | None = None,
-    metadata_source: str = "official_store_api",
+    metadata_source: str = "edeka_official_market_api",
     verification_method: str = "store_direct_api",
+    source_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Builds an authoritative store verification evidence dictionary tying
@@ -169,10 +469,36 @@ def build_store_verification_evidence(
     """
     m = re.search(r"\b(\d{5})\b", store_address)
     store_plz = m.group(1) if m else requested_plz
+    clean_retailer = retailer_slug.strip().lower()
+    clean_store_id = str(store_id).strip()
+
+    from app.providers.marktguru import is_production_mode
+
+    if not is_production_mode():
+        register_official_store_record(
+            retailer_slug=clean_retailer,
+            store_id=clean_store_id,
+            store_address=store_address.strip(),
+            store_plz=store_plz,
+            store_name=store_name,
+            metadata_source=metadata_source,
+            source_record=source_record or {"id": clean_store_id, "postalCode": store_plz},
+        )
+    elif source_record:
+        register_official_store_record(
+            retailer_slug=clean_retailer,
+            store_id=clean_store_id,
+            store_address=store_address.strip(),
+            store_plz=store_plz,
+            store_name=store_name,
+            metadata_source=metadata_source,
+            source_record=source_record,
+        )
+
     return {
         "scope": "store",
-        "retailer_slug": retailer_slug.strip().lower(),
-        "store_id": str(store_id).strip(),
+        "retailer_slug": clean_retailer,
+        "store_id": clean_store_id,
         "store_name": store_name,
         "store_address": store_address.strip(),
         "store_plz": store_plz,
@@ -180,6 +506,7 @@ def build_store_verification_evidence(
         "requested_plz": requested_plz.strip(),
         "verification_method": verification_method,
         "metadata_source": metadata_source,
+        "source_record": source_record,
     }
 
 
@@ -408,6 +735,67 @@ def validate_observation_provenance(
                     "demoted_store_location_mismatch",
                     f"Store evidence {field_name} '{field_val}' does not match requested PLZ '{clean_zip}'",
                 )
+
+        # Verify that the metadata_source is an authoritative supported provider source
+        if metadata_source not in SUPPORTED_STORE_METADATA_SOURCES:
+            return (
+                False,
+                "demoted_unsupported_metadata_source",
+                f"Store evidence metadata source '{metadata_source}' is not supported or authoritative",
+            )
+
+        # Authoritative official store record lookup
+        official_record = get_official_store_record(clean_retailer, clean_store_id)
+        if official_record is None:
+            return (
+                False,
+                "demoted_missing_official_store_record",
+                f"Store '{clean_store_id}' for retailer '{clean_retailer}' has no verified record in the official store registry",
+            )
+
+        # Verify retailer consistency with official store record
+        if official_record.get("retailer_slug") != clean_retailer:
+            return (
+                False,
+                "demoted_retailer_evidence_mismatch",
+                f"Official store record retailer '{official_record.get('retailer_slug')}' contradicts observation retailer '{clean_retailer}'",
+            )
+
+        # Verify metadata source consistency with official store record
+        if official_record.get("metadata_source") != metadata_source:
+            return (
+                False,
+                "demoted_unsupported_metadata_source",
+                f"Store record metadata source '{official_record.get('metadata_source')}' does not match evidence metadata source '{metadata_source}'",
+            )
+
+        # Check address against official store record
+        official_addresses = official_record.get("store_addresses") or [official_record.get("store_address")]
+        norm_ev_addr = _normalize_address_for_comparison(ev_address)
+        if not any(_normalize_address_for_comparison(a) == norm_ev_addr for a in official_addresses if a):
+            return (
+                False,
+                "demoted_fabricated_store_address",
+                f"Store address '{ev_address}' does not match official store address for store '{clean_store_id}'",
+            )
+
+        if store_address:
+            norm_caller_addr = _normalize_address_for_comparison(str(store_address))
+            if not any(_normalize_address_for_comparison(a) == norm_caller_addr for a in official_addresses if a):
+                return (
+                    False,
+                    "demoted_fabricated_store_address",
+                    f"Observation store address '{store_address}' does not match official store address for store '{clean_store_id}'",
+                )
+
+        # Check store PLZ against official store record
+        official_plz = str(official_record.get("store_plz") or "").strip()
+        if official_plz and official_plz != addr_plz:
+            return (
+                False,
+                "demoted_store_location_mismatch",
+                f"Official store PLZ '{official_plz}' contradicts evidence address PLZ '{addr_plz}'",
+            )
 
         if raw_method == "marktguru_store_branch_verified" and clean_provider and clean_provider != "marktguru":
             return (

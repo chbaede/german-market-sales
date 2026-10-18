@@ -29,6 +29,8 @@ from app.providers.marktguru import (
     ingest_trusted_evidence_artifact,
     clear_dynamic_ingestion_catalog,
     clear_dynamic_approved_roots,
+    is_production_mode,
+    PRODUCTION_EVIDENCE_ROOT,
     VERIFIED_CAMPAIGN_REGISTRY,
     VERIFIED_NATIONWIDE_REGISTRY,
 )
@@ -45,6 +47,10 @@ from app.services.price_history import (
     normalize_product_key,
     validate_observation_provenance,
     build_store_verification_evidence,
+    register_official_store_record,
+    get_official_store_record,
+    clear_dynamic_store_records,
+    SUPPORTED_STORE_METADATA_SOURCES,
 )
 
 FIXTURE_EVIDENCE_DIR = Path(__file__).parent / "fixtures" / "evidence"
@@ -4496,6 +4502,483 @@ def test_scenario_34_unverified_observations_never_contaminate_verified_stats_at
     nat_atl_map = service.get_all_time_low_map(zip_code=None)
     assert reg_atl_map[pkey] == 3.99
     assert nat_atl_map[pkey] == 3.99
+
+
+def test_scenario_35_fake_json_with_own_sha256_rejected_in_production(monkeypatch, tmp_path):
+    """35. Fake JSON registered with its own SHA-256 is rejected in production mode."""
+    monkeypatch.setenv("APP_ENV", "production")
+    assert is_production_mode() is True
+
+    fake_file = tmp_path / "fake_artifact.json"
+    fake_content = json.dumps({
+        "campaign_id": "fake_camp_99",
+        "source_url": "https://www.marktguru.de/leaflets/fake_camp_99",
+        "scope": "nationwide",
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+    }).encode("utf-8")
+    fake_file.write_bytes(fake_content)
+
+    import hashlib
+    fake_sha256 = hashlib.sha256(fake_content).hexdigest()
+
+    # Even with its own exact calculated hash, registration is rejected in production
+    with pytest.raises((PermissionError, ValueError)):
+        ingest_trusted_evidence_artifact(fake_file, expected_hash=fake_sha256)
+
+
+def test_scenario_36_caller_supplied_hash_in_production_mode_rejected(monkeypatch):
+    """36. In production mode, caller-supplied expected_hash cannot bypass pre-approved manifest."""
+    monkeypatch.setenv("APP_ENV", "production")
+    assert is_production_mode() is True
+
+    # 1. Unregistered file path with caller-supplied hash -> FileNotFoundError
+    fake_path = PRODUCTION_EVIDENCE_ROOT / "unregistered_art.json"
+    with pytest.raises(FileNotFoundError):
+        ingest_trusted_evidence_artifact(fake_path, expected_hash="0" * 64)
+
+    # 2. Even for an existing pre-approved file, passing a contradicting caller hash -> ValueError
+    real_file = PRODUCTION_EVIDENCE_ROOT / "700.json"
+    with pytest.raises(ValueError, match="contradicts pre-approved manifest hash"):
+        ingest_trusted_evidence_artifact(real_file, expected_hash="0" * 64)
+
+    # 3. Legitimate pre-approved file in production with correct manifest hash passes
+    legit_hash = ingest_trusted_evidence_artifact(real_file)
+    assert legit_hash == "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f"
+
+
+def test_scenario_37_fake_store_ids_fabricated_addresses_and_unsupported_sources_demoted():
+    """37. Fake store IDs, fabricated addresses, mismatched retailers, and unsupported metadata sources are demoted."""
+    clear_dynamic_store_records()
+
+    # 1. Fake store ID with valid address and requested PLZ
+    is_valid, reason, msg = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="store_fake_9999",
+        retailer_slug="edeka",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address="Invalidenstraße 100, 10115 Berlin",
+        verification_evidence={
+            "scope": "store",
+            "store_id": "store_fake_9999",
+            "retailer_slug": "edeka",
+            "store_address": "Invalidenstraße 100, 10115 Berlin",
+            "store_plz": "10115",
+            "matched_plz": "10115",
+            "metadata_source": "edeka_official_market_api",
+        },
+    )
+    assert is_valid is False
+    assert reason == "demoted_missing_official_store_record"
+
+    # 2. Known store ID edeka_10115, but fabricated address string
+    is_valid, reason, msg = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="edeka_10115",
+        retailer_slug="edeka",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address="Fabricated Boulevard 999, 10115 Berlin",
+        verification_evidence={
+            "scope": "store",
+            "store_id": "edeka_10115",
+            "retailer_slug": "edeka",
+            "store_address": "Fabricated Boulevard 999, 10115 Berlin",
+            "store_plz": "10115",
+            "matched_plz": "10115",
+            "metadata_source": "edeka_official_market_api",
+        },
+    )
+    assert is_valid is False
+    assert reason == "demoted_fabricated_store_address"
+
+    # 3. Known store ID with unsupported metadata source
+    is_valid, reason, msg = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="edeka_10115",
+        retailer_slug="edeka",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address="Invalidenstraße 100, 10115 Berlin",
+        verification_evidence={
+            "scope": "store",
+            "store_id": "edeka_10115",
+            "retailer_slug": "edeka",
+            "store_address": "Invalidenstraße 100, 10115 Berlin",
+            "store_plz": "10115",
+            "matched_plz": "10115",
+            "metadata_source": "unsupported_web_scraper_v1",
+        },
+    )
+    assert is_valid is False
+    assert reason == "demoted_unsupported_metadata_source"
+
+
+def test_scenario_38_missing_or_mismatched_official_store_records_in_production(monkeypatch):
+    """38. Registering store records without verified provider responses fails closed in production."""
+    monkeypatch.setenv("APP_ENV", "production")
+    assert is_production_mode() is True
+
+    # 1. Registration in production without source_record raises PermissionError
+    with pytest.raises(PermissionError, match="forbidden in production"):
+        register_official_store_record(
+            retailer_slug="edeka",
+            store_id="edeka_fake_prod",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            store_plz="10115",
+            metadata_source="edeka_official_market_api",
+            source_record=None,
+        )
+
+    # 2. Registration in production with contradicting source_record ID raises ValueError
+    with pytest.raises(ValueError, match="Source record ID contradicts store_id"):
+        register_official_store_record(
+            retailer_slug="edeka",
+            store_id="edeka_store_123",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            store_plz="10115",
+            metadata_source="edeka_official_market_api",
+            source_record={"id": "different_store_id", "postalCode": "10115"},
+        )
+
+
+def test_scenario_39_modified_or_deleted_evidence_fails_closed(tmp_path):
+    """39. Modifying or deleting an evidence artifact causes subsequent queries to fail closed and purges registration."""
+    clear_campaign_registries()
+    clear_dynamic_ingestion_catalog()
+    clear_dynamic_approved_roots()
+
+    register_approved_evidence_root(tmp_path)
+    art_file = tmp_path / "dynamic_campaign_39.json"
+    art_file.write_text(
+        json.dumps({
+            "campaign_id": "camp_39",
+            "source_url": "https://www.marktguru.de/leaflets/camp_39",
+            "scope": "nationwide",
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+        }),
+        encoding="utf-8",
+    )
+    ingest_trusted_evidence_artifact(art_file)
+
+    ev = {
+        "campaign_id": "camp_39",
+        "source_url": "https://www.marktguru.de/leaflets/camp_39",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "nationwide",
+        "promotional_applicability_confirmed": True,
+        "limitations": "none",
+        "evidence_artifact_path": str(art_file),
+    }
+
+    assert register_verified_nationwide_campaign("camp_39", ev) is True
+    assert is_verified_nationwide_campaign("camp_39") is True
+
+    # 1. Modify content on disk
+    art_file.write_text(json.dumps({"tampered": True}), encoding="utf-8")
+    assert is_verified_nationwide_campaign("camp_39") is False
+    assert "camp_39" not in VERIFIED_NATIONWIDE_REGISTRY
+
+    # 2. Re-register and delete file
+    art_file.write_text(
+        json.dumps({
+            "campaign_id": "camp_39",
+            "source_url": "https://www.marktguru.de/leaflets/camp_39",
+            "scope": "nationwide",
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+        }),
+        encoding="utf-8",
+    )
+    ingest_trusted_evidence_artifact(art_file)
+    assert register_verified_nationwide_campaign("camp_39", ev) is True
+    assert is_verified_nationwide_campaign("camp_39") is True
+
+    art_file.unlink()
+    assert is_verified_nationwide_campaign("camp_39") is False
+    assert "camp_39" not in VERIFIED_NATIONWIDE_REGISTRY
+
+    clear_dynamic_approved_roots()
+    clear_dynamic_ingestion_catalog()
+
+
+def test_scenario_40_legitimate_evidence_survives_restart_and_reconciliation(tmp_path):
+    """40. Legitimate store and campaign evidence survives database restart and normalization."""
+    clear_campaign_registries()
+    db_path = tmp_path / "price_history.db"
+
+    service1 = PriceHistoryService(db_path)
+
+    # Legitimate store offer
+    legit_store_offer = Offer(
+        id="legit-store-1",
+        source_offer_id=1,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Bio Milch 1L",
+        brand="Gut & Günstig",
+        category="dairy",
+        price=1.19,
+        old_price=1.49,
+        unit_price=1.19,
+        unit="l",
+        discount_percent=20.0,
+        description="Frische Vollmilch",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_id="edeka_10115",
+        store_name="EDEKA Center Berlin",
+        store_address="Invalidenstraße 100, 10115 Berlin",
+        source_provider="edeka-official",
+        region_verified=True,
+        verification_method="store_direct_api",
+        verification_evidence=build_store_verification_evidence(
+            store_id="edeka_10115",
+            retailer_slug="edeka",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            requested_plz="10115",
+            store_name="EDEKA Center Berlin",
+            metadata_source="edeka_official_market_api",
+            verification_method="store_direct_api",
+            source_record={"id": "edeka_10115", "postalCode": "10115"},
+        ),
+    )
+
+    # Legitimate campaign offer backed by production evidence artifact
+    camp_ev = {
+        "campaign_id": "nat_valid_606",
+        "source_url": "https://www.marktguru.de/leaflets/nat_valid_606",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "nationwide",
+        "promotional_applicability_confirmed": True,
+        "limitations": "Verified full nationwide circulation",
+        "evidence_artifact_path": str(PRODUCTION_EVIDENCE_ROOT / "nat_valid_606.json"),
+    }
+    assert register_verified_nationwide_campaign("nat_valid_606", camp_ev) is True
+
+    legit_nat_offer = Offer(
+        id="legit-nat-1",
+        source_offer_id=2,
+        retailer="Marktguru",
+        retailer_slug="kaufland",
+        title="Bio Milch 1L",
+        brand="Gut & Günstig",
+        category="dairy",
+        price=1.19,
+        old_price=1.49,
+        unit_price=1.19,
+        unit="l",
+        discount_percent=20.0,
+        description="Frische Vollmilch",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://marktguru.de",
+        requested_zip_code="10115",
+        scope_type="nationwide",
+        source_region_id="national_flyer:nat_valid_606",
+        source_provider="marktguru",
+        region_verified=True,
+        verification_method="marktguru_national_flyer",
+        verification_evidence=camp_ev,
+    )
+
+    service1.record_offers([legit_store_offer, legit_nat_offer], zip_code="10115")
+
+    # Restart service and verify records remain verified
+    service2 = PriceHistoryService(db_path)
+    stats = service2.get_product_stats("Bio Milch 1L", brand="Gut & Günstig", current_price=1.19, zip_code="10115")
+    assert stats["record_count"] == 2
+    assert stats["all_time_low"] == 1.19
+    assert all(h["region_verified"] is True for h in stats["history"])
+
+
+def test_scenario_41_verified_statistics_strictly_isolate_unverified_prices(tmp_path):
+    """41. Verified statistics, ATLs, and averages strictly isolate unverified and demoted price observations."""
+    clear_campaign_registries()
+    clear_dynamic_store_records()
+
+    service = PriceHistoryService(tmp_path / "prices.db")
+
+    # Legitimate verified offer
+    ver_offer = Offer(
+        id="ver-1",
+        source_offer_id=101,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Kaffee Crema 1kg",
+        brand="Lavazza",
+        category="coffee",
+        price=11.99,
+        old_price=15.99,
+        unit_price=11.99,
+        unit="kg",
+        discount_percent=25.0,
+        description="Ganze Bohnen",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_id="edeka_10115",
+        store_name="EDEKA Berlin",
+        store_address="Invalidenstraße 100, 10115 Berlin",
+        source_provider="edeka-official",
+        region_verified=True,
+        verification_method="store_direct_api",
+        verification_evidence=build_store_verification_evidence(
+            store_id="edeka_10115",
+            retailer_slug="edeka",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            requested_plz="10115",
+            store_name="EDEKA Berlin",
+            metadata_source="edeka_official_market_api",
+            verification_method="store_direct_api",
+        ),
+    )
+
+    # Fake store ID offer claiming verified at 1.99 EUR
+    fake_store_offer = Offer(
+        id="fake-store-offer",
+        source_offer_id=102,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Kaffee Crema 1kg",
+        brand="Lavazza",
+        category="coffee",
+        price=1.99,  # Unverified low price
+        old_price=15.99,
+        unit_price=1.99,
+        unit="kg",
+        discount_percent=87.0,
+        description="Fake Store Offer",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_id="store_fake_invented_id",
+        store_name="Fake EDEKA",
+        store_address="Invalidenstraße 100, 10115 Berlin",
+        source_provider="edeka-official",
+        region_verified=True,  # Will be demoted
+        verification_method="store_direct_api",
+        verification_evidence={
+            "scope": "store",
+            "store_id": "store_fake_invented_id",
+            "retailer_slug": "edeka",
+            "store_address": "Invalidenstraße 100, 10115 Berlin",
+            "store_plz": "10115",
+            "matched_plz": "10115",
+            "metadata_source": "edeka_official_market_api",
+        },
+    )
+
+    # Fabricated address offer claiming verified at 2.49 EUR
+    fake_addr_offer = Offer(
+        id="fake-addr-offer",
+        source_offer_id=103,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Kaffee Crema 1kg",
+        brand="Lavazza",
+        category="coffee",
+        price=2.49,
+        old_price=15.99,
+        unit_price=2.49,
+        unit="kg",
+        discount_percent=84.0,
+        description="Fake Address Offer",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_id="edeka_10115",
+        store_name="EDEKA Berlin",
+        store_address="Fabricated Nowhere St 1, 10115 Berlin",
+        source_provider="edeka-official",
+        region_verified=True,  # Will be demoted
+        verification_method="store_direct_api",
+        verification_evidence={
+            "scope": "store",
+            "store_id": "edeka_10115",
+            "retailer_slug": "edeka",
+            "store_address": "Fabricated Nowhere St 1, 10115 Berlin",
+            "store_plz": "10115",
+            "matched_plz": "10115",
+            "metadata_source": "edeka_official_market_api",
+        },
+    )
+
+    # Unverified national offer at 0.99 EUR
+    unv_nat = Offer(
+        id="unv-nat-coffee",
+        source_offer_id=104,
+        retailer="Penny",
+        retailer_slug="penny",
+        title="Kaffee Crema 1kg",
+        brand="Lavazza",
+        category="coffee",
+        price=0.99,
+        old_price=15.99,
+        unit_price=0.99,
+        unit="kg",
+        discount_percent=93.0,
+        description="Penny Unverified",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://penny.de",
+        scope_type="nationwide",
+        region_verified=False,
+        verification_method="unverified_national",
+    )
+
+    service.record_offers([ver_offer, fake_store_offer, fake_addr_offer, unv_nat], zip_code="10115")
+
+    stats = service.get_product_stats("Kaffee Crema 1kg", brand="Lavazza", current_price=11.99, zip_code="10115")
+    # All-time low and average must be 11.99, completely untouched by the demoted/unverified offers
+    assert stats["all_time_low"] == 11.99
+    assert stats["average_price"] == 11.99
+    assert stats["record_count"] == 1
+    assert len(stats["history"]) == 1
+    assert stats["history"][0]["price"] == 11.99
+    assert stats["history"][0]["region_verified"] is True
+
+    # Demoted offers are preserved in unverified history
+    assert len(stats["unverified_history"]) == 3
+    unv_prices = {h["price"] for h in stats["unverified_history"]}
+    assert unv_prices == {1.99, 2.49, 0.99}
+
+    # All-time low map checks
+    pkey = normalize_product_key("Kaffee Crema 1kg", "Lavazza")
+    atl_map = service.get_all_time_low_map(zip_code="10115")
+    assert atl_map[pkey] == 11.99
+
 
 
 

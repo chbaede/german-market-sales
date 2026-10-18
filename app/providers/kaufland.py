@@ -263,6 +263,23 @@ class KauflandProvider(OfferProvider):
 
         verification_evidence: dict[str, Any] | None = None
         if region_verified:
+            from app.services.price_history import register_official_store_record
+
+            source_record = {
+                "n": clean_store_id,
+                "cn": store_name,
+                "address": store_address,
+                "pc": addr_plz or clean_zip,
+            }
+            register_official_store_record(
+                retailer_slug=cls.retailer_slug,
+                store_id=clean_store_id,
+                store_address=store_address or "",
+                store_plz=addr_plz or clean_zip,
+                store_name=store_name,
+                metadata_source="kaufland_official_store_api",
+                source_record=source_record,
+            )
             verification_evidence = {
                 "scope": "store",
                 "retailer_slug": cls.retailer_slug,
@@ -274,6 +291,7 @@ class KauflandProvider(OfferProvider):
                 "requested_plz": clean_zip,
                 "verification_method": verification_method,
                 "metadata_source": "kaufland_official_store_api",
+                "source_record": source_record,
             }
 
         return Offer(

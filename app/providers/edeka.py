@@ -227,6 +227,23 @@ class EdekaProvider(OfferProvider):
 
         verification_evidence: dict[str, Any] | None = None
         if region_verified:
+            from app.services.price_history import register_official_store_record
+
+            source_record = {
+                "id": clean_store_id,
+                "name": market_name,
+                "address": store_address,
+                "postalCode": addr_plz or clean_zip,
+            }
+            register_official_store_record(
+                retailer_slug=cls.retailer_slug,
+                store_id=clean_store_id,
+                store_address=store_address or "",
+                store_plz=addr_plz or clean_zip,
+                store_name=market_name,
+                metadata_source="edeka_official_market_api",
+                source_record=source_record,
+            )
             verification_evidence = {
                 "scope": "store",
                 "retailer_slug": cls.retailer_slug,
@@ -238,6 +255,7 @@ class EdekaProvider(OfferProvider):
                 "requested_plz": clean_zip,
                 "verification_method": verification_method,
                 "metadata_source": "edeka_official_market_api",
+                "source_record": source_record,
             }
 
         return Offer(

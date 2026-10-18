@@ -91,7 +91,13 @@ _DYNAMIC_APPROVED_ROOTS: set[Path] = set()
 def is_production_mode() -> bool:
     env = os.environ.get("APP_ENV", "").strip().lower()
     flask_env = os.environ.get("FLASK_ENV", "").strip().lower()
-    return env == "production" or flask_env == "production"
+    if env == "production" or flask_env == "production":
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TESTING") in ("1", "true", "True"):
+        return False
+    if env in ("test", "testing", "development", "dev") or flask_env in ("test", "testing", "development", "dev"):
+        return False
+    return True
 
 
 def get_approved_evidence_roots() -> set[Path]:
@@ -124,15 +130,26 @@ def is_approved_evidence_path(p: Path) -> bool:
 
 
 # Trusted evidence ingestion catalog storing cryptographic SHA-256 hashes of audited artifacts
+# Bound strictly to canonical relative paths under approved roots.
 _TRUSTED_INGESTION_CATALOG: dict[str, str] = {
-    "700.json": "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f",
-    "901.json": "d34092378f01f4d1c8f33a7ea27fc82a807c9764bf5907a92bb9b0addd78b260",
-    "999.json": "a520655b8bf147ce323ff8f5fa7db13fda82c2bb496e4aacf8f271df19de9783",
-    "nat_proven_999.json": "545e5b5a6d37881ba6374343b2fd0640b7056ec8e792e7984ccff206acde5e03",
-    "nat_valid_606.json": "cbe3e61bf0a56ce2e19fd7f8963dd09fc4e0f5a31c31c0db0262a85a16659f15",
-    "reg_valid_101.json": "35a9cdb6d0a7b48f07d68b3598f486094f672bd5fd41adbe11cf0ce2bb28250c",
-    "restart_nat_707.json": "e9ebdc125bc55afa2da41eddf4875574aea158a41ab94ec5469fd7136dba8389",
-    "test_nat_15.json": "4144bfe24fb1c696cddc39229263501b3c26e1e4f6c1f5436a95c6463002a772",
+    # Production canonical paths under data/evidence
+    "data/evidence/700.json": "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f",
+    "data/evidence/901.json": "d34092378f01f4d1c8f33a7ea27fc82a807c9764bf5907a92bb9b0addd78b260",
+    "data/evidence/999.json": "a520655b8bf147ce323ff8f5fa7db13fda82c2bb496e4aacf8f271df19de9783",
+    "data/evidence/nat_proven_999.json": "545e5b5a6d37881ba6374343b2fd0640b7056ec8e792e7984ccff206acde5e03",
+    "data/evidence/nat_valid_606.json": "cbe3e61bf0a56ce2e19fd7f8963dd09fc4e0f5a31c31c0db0262a85a16659f15",
+    "data/evidence/reg_valid_101.json": "35a9cdb6d0a7b48f07d68b3598f486094f672bd5fd41adbe11cf0ce2bb28250c",
+    "data/evidence/restart_nat_707.json": "e9ebdc125bc55afa2da41eddf4875574aea158a41ab94ec5469fd7136dba8389",
+    "data/evidence/test_nat_15.json": "4144bfe24fb1c696cddc39229263501b3c26e1e4f6c1f5436a95c6463002a772",
+    # Test fixture paths under tests/fixtures/evidence
+    "tests/fixtures/evidence/700.json": "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f",
+    "tests/fixtures/evidence/901.json": "d34092378f01f4d1c8f33a7ea27fc82a807c9764bf5907a92bb9b0addd78b260",
+    "tests/fixtures/evidence/999.json": "a520655b8bf147ce323ff8f5fa7db13fda82c2bb496e4aacf8f271df19de9783",
+    "tests/fixtures/evidence/nat_proven_999.json": "545e5b5a6d37881ba6374343b2fd0640b7056ec8e792e7984ccff206acde5e03",
+    "tests/fixtures/evidence/nat_valid_606.json": "cbe3e61bf0a56ce2e19fd7f8963dd09fc4e0f5a31c31c0db0262a85a16659f15",
+    "tests/fixtures/evidence/reg_valid_101.json": "35a9cdb6d0a7b48f07d68b3598f486094f672bd5fd41adbe11cf0ce2bb28250c",
+    "tests/fixtures/evidence/restart_nat_707.json": "e9ebdc125bc55afa2da41eddf4875574aea158a41ab94ec5469fd7136dba8389",
+    "tests/fixtures/evidence/test_nat_15.json": "4144bfe24fb1c696cddc39229263501b3c26e1e4f6c1f5436a95c6463002a772",
 }
 
 _DYNAMIC_INGESTION_CATALOG: dict[str, str] = {}
@@ -145,6 +162,8 @@ def ingest_trusted_evidence_artifact(
     """
     Ingests and registers an evidence artifact in the trusted ingestion catalog.
     Validates origin directory, JSON structure, and SHA-256 cryptographic digest.
+    In production mode, arbitrary evidence registration with caller-supplied hash is forbidden;
+    hashes must originate from the pre-approved manifest.
     """
     p = Path(file_path).resolve()
     if not p.is_file():
@@ -159,16 +178,49 @@ def ingest_trusted_evidence_artifact(
         raise ValueError(f"Evidence artifact '{p}' is not valid JSON: {exc}") from exc
 
     calculated_hash = hashlib.sha256(content).hexdigest()
-    if expected_hash and calculated_hash != expected_hash:
+
+    rel_to_project: str | None = None
+    try:
+        rel_to_project = p.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        pass
+
+    manifest_hash = _TRUSTED_INGESTION_CATALOG.get(rel_to_project) if rel_to_project else None
+
+    if is_production_mode():
+        if not manifest_hash:
+            raise PermissionError(
+                f"Evidence artifact '{rel_to_project or p.name}' is not in the pre-approved trusted catalog; "
+                "arbitrary evidence registration with caller-supplied hash is forbidden in production mode"
+            )
+        if expected_hash and expected_hash != manifest_hash:
+            raise ValueError(
+                f"Caller-supplied hash '{expected_hash}' contradicts pre-approved manifest hash '{manifest_hash}'"
+            )
+        if calculated_hash != manifest_hash:
+            raise ValueError(
+                f"Evidence artifact '{p.name}' SHA-256 digest '{calculated_hash}' does not match pre-approved manifest '{manifest_hash}'"
+            )
+        return calculated_hash
+
+    # Non-production / test mode:
+    if manifest_hash:
+        if expected_hash and expected_hash != manifest_hash:
+            raise ValueError(
+                f"Evidence artifact '{p.name}' SHA-256 digest contradicts pre-approved manifest"
+            )
+        if calculated_hash != manifest_hash:
+            raise ValueError(
+                f"Evidence artifact '{p.name}' SHA-256 digest '{calculated_hash}' does not match expected '{manifest_hash}'"
+            )
+    elif expected_hash and calculated_hash != expected_hash:
         raise ValueError(
             f"Evidence artifact '{p.name}' SHA-256 digest '{calculated_hash}' does not match expected '{expected_hash}'"
         )
 
-    if is_production_mode() and not expected_hash:
-        raise PermissionError("Ingesting arbitrary unverified evidence artifacts without pre-approved hash is forbidden in production")
-
-    _DYNAMIC_INGESTION_CATALOG[p.name] = calculated_hash
     _DYNAMIC_INGESTION_CATALOG[str(p)] = calculated_hash
+    if rel_to_project:
+        _DYNAMIC_INGESTION_CATALOG[rel_to_project] = calculated_hash
     return calculated_hash
 
 
@@ -193,11 +245,24 @@ def validate_evidence_artifact_integrity(p: Path) -> tuple[bool, str, str | None
     if not is_approved_evidence_path(resolved):
         return False, f"Evidence artifact '{p}' is not located in an approved evidence directory", None
 
-    expected_hash = (
-        _DYNAMIC_INGESTION_CATALOG.get(str(resolved))
-        or _DYNAMIC_INGESTION_CATALOG.get(resolved.name)
-        or _TRUSTED_INGESTION_CATALOG.get(resolved.name)
-    )
+    rel_to_project: str | None = None
+    try:
+        rel_to_project = resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        pass
+
+    if is_production_mode():
+        # In production mode:
+        # Ignore dynamic ingestion catalog completely, require entry from pre-approved manifest.
+        expected_hash = _TRUSTED_INGESTION_CATALOG.get(rel_to_project) if rel_to_project else None
+    else:
+        # In test mode:
+        expected_hash = (
+            _DYNAMIC_INGESTION_CATALOG.get(str(resolved))
+            or (rel_to_project and _DYNAMIC_INGESTION_CATALOG.get(rel_to_project))
+            or (rel_to_project and _TRUSTED_INGESTION_CATALOG.get(rel_to_project))
+        )
+
     if not expected_hash:
         return False, f"Evidence artifact '{resolved.name}' has not been ingested through the trusted evidence ingestion process (unregistered artifact)", None
 
