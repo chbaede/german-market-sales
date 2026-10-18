@@ -96,7 +96,7 @@ def drugstore_offer_service() -> OfferService:
 
 
 def _resolve_request_zip_code() -> tuple[str, bool]:
-    explicit_zip = _clean_zip(request.args.get("zip_code"))
+    explicit_zip = _clean_zip(request.args.get("zip_code") or request.args.get("zip"))
     if explicit_zip:
         normalized = normalize_german_plz(explicit_zip) or explicit_zip
         return normalized, True

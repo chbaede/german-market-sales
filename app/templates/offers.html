@@ -257,24 +257,27 @@
                   <span class="retailer-badge">{{ offer.retailer }}</span>
                   {% set category = category_labels.get(offer.category, category_labels.get("other")) %}
                   <span class="card-category">{% if lang == "en" %}{{ category.en or category.de }}{% else %}{{ category.ko }}{% endif %}</span>
-                  {% if offer.scope_type == 'store' and offer.region_verified %}
-                    <span class="scope-badge scope-store" title="{{ offer.store_address or offer.store_name }}">📍 {{ offer.store_name or '매장 전용' }}</span>
-                  {% elif offer.scope_type == 'store' and not offer.region_verified %}
-                    <span class="scope-badge scope-unverified" title="{{ offer.verification_reason or (offer.store_name ~ ' (미검증)') }}">📍 {{ offer.store_name or '매장' }} ({% if lang == 'de' %}nicht verifiziert{% elif lang == 'en' %}unverified{% else %}미검증{% endif %})</span>
-                  {% elif offer.scope_type == 'region' and offer.region_verified %}
-                    <span class="scope-badge scope-region" title="지역 검증 할인">🗺️ {% if lang == 'de' %}Regional verifiziert{% elif lang == 'en' %}Verified Regional{% else %}지역 검증{% endif %}</span>
-                  {% elif offer.scope_type == 'nationwide' %}
-                    <span class="scope-badge scope-nationwide" title="전국 공통 할인">🌐 {% if lang == 'de' %}Bundesweit{% elif lang == 'en' %}Nationwide{% else %}전국공통{% endif %}</span>
-                  {% elif offer.scope_type == 'region' and not offer.region_verified %}
-                    <span class="scope-badge scope-unverified" title="{{ offer.verification_reason or '권역 행사' }}">ℹ️ {% if lang == 'de' %}Gebietsangebot{% elif lang == 'en' %}Territory Offer{% else %}권역행사{% endif %}</span>
-                  {% else %}
-                    <span class="scope-badge scope-unknown" title="적용 범위 미확인">❓ {% if lang == 'de' %}Unbekannt{% elif lang == 'en' %}Unknown{% else %}미확인{% endif %}</span>
-                  {% endif %}
-                  {% if offer.source_provider == 'marktguru' %}
-                    <span class="scope-badge scope-fallback" title="Marktguru 전단지">MG</span>
-                  {% endif %}
                 </div>
                 <span class="valid-dates">{{ valid_text }}</span>
+              </div>
+
+              <div class="card-scope-row">
+                {% if offer.scope_type == 'store' and offer.region_verified %}
+                  <span class="scope-badge scope-store" title="{{ offer.store_address or offer.store_name }}">📍 {{ offer.store_name or '매장 전용' }}</span>
+                {% elif offer.scope_type == 'store' and not offer.region_verified %}
+                  <span class="scope-badge scope-unverified" title="{{ offer.verification_reason or (offer.store_name ~ ' (미검증)') }}">📍 {{ offer.store_name or '매장' }} ({% if lang == 'de' %}nicht verifiziert{% elif lang == 'en' %}unverified{% else %}미검증{% endif %})</span>
+                {% elif offer.scope_type == 'region' and offer.region_verified %}
+                  <span class="scope-badge scope-region" title="지역 검증 할인">🗺️ {% if lang == 'de' %}Regional verifiziert{% elif lang == 'en' %}Verified Regional{% else %}지역 검증{% endif %}</span>
+                {% elif offer.scope_type == 'nationwide' %}
+                  <span class="scope-badge scope-nationwide" title="전국 공통 할인">🌐 {% if lang == 'de' %}Bundesweit{% elif lang == 'en' %}Nationwide{% else %}전국공통{% endif %}</span>
+                {% elif offer.scope_type == 'region' and not offer.region_verified %}
+                  <span class="scope-badge scope-unverified" title="{{ offer.verification_reason or '권역 행사' }}">ℹ️ {% if lang == 'de' %}Gebietsangebot{% elif lang == 'en' %}Territory Offer{% else %}권역행사{% endif %}</span>
+                {% else %}
+                  <span class="scope-badge scope-unknown" title="적용 범위 미확인">❓ {% if lang == 'de' %}Unbekannt{% elif lang == 'en' %}Unknown{% else %}미확인{% endif %}</span>
+                {% endif %}
+                {% if offer.source_provider == 'marktguru' %}
+                  <span class="scope-badge scope-fallback" title="Marktguru 전단지">MG</span>
+                {% endif %}
               </div>
 
               <div class="card-title-group">

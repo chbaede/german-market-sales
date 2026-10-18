@@ -1,7 +1,179 @@
 (function () {
-  const getLang = () => (document.cookie.includes("lang=en") ? "en" : "ko");
+  const getLang = () => (typeof document !== "undefined" && document.cookie && document.cookie.includes("lang=en") ? "en" : "ko");
   const currentLang = getLang();
   const tk = (ko, en) => (currentLang === "en" ? en : ko);
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function escapeAttribute(value) {
+    return escapeHtml(value).replaceAll("`", "&#096;");
+  }
+
+  function renderScopeBadge(item, lang) {
+    if (!item) return "";
+    const lTk = (ko, en) => ((lang || currentLang) === "en" ? en : ko);
+    const scopeType = item.scope_type;
+    const regionVerified = !!item.region_verified;
+    const storeName = item.store_name;
+
+    if (scopeType === "store" && regionVerified) {
+      return `<span class="scope-badge scope-store" title="${escapeHtml(storeName || "매장 전용")}">📍 ${escapeHtml(storeName || lTk("매장 전용", "Store Only"))}</span>`;
+    }
+    if (scopeType === "store" && !regionVerified) {
+      return `<span class="scope-badge scope-unverified" title="${escapeHtml(storeName || "매장")} (${lTk("미검증", "unverified")})">📍 ${escapeHtml(storeName || lTk("매장", "Store"))} (${lTk("미검증", "unverified")})</span>`;
+    }
+    if (scopeType === "region" && regionVerified) {
+      return `<span class="scope-badge scope-region" title="${lTk("지역 검증 할인", "Verified Regional Deal")}">🗺️ ${lTk("지역 검증", "Regional")}</span>`;
+    }
+    if (scopeType === "nationwide") {
+      return `<span class="scope-badge scope-nationwide" title="${lTk("전국 공통 할인", "Nationwide Deal")}">🌐 ${lTk("전국공통", "Nationwide")}</span>`;
+    }
+    if (scopeType === "region" && !regionVerified) {
+      return `<span class="scope-badge scope-unverified" title="${lTk("권역 행사 (미검증)", "Territory Offer (Unverified)")}">ℹ️ ${lTk("권역행사", "Territory")}</span>`;
+    }
+    return `<span class="scope-badge scope-unknown" title="${lTk("적용 범위 미확인", "Unknown Scope")}">❓ ${lTk("미확인", "Unknown")}</span>`;
+  }
+
+  function renderPriceHistoryHtml(data, lang) {
+    const lTk = (ko, en) => ((lang || currentLang) === "en" ? en : ko);
+    const isAtl = data.is_all_time_low;
+    const history = data.history || [];
+    const unverifiedHistory = data.unverified_history || [];
+    const avgPrice = data.average_price ?? data.avg_price;
+
+    let statsHtml = `
+      <div class="tracker-stats-grid">
+        <div class="tracker-stat ${isAtl ? "is-best" : ""}">
+          <span class="label">${lTk("역대 최저가", "All-time Low")}</span>
+          <strong>${data.all_time_low ? data.all_time_low.toFixed(2) + " €" : "-"}</strong>
+          ${isAtl ? `<span class="badge-mini">${lTk("현재 최저가", "Best price now")}</span>` : ""}
+        </div>
+        <div class="tracker-stat">
+          <span class="label">${lTk("평균 가격", "Average Price")}</span>
+          <strong>${avgPrice ? avgPrice.toFixed(2) + " €" : "-"}</strong>
+        </div>
+        <div class="tracker-stat">
+          <span class="label">${lTk("현재/최근가", "Current Deal")}</span>
+          <strong>${data.current_price ? data.current_price.toFixed(2) + " €" : "-"}</strong>
+        </div>
+        <div class="tracker-stat">
+          <span class="label">${lTk("기록 횟수", "Recorded")}</span>
+          <strong>${data.records_count || history.length} ${lTk("회", "times")}</strong>
+        </div>
+      </div>
+    `;
+
+    let historyTable = "";
+    if (history.length) {
+      historyTable = `
+        <div class="tracker-history-table-wrap">
+          <h4>${lTk("가격 관측 이력 (검증된 지역/전국 데이터)", "Price Observations (Verified Regional/Nationwide)")}</h4>
+          <table class="tracker-history-table">
+            <thead>
+              <tr>
+                <th>${lTk("수집일", "Date")}</th>
+                <th>${lTk("매장 및 범위", "Store & Scope")}</th>
+                <th>${lTk("가격", "Price")}</th>
+                <th>${lTk("할인율", "Discount")}</th>
+                <th>${lTk("전단지", "Flyer")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${history
+                .map(
+                  (item) => `
+                <tr>
+                  <td>${item.recorded_at ? item.recorded_at.substring(0, 10) : "-"}</td>
+                  <td>
+                    <span class="retailer-badge">${escapeHtml(item.retailer)}</span>
+                    ${renderScopeBadge(item, lang)}
+                  </td>
+                  <td><strong>${item.price ? item.price.toFixed(2) + " €" : "-"}</strong></td>
+                  <td>${item.discount_percent ? item.discount_percent + "%" : "-"}</td>
+                  <td><a href="${escapeAttribute(item.source_url || "#")}" target="_blank" rel="noopener noreferrer">Prospekt ↗</a></td>
+                </tr>
+              `
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    } else {
+      historyTable = `<p class="empty-note">${lTk("아직 검증된 관측 이력이 없습니다. 이번 주 첫 수집 상품입니다.", "No verified observation history recorded yet.")}</p>`;
+    }
+
+    let unverifiedTable = "";
+    if (unverifiedHistory.length) {
+      unverifiedTable = `
+        <div class="tracker-history-table-wrap unverified-history-wrap">
+          <h4>⚠️ ${lTk("미검증 관측 이력 (참고용)", "Unverified Observations (Reference Only)")}</h4>
+          <p class="unverified-note">
+            ${lTk("공식 매장 또는 지역 적용 여부가 확인되지 않아 공식 통계에서 분리된 관측 데이터입니다.", "Observations excluded from official stats because regional/store applicability could not be verified.")}
+          </p>
+          <table class="tracker-history-table">
+            <thead>
+              <tr>
+                <th>${lTk("수집일", "Date")}</th>
+                <th>${lTk("매장 및 상태", "Store & Status")}</th>
+                <th>${lTk("가격", "Price")}</th>
+                <th>${lTk("할인율", "Discount")}</th>
+                <th>${lTk("전단지", "Flyer")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${unverifiedHistory
+                .map(
+                  (item) => `
+                <tr>
+                  <td>${item.recorded_at ? item.recorded_at.substring(0, 10) : "-"}</td>
+                  <td>
+                    <span class="retailer-badge">${escapeHtml(item.retailer)}</span>
+                    ${renderScopeBadge(item, lang)}
+                  </td>
+                  <td><strong>${item.price ? item.price.toFixed(2) + " €" : "-"}</strong></td>
+                  <td>${item.discount_percent ? item.discount_percent + "%" : "-"}</td>
+                  <td><a href="${escapeAttribute(item.source_url || "#")}" target="_blank" rel="noopener noreferrer">Prospekt ↗</a></td>
+                </tr>
+              `
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="tracker-history-header">
+        <h3>${escapeHtml(data.product_name || "")}</h3>
+        ${data.brand ? `<p class="brand">${escapeHtml(data.brand)}</p>` : ""}
+      </div>
+      ${statsHtml}
+      ${historyTable}
+      ${unverifiedTable}
+    `;
+  }
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      renderPriceHistoryHtml,
+      renderScopeBadge,
+      escapeHtml,
+      escapeAttribute,
+    };
+  }
+
+  if (typeof document === "undefined") {
+    return;
+  }
 
   // Toast Notification
   const toast = document.getElementById("toast");
@@ -316,148 +488,9 @@
     }
   }
 
-  function renderScopeBadge(item) {
-    if (!item) return "";
-    const scopeType = item.scope_type;
-    const regionVerified = !!item.region_verified;
-    const storeName = item.store_name;
-
-    if (scopeType === "store" && regionVerified) {
-      return `<span class="scope-badge scope-store" title="${escapeHtml(storeName || "매장 전용")}">📍 ${escapeHtml(storeName || tk("매장 전용", "Store Only"))}</span>`;
-    }
-    if (scopeType === "store" && !regionVerified) {
-      return `<span class="scope-badge scope-unverified" title="${escapeHtml(storeName || "매장")} (${tk("미검증", "unverified")})">📍 ${escapeHtml(storeName || tk("매장", "Store"))} (${tk("미검증", "unverified")})</span>`;
-    }
-    if (scopeType === "region" && regionVerified) {
-      return `<span class="scope-badge scope-region" title="${tk("지역 검증 할인", "Verified Regional Deal")}">🗺️ ${tk("지역 검증", "Regional")}</span>`;
-    }
-    if (scopeType === "nationwide") {
-      return `<span class="scope-badge scope-nationwide" title="${tk("전국 공통 할인", "Nationwide Deal")}">🌐 ${tk("전국공통", "Nationwide")}</span>`;
-    }
-    if (scopeType === "region" && !regionVerified) {
-      return `<span class="scope-badge scope-unverified" title="${tk("권역 행사 (미검증)", "Territory Offer (Unverified)")}">ℹ️ ${tk("권역행사", "Territory")}</span>`;
-    }
-    return `<span class="scope-badge scope-unknown" title="${tk("적용 범위 미확인", "Unknown Scope")}">❓ ${tk("미확인", "Unknown")}</span>`;
-  }
-
   function renderPriceHistory(data) {
-    const isAtl = data.is_all_time_low;
-    const history = data.history || [];
-    const unverifiedHistory = data.unverified_history || [];
-    const avgPrice = data.average_price ?? data.avg_price;
-
-    let statsHtml = `
-      <div class="tracker-stats-grid">
-        <div class="tracker-stat ${isAtl ? "is-best" : ""}">
-          <span class="label">${tk("역대 최저가", "All-time Low")}</span>
-          <strong>${data.all_time_low ? data.all_time_low.toFixed(2) + " €" : "-"}</strong>
-          ${isAtl ? `<span class="badge-mini">${tk("현재 최저가", "Best price now")}</span>` : ""}
-        </div>
-        <div class="tracker-stat">
-          <span class="label">${tk("평균 가격", "Average Price")}</span>
-          <strong>${avgPrice ? avgPrice.toFixed(2) + " €" : "-"}</strong>
-        </div>
-        <div class="tracker-stat">
-          <span class="label">${tk("현재/최근가", "Current Deal")}</span>
-          <strong>${data.current_price ? data.current_price.toFixed(2) + " €" : "-"}</strong>
-        </div>
-        <div class="tracker-stat">
-          <span class="label">${tk("기록 횟수", "Recorded")}</span>
-          <strong>${data.records_count || history.length} ${tk("회", "times")}</strong>
-        </div>
-      </div>
-    `;
-
-    let historyTable = "";
-    if (history.length) {
-      historyTable = `
-        <div class="tracker-history-table-wrap">
-          <h4>${tk("가격 관측 이력 (검증된 지역/전국 데이터)", "Price Observations (Verified Regional/Nationwide)")}</h4>
-          <table class="tracker-history-table">
-            <thead>
-              <tr>
-                <th>${tk("수집일", "Date")}</th>
-                <th>${tk("매장 및 범위", "Store & Scope")}</th>
-                <th>${tk("가격", "Price")}</th>
-                <th>${tk("할인율", "Discount")}</th>
-                <th>${tk("전단지", "Flyer")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${history
-                .map(
-                  (item) => `
-                <tr>
-                  <td>${item.recorded_at ? item.recorded_at.substring(0, 10) : "-"}</td>
-                  <td>
-                    <span class="retailer-badge">${escapeHtml(item.retailer)}</span>
-                    ${renderScopeBadge(item)}
-                  </td>
-                  <td><strong>${item.price ? item.price.toFixed(2) + " €" : "-"}</strong></td>
-                  <td>${item.discount_percent ? item.discount_percent + "%" : "-"}</td>
-                  <td><a href="${escapeAttribute(item.source_url || "#")}" target="_blank" rel="noopener noreferrer">Prospekt ↗</a></td>
-                </tr>
-              `
-                )
-                .join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
-    } else {
-      historyTable = `<p class="empty-note">${tk("아직 검증된 관측 이력이 없습니다. 이번 주 첫 수집 상품입니다.", "No verified observation history recorded yet.")}</p>`;
-    }
-
-    let unverifiedTable = "";
-    if (unverifiedHistory.length) {
-      unverifiedTable = `
-        <div class="tracker-history-table-wrap unverified-history-wrap" style="margin-top: 18px;">
-          <h4>ℹ️ ${tk("미검증 관측 이력 (참고용)", "Unverified Observations (Reference Only)")}</h4>
-          <p style="font-size: 11px; color: var(--muted); margin-bottom: 8px;">
-            ${tk("공식 매장 또는 지역 적용 여부가 확인되지 않아 공식 통계에서 분리된 관측 데이터입니다.", "Observations excluded from official stats because regional/store applicability could not be verified.")}
-          </p>
-          <table class="tracker-history-table">
-            <thead>
-              <tr>
-                <th>${tk("수집일", "Date")}</th>
-                <th>${tk("매장 및 상태", "Store & Status")}</th>
-                <th>${tk("가격", "Price")}</th>
-                <th>${tk("할인율", "Discount")}</th>
-                <th>${tk("전단지", "Flyer")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${unverifiedHistory
-                .map(
-                  (item) => `
-                <tr>
-                  <td>${item.recorded_at ? item.recorded_at.substring(0, 10) : "-"}</td>
-                  <td>
-                    <span class="retailer-badge">${escapeHtml(item.retailer)}</span>
-                    ${renderScopeBadge(item)}
-                  </td>
-                  <td><strong>${item.price ? item.price.toFixed(2) + " €" : "-"}</strong></td>
-                  <td>${item.discount_percent ? item.discount_percent + "%" : "-"}</td>
-                  <td><a href="${escapeAttribute(item.source_url || "#")}" target="_blank" rel="noopener noreferrer">Prospekt ↗</a></td>
-                </tr>
-              `
-                )
-                .join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
-    }
-
-    historyModalBody.innerHTML = `
-      <div class="tracker-history-header">
-        <h3>${escapeHtml(data.product_name || "")}</h3>
-        ${data.brand ? `<p class="brand">${escapeHtml(data.brand)}</p>` : ""}
-      </div>
-      ${statsHtml}
-      ${historyTable}
-      ${unverifiedTable}
-    `;
+    if (!historyModalBody) return;
+    historyModalBody.innerHTML = renderPriceHistoryHtml(data);
   }
 
   // 2. Store Comparison Modal

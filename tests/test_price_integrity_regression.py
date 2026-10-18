@@ -773,9 +773,9 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     assert offer_reg_id.scope_type == "region"
     assert offer_reg_id.region_verified is True
     assert offer_reg_id.source_region_id == "berlin_north"
-    assert offer_reg_id.verification_method == "marktguru_regional_flyer_region_match"
+    assert offer_reg_id.verification_method == "marktguru_authoritative_region_mapping"
 
-    # 3b. Regional flyer with explicit plzPrefixes mapping (valid mapping)
+    # 3b. Regional flyer with prefix heuristics (prefix wildcards fail closed without full 5-digit verification)
     item_reg_prefixes = {
         "id": 1031,
         "product": {"name": "Regional Yoghurt"},
@@ -784,8 +784,8 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     }
     offer_reg_prefixes = MarktguruProvider._offer_from_api(item_reg_prefixes, "edeka", zip_code="10115")
     assert offer_reg_prefixes.scope_type == "region"
-    assert offer_reg_prefixes.region_verified is True
-    assert offer_reg_prefixes.verification_method == "marktguru_regional_flyer_prefix_match"
+    assert offer_reg_prefixes.region_verified is False
+    assert offer_reg_prefixes.verification_method == "marktguru_unverified_flyer"
 
     # 3c. Regional flyer with mismatched postal codes (Munich flyer for Berlin PLZ)
     item_mismatched_pc = {
@@ -826,7 +826,7 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     assert offer_missing_mapping.region_verified is False
     assert offer_missing_mapping.source_region_id == "42"
     assert offer_missing_mapping.verification_method == "marktguru_unverified_flyer"
-    assert "lacks geographic mapping metadata" in offer_missing_mapping.verification_reason
+    assert "lacks authoritative geographic coverage mapping" in offer_missing_mapping.verification_reason
 
     # 4. Flyer without geographic proof (only a flyerId, no postalCode match or regionId)
     # Must NOT invent region ID from flyerId!
@@ -1155,4 +1155,160 @@ def test_ui_unverified_store_badge_rendering(monkeypatch):
     assert "미검증" in html
     # Must NOT contain verified store badge
     assert "scope-badge scope-store" not in html
+    # Scope badge must be rendered in its own card-scope-row container
+    assert '<div class="card-scope-row">' in html
+
+
+def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        pytest.skip("Node.js binary not available for rendered UI test")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        service = PriceHistoryService(Path(tmp_dir))
+
+        # 1. Verified store observation in Berlin (10115) at 3.49 €
+        verified_berlin = Offer(
+            id="v-berlin",
+            source_offer_id=1,
+            retailer="EDEKA",
+            retailer_slug="edeka",
+            title="Kaffee 500g",
+            brand="Tchibo",
+            category="coffee",
+            price=3.49,
+            old_price=4.99,
+            unit_price=6.98,
+            unit="kg",
+            discount_percent=30.0,
+            description="",
+            valid_from="2026-06-01",
+            valid_to="2026-06-07",
+            image_url=None,
+            source_url="https://edeka.de/berlin",
+            requested_zip_code="10115",
+            scope_type="store",
+            store_id="edeka_berlin_mitte",
+            store_name="EDEKA Berlin Mitte",
+            region_verified=True,
+            verification_method="store_direct_api",
+        )
+
+        # 2. Verified nationwide observation at 3.99 €
+        verified_national = Offer(
+            id="v-nat",
+            source_offer_id=2,
+            retailer="REWE",
+            retailer_slug="rewe",
+            title="Kaffee 500g",
+            brand="Tchibo",
+            category="coffee",
+            price=3.99,
+            old_price=4.99,
+            unit_price=7.98,
+            unit="kg",
+            discount_percent=20.0,
+            description="",
+            valid_from="2026-06-01",
+            valid_to="2026-06-07",
+            image_url=None,
+            source_url="https://rewe.de/angebote",
+            requested_zip_code="10115",
+            scope_type="nationwide",
+            region_verified=False,
+            verification_method="national_catalog",
+        )
+
+        # 3. Unverified observation at 0.50 € (misleading unverified data)
+        unverified_offer = Offer(
+            id="unv-1",
+            source_offer_id=3,
+            retailer="Penny",
+            retailer_slug="penny",
+            title="Kaffee 500g",
+            brand="Tchibo",
+            category="coffee",
+            price=0.50,
+            old_price=4.99,
+            unit_price=1.00,
+            unit="kg",
+            discount_percent=90.0,
+            description="",
+            valid_from="2026-06-01",
+            valid_to="2026-06-07",
+            image_url=None,
+            source_url="https://penny.de",
+            scope_type="unknown",
+            region_verified=False,
+            verification_method="legacy_unverified",
+        )
+
+        service.record_offers([verified_berlin, verified_national, unverified_offer], zip_code="10115")
+
+        class FakeOfferServiceWithHistory:
+            def __init__(self, history_service):
+                self.price_history = history_service
+
+        from app import routes
+        monkeypatch.setattr(routes, "offer_service", lambda: FakeOfferServiceWithHistory(service))
+
+        app = create_app()
+        client = app.test_client()
+
+        # Query backend /api/price-history
+        res = client.get("/api/price-history?q=Kaffee+500g&brand=Tchibo&price=3.49&zip=10115")
+        assert res.status_code == 200
+        data = res.get_json()
+
+        # Backend verification
+        assert data["all_time_low"] == 3.49
+        assert data["is_all_time_low"] is True
+        assert len(data["history"]) == 2
+        assert len(data["unverified_history"]) == 1
+        assert data["unverified_history"][0]["price"] == 0.50
+
+        # Execute Node.js frontend rendering
+        js_file = Path(__file__).resolve().parent.parent / "app" / "static" / "js" / "shopping_list.js"
+        runner_code = f"""
+        const {{ renderPriceHistoryHtml }} = require({json.dumps(str(js_file))});
+        const data = {json.dumps(data)};
+        const html = renderPriceHistoryHtml(data, 'ko');
+        console.log(html);
+        """
+        proc = subprocess.run(
+            [node_bin, "-e", runner_code],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        rendered_html = proc.stdout
+
+        # Assertions on rendered UI:
+        # A. Stats grid: All-time low is verified 3.49 €, NEVER unverified 0.50 €
+        assert "3.49 €" in rendered_html
+        assert "역대 최저가" in rendered_html
+        assert "현재 최저가" in rendered_html
+
+        # B. Verified table contains only verified items
+        assert "가격 관측 이력 (검증된 지역/전국 데이터)" in rendered_html
+        assert "EDEKA Berlin Mitte" in rendered_html
+        assert "scope-store" in rendered_html
+        assert "scope-nationwide" in rendered_html
+
+        # C. Unverified section is rendered with clear warning and separate container
+        assert "unverified-history-wrap" in rendered_html
+        assert "미검증 관측 이력 (참고용)" in rendered_html
+        assert "공식 매장 또는 지역 적용 여부가 확인되지 않아 공식 통계에서 분리된 관측 데이터입니다." in rendered_html
+        assert "0.50 €" in rendered_html
+        assert "scope-unknown" in rendered_html or "scope-unverified" in rendered_html
+
+        # D. Verified table portion must NOT contain 0.50 €
+        verified_section, unverified_section = rendered_html.split("unverified-history-wrap", 1)
+        assert "0.50 €" not in verified_section
+        assert "0.50 €" in unverified_section
+        assert "3.49 €" not in unverified_section
+
 

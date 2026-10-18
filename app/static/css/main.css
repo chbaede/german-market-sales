@@ -910,19 +910,29 @@ select:focus {
 }
 
 .image-wrap {
-  aspect-ratio: 4 / 3;
+  align-items: center;
   background: #ffffff;
   border-bottom: 1px solid #f0f2ee;
+  display: flex;
   flex-shrink: 0;
+  height: 165px;
+  justify-content: center;
+  overflow: hidden;
   position: relative;
 }
 
 .image-wrap img {
   display: block;
-  height: 100%;
+  height: auto;
+  max-height: 140px;
+  max-width: 88%;
   object-fit: contain;
-  padding: 12px;
-  width: 100%;
+  transition: transform 0.2s ease;
+  width: auto;
+}
+
+.offer-card:hover .image-wrap img {
+  transform: scale(1.03);
 }
 
 .image-placeholder {
@@ -930,12 +940,13 @@ select:focus {
   background: var(--retailer-soft);
   color: var(--retailer-ink);
   display: flex;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 800;
   height: 100%;
   justify-content: center;
   padding: 8px;
   text-align: center;
+  width: 100%;
 }
 
 .card-body {
@@ -951,16 +962,21 @@ select:focus {
   align-items: center;
   color: var(--muted);
   display: flex;
+  flex-wrap: wrap;
   font-size: 11px;
   gap: 6px;
   justify-content: space-between;
+  min-width: 0;
+  row-gap: 2px;
 }
 
 .card-meta-left {
   align-items: center;
   display: flex;
+  flex: 1;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .retailer-badge {
@@ -979,6 +995,7 @@ select:focus {
 .card-category {
   color: var(--muted);
   font-weight: 600;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -988,20 +1005,30 @@ select:focus {
   color: var(--muted);
   flex-shrink: 0;
   font-size: 10.5px;
+  letter-spacing: -0.01em;
+  margin-left: auto;
   white-space: nowrap;
+}
+
+.card-scope-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
 }
 
 .scope-badge {
   align-items: center;
   border-radius: 4px;
   display: inline-flex;
-  flex-shrink: 0;
   font-size: 10px;
   font-weight: 600;
-  line-height: 1.1;
-  max-width: 130px;
+  line-height: 1.2;
+  max-width: 100%;
   overflow: hidden;
-  padding: 2px 5px;
+  padding: 2px 6px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1432,6 +1459,35 @@ select:focus {
   text-decoration: none;
 }
 
+.unverified-history-wrap {
+  background: #fefce8;
+  border: 1px dashed #facc15;
+  border-radius: 8px;
+  margin-top: 18px;
+  padding: 12px 14px;
+}
+
+.unverified-history-wrap h4 {
+  color: #854d0e;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.unverified-history-wrap .unverified-note {
+  color: #713f12;
+  font-size: 11px;
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+
+.unverified-history-wrap .tracker-history-table th {
+  color: #a16207;
+}
+
+.unverified-history-wrap .tracker-history-table td {
+  border-bottom: 1px solid #fef08a;
+}
+
 .compare-modal-search {
   border-bottom: 1px solid var(--line);
   padding: 12px 16px;
@@ -1488,6 +1544,13 @@ select:focus {
 .compare-store-card.is-best {
   background: #fffdfa;
   border: 2px solid #ed8936;
+}
+
+.csc-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .compare-store-card h4 {
@@ -1763,12 +1826,20 @@ select:focus {
   }
 
   .image-wrap img {
+    height: 100%;
+    max-height: 100%;
+    max-width: 100%;
     padding: 6px;
+    width: 100%;
   }
 
   .card-body {
-    gap: 4px;
+    gap: 3px;
     padding: 0;
+  }
+
+  .card-scope-row {
+    margin-top: 1px;
   }
 
   .offer-card h3 {
