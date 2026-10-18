@@ -223,17 +223,15 @@ def validate_observation_provenance(
             m_plz = re.search(r"\b(\d{5})\b", store_address)
             if m_plz:
                 addr_plz = m_plz.group(1)
-                if addr_plz != clean_zip:
-                    addr_coords = get_coordinates_for_plz(addr_plz)
-                    if (
-                        not addr_coords
-                        or haversine_distance_km(user_coords[0], user_coords[1], addr_coords[0], addr_coords[1]) > 60.0
-                    ):
-                        return (
-                            False,
-                            "demoted_conflicting_store_address",
-                            f"Store address PLZ {addr_plz} conflicts with requested PLZ {clean_zip}",
-                        )
+                from app.services.location import normalize_german_plz
+
+                norm_zip = normalize_german_plz(clean_zip) or clean_zip
+                if addr_plz != clean_zip and addr_plz != norm_zip:
+                    return (
+                        False,
+                        "demoted_store_location_mismatch",
+                        f"Store address PLZ {addr_plz} does not match requested PLZ {clean_zip}",
+                    )
 
         if raw_method == "marktguru_store_branch_verified" and clean_provider and clean_provider != "marktguru":
             return (
@@ -274,19 +272,15 @@ def validate_observation_provenance(
                 f"Regional verification requires a valid 5-digit German PLZ with coordinates (got '{clean_zip}')",
             )
 
-        if raw_method == "marktguru_authoritative_region_mapping":
-            from app.providers.marktguru import AUTHORITATIVE_REGION_REGISTRY, validate_regional_coverage_evidence
+        if raw_method in ("marktguru_authoritative_region_mapping", "marktguru_regional_flyer_postal_match"):
+            from app.providers.marktguru import get_verified_campaign_plzs
 
-            evidence = AUTHORITATIVE_REGION_REGISTRY.get(clean_reg_id.lower())
-            if (
-                not evidence
-                or not validate_regional_coverage_evidence(evidence)[0]
-                or clean_zip not in evidence.covered_plzs
-            ):
+            covered = get_verified_campaign_plzs(clean_reg_id)
+            if not covered or clean_zip not in covered:
                 return (
                     False,
-                    "demoted_unsubstantiated_region_mapping",
-                    f"Region '{clean_reg_id}' lacks valid authoritative coverage evidence for PLZ {clean_zip}",
+                    "demoted_unsubstantiated_campaign_evidence",
+                    f"Region or campaign '{clean_reg_id}' lacks substantiated campaign evidence for PLZ {clean_zip}",
                 )
 
         return (True, raw_method, f"Verified regional observation for region {clean_reg_id} at PLZ {clean_zip}")
@@ -324,6 +318,15 @@ def validate_observation_provenance(
                 False,
                 "demoted_inconsistent_provider",
                 f"Inconsistent source_provider '{clean_provider}' for marktguru_national_flyer",
+            )
+
+        from app.providers.marktguru import is_verified_nationwide_campaign
+
+        if not is_verified_nationwide_campaign(clean_reg_id):
+            return (
+                False,
+                "demoted_unsubstantiated_nationwide_claim",
+                f"Nationwide claim '{clean_reg_id}' lacks scope-specific evidence establishing promotional applicability across Germany",
             )
 
         return (True, raw_method, f"Verified nationwide observation ({clean_reg_id})")
@@ -403,6 +406,7 @@ class PriceHistoryService:
                 "scope_type": "TEXT DEFAULT 'unknown'",
                 "store_id": "TEXT",
                 "store_name": "TEXT",
+                "store_address": "TEXT",
                 "region_verified": "INTEGER DEFAULT 0",
                 "source_provider": "TEXT",
                 "source_region_id": "TEXT",
@@ -435,10 +439,14 @@ class PriceHistoryService:
 
     @staticmethod
     def _revalidate_historical_records_conn(conn: sqlite3.Connection) -> int:
+        cursor = conn.execute("PRAGMA table_info(price_history)")
+        has_store_addr = any(row["name"] == "store_address" for row in cursor.fetchall())
+        store_addr_select = "store_address" if has_store_addr else "NULL as store_address"
+
         rows = conn.execute(
-            """
+            f"""
             SELECT id, scope_type, region_verified, verification_method,
-                   store_id, store_name, source_region_id, source_provider,
+                   store_id, store_name, {store_addr_select}, source_region_id, source_provider,
                    source_url, zip_code, retailer_slug
             FROM price_history
             WHERE region_verified = 1
@@ -453,6 +461,7 @@ class PriceHistoryService:
                 verification_method=row["verification_method"],
                 store_id=row["store_id"],
                 store_name=row["store_name"],
+                store_address=row["store_address"],
                 source_region_id=row["source_region_id"],
                 source_provider=row["source_provider"],
                 source_url=row["source_url"],
@@ -586,6 +595,7 @@ class PriceHistoryService:
                         scope_type,
                         offer.store_id,
                         offer.store_name,
+                        offer.store_address,
                         verified_int,
                         offer.source_provider,
                         offer.source_region_id,
@@ -600,9 +610,9 @@ class PriceHistoryService:
                         product_key, title, brand, category, retailer_slug, retailer_name,
                         price, old_price, unit_price, unit, discount_percent, recorded_at,
                         valid_from, valid_to, source_url, zip_code,
-                        scope_type, store_id, store_name, region_verified, source_provider,
+                        scope_type, store_id, store_name, store_address, region_verified, source_provider,
                         source_region_id, verification_method
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows_to_insert,
                 )

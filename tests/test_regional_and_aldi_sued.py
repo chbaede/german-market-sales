@@ -242,3 +242,132 @@ def test_locate_api_and_plz_cookie_persistence(tmp_path: Path, monkeypatch) -> N
     html = page_res.get_data(as_text=True)
     assert 'data-current-plz="80331"' in html
     assert "München" in html
+
+
+def test_aldi_sued_weekly_offers_html_parser_representative_sample() -> None:
+    # Representative HTML for /produkte/wochenangebote/k/1588161426582123 containing Nuxt data
+    nuxt_payload = [
+        ["ShallowReactive", 1],
+        {"products": 2},
+        [3, 17, 28],
+        # Product 1: cents integer price (249 -> 2.49 EUR), wasPriceAmount (349 -> 3.49 EUR), onSaleDate timestamp
+        {
+            "sku": 4,
+            "name": 5,
+            "brandName": 6,
+            "onSaleDate": 7,
+            "urlSlugText": 8,
+            "price": 9,
+            "categories": 15,
+        },
+        "00054321",
+        "Bio Äpfel",
+        "NUR NUR NATUR",
+        1792195200000,  # 2026-10-17T00:00:00Z
+        "bio-aepfel",
+        {
+            "amountRelevant": 10,
+            "wasPriceAmount": 11,
+            "savingsDisplay": 12,
+            "perUnitDisplay": 13,
+            "sellingSizeDisplay": 14,
+        },
+        249,  # raw integer cents
+        349,  # raw integer cents
+        "-28%",
+        "1 kg = € 2,49",
+        "1-kg-Netz",
+        [{"name": 16}],
+        "Obst & Gemüse",
+        # Product 2: formatted string price, fallback date when onSaleDate is None
+        {
+            "sku": 18,
+            "name": 19,
+            "brandName": 20,
+            "onSaleDate": 21,
+            "urlSlugText": 22,
+            "price": 23,
+        },
+        "00098765",
+        "Frischer Apfelsaft",
+        "Rio D'oro",
+        None,
+        "frischer-apfelsaft",
+        {
+            "amountRelevantDisplay": 24,
+            "wasPriceDisplay": 25,
+            "perUnitDisplay": 26,
+            "sellingSizeDisplay": 27,
+        },
+        "1,89 €",
+        "2,49 €",
+        "1 l = € 1,89",
+        "1-l-Flasche",
+        # Product 3: invalid/missing price -> should be skipped gracefully
+        {
+            "sku": 29,
+            "name": 30,
+            "brandName": 31,
+            "price": 32,
+        },
+        "00000000",
+        "Unpriced Product",
+        "Unknown",
+        {"amountRelevant": 33},
+        None,
+    ]
+
+    sample_html = (
+        "<!DOCTYPE html>"
+        "<html><head><title>Wochenangebote | ALDI Süd</title></head>"
+        '<body><script id="__NUXT_DATA__" type="application/json">'
+        + json.dumps(nuxt_payload)
+        + "</script></body></html>"
+    )
+
+    offers = AldiSuedProvider.offers_from_html(
+        sample_html,
+        limit=10,
+        source_url="https://www.aldi-sued.de/produkte/wochenangebote/k/1588161426582123",
+        fallback_date="2026-10-19",
+        requested_zip_code="80331",
+    )
+
+    # 2 valid products parsed, 1 invalid product skipped
+    assert len(offers) == 2
+
+    # Product 1 assertions
+    p1 = offers[0]
+    assert p1.id == "aldi-sued-00054321"
+    assert p1.retailer == "ALDI Süd"
+    assert p1.retailer_slug == "aldi-sued"
+    assert p1.title == "Bio Äpfel"
+    assert p1.brand == "NUR NUR NATUR"
+    assert p1.category == "produce"
+    assert p1.price == 2.49
+    assert p1.old_price == 3.49
+    assert p1.discount_percent == 28.0
+    assert p1.unit_price == 2.49
+    assert p1.unit == "1 kg"
+    assert p1.valid_from is not None and "2026-10-17" in p1.valid_from
+    assert p1.valid_to is not None and "2026-10-17" in p1.valid_to  # Saturday end of cycle
+    assert p1.source_url == "https://www.aldi-sued.de/de/p.bio-aepfel.00054321.html"
+    assert p1.scope_type == "region"
+    assert p1.region_verified is False
+    assert p1.verification_method == "retailer_territory_unverified"
+
+    # Product 2 assertions (with fallback date)
+    p2 = offers[1]
+    assert p2.id == "aldi-sued-00098765"
+    assert p2.title == "Frischer Apfelsaft"
+    assert p2.brand == "Rio D'oro"
+    assert p2.price == 1.89
+    assert p2.old_price == 2.49
+    assert p2.discount_percent == round((2.49 - 1.89) / 2.49 * 100, 1)
+    assert p2.unit_price == 1.89
+    assert p2.unit == "1 l"
+    assert p2.valid_from is not None and "2026-10-19" in p2.valid_from
+    assert p2.valid_to is not None and "2026-10-24" in p2.valid_to
+    assert p2.scope_type == "region"
+    assert p2.region_verified is False
+

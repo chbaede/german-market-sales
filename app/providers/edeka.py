@@ -62,6 +62,13 @@ class EdekaProvider(OfferProvider):
                 store_id = str(market.get("id") or market.get("marketId") or "").strip() or None
                 store_address = _market_address(market)
 
+                from app.services.location import normalize_german_plz
+
+                clean_zip = (zip_code or "").strip()
+                norm_zip = normalize_german_plz(clean_zip) or clean_zip
+                market_pc = _extract_market_plz(market, store_address)
+                is_same_plz = bool(market_pc and (market_pc == clean_zip or market_pc == norm_zip))
+
                 offers = self.offers_from_html(
                     html,
                     limit=limit,
@@ -70,7 +77,7 @@ class EdekaProvider(OfferProvider):
                     store_id=store_id,
                     store_address=store_address,
                     requested_zip=zip_code,
-                    location_verified=True,
+                    location_verified=is_same_plz,
                 )
                 if offers:
                     # Select the closest geographical market with valid offers
@@ -131,7 +138,7 @@ class EdekaProvider(OfferProvider):
         requested_zip: str | None = None,
         location_verified: bool = False,
     ) -> Offer | None:
-        from app.services.location import get_coordinates_for_plz, haversine_distance_km
+        from app.services.location import get_coordinates_for_plz, normalize_german_plz
 
         dialog_id = dialog.get("id", "")
         source_key = dialog_id.removeprefix("dialog-angebot-")
@@ -152,34 +159,43 @@ class EdekaProvider(OfferProvider):
         has_store_identity = bool(clean_store_id and (market_name or store_address))
 
         clean_zip = (requested_zip or "").strip()
+        norm_zip = normalize_german_plz(clean_zip) or clean_zip
         user_coords = get_coordinates_for_plz(clean_zip) if len(clean_zip) == 5 and clean_zip.isdigit() else None
-        address_verified = False
-        address_conflict = False
-        if user_coords and store_address:
+
+        addr_plz: str | None = None
+        if store_address:
             m_plz = re.search(r"\b(\d{5})\b", store_address)
             if m_plz:
                 addr_plz = m_plz.group(1)
-                if addr_plz == clean_zip:
-                    address_verified = True
+
+        # Defensible location evidence requires the store's authoritative postal code to match
+        # the requested PLZ (or its normalized street PLZ). A nearest store in a different PLZ
+        # (even within 60km) does NOT prove promotional applicability for the requested PLZ.
+        is_location_substantiated = False
+        location_mismatch = False
+
+        if has_store_identity and user_coords:
+            if addr_plz:
+                if addr_plz == clean_zip or addr_plz == norm_zip:
+                    is_location_substantiated = True
                 else:
-                    addr_coords = get_coordinates_for_plz(addr_plz)
-                    if addr_coords and haversine_distance_km(user_coords[0], user_coords[1], addr_coords[0], addr_coords[1]) <= MAX_STORE_DISTANCE_KM:
-                        address_verified = True
-                    else:
-                        address_conflict = True
+                    location_mismatch = True
+            elif location_verified:
+                is_location_substantiated = True
 
-        has_location_evidence = bool(user_coords and not address_conflict and (location_verified or address_verified))
-
-        if has_store_identity and has_location_evidence:
+        if has_store_identity and is_location_substantiated and not location_mismatch:
             scope_type = "store"
             region_verified = True
             verification_method = "store_direct_api"
-            verification_reason = f"Official EDEKA store endpoint for market {clean_store_id} verified for PLZ {clean_zip}"
+            verification_reason = f"Official EDEKA store endpoint for market {clean_store_id} verified at PLZ {clean_zip}"
         elif has_store_identity:
             scope_type = "store"
             region_verified = False
             verification_method = "unverified_store_location"
-            verification_reason = f"EDEKA store {clean_store_id} lacks verified geographic location evidence for requested PLZ"
+            if location_mismatch:
+                verification_reason = f"EDEKA store {clean_store_id} is located at PLZ {addr_plz}, which does not match requested PLZ {clean_zip}; promotional applicability unverified"
+            else:
+                verification_reason = f"EDEKA store {clean_store_id} lacks verified geographic location evidence for requested PLZ {clean_zip}"
         else:
             scope_type = "unknown"
             region_verified = False
@@ -427,3 +443,17 @@ def _market_address(market: dict) -> str | None:
     city = clean_text(address.get("city") or address.get("location"))
     parts = [p for p in (street, f"{postal_code} {city}".strip()) if p]
     return ", ".join(parts) if parts else None
+
+
+def _extract_market_plz(market: dict, store_address: str | None = None) -> str | None:
+    contact = market.get("contact") if isinstance(market.get("contact"), dict) else {}
+    address = contact.get("address") if isinstance(contact.get("address"), dict) else (market.get("address") if isinstance(market.get("address"), dict) else {})
+    pc = str(address.get("postalCode") or market.get("postalCode") or "").strip()
+    if len(pc) == 5 and pc.isdigit():
+        return pc
+    if store_address:
+        m = re.search(r"\b(\d{5})\b", store_address)
+        if m:
+            return m.group(1)
+    return None
+

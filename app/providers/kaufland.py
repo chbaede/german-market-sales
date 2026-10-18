@@ -52,6 +52,13 @@ class KauflandProvider(OfferProvider):
             warnings.append("Kaufland 공식 페이지 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
         payload = self.extract_offer_template_payload(html)
+        store_plz = str(store.get("pc") or "").strip() if store else None
+        from app.services.location import normalize_german_plz
+
+        clean_zip = (zip_code or "").strip()
+        norm_zip = normalize_german_plz(clean_zip) or clean_zip
+        is_same_plz = bool(store_plz and (store_plz == clean_zip or store_plz == norm_zip))
+
         offers = self.offers_from_payload(
             payload,
             limit=limit,
@@ -59,7 +66,7 @@ class KauflandProvider(OfferProvider):
             store_name=store_name,
             store_address=store_address,
             requested_zip=zip_code,
-            location_verified=bool(store_id),
+            location_verified=is_same_plz,
         )
         if not offers:
             raise ValueError("Kaufland official offers were empty.")
@@ -211,34 +218,45 @@ class KauflandProvider(OfferProvider):
 
         clean_store_id = str(store_id).strip() if store_id is not None else ""
         clean_zip = (requested_zip or "").strip()
+        from app.services.location import get_coordinates_for_plz, normalize_german_plz
+
+        norm_zip = normalize_german_plz(clean_zip) or clean_zip
         user_coords = get_coordinates_for_plz(clean_zip) if len(clean_zip) == 5 and clean_zip.isdigit() else None
-        address_verified = False
-        address_conflict = False
-        if user_coords and store_address:
+
+        addr_plz: str | None = None
+        if store_address:
             m_plz = re.search(r"\b(\d{5})\b", store_address)
             if m_plz:
                 addr_plz = m_plz.group(1)
-                if addr_plz == clean_zip:
-                    address_verified = True
+
+        # Defensible location evidence requires the store's authoritative postal code to match
+        # the requested PLZ (or its normalized street PLZ). A nearest store in a different PLZ
+        # (even within 60km) does NOT prove promotional applicability for the requested PLZ.
+        is_location_substantiated = False
+        location_mismatch = False
+
+        if clean_store_id and user_coords:
+            if addr_plz:
+                if addr_plz == clean_zip or addr_plz == norm_zip:
+                    is_location_substantiated = True
                 else:
-                    addr_coords = get_coordinates_for_plz(addr_plz)
-                    if addr_coords and haversine_distance_km(user_coords[0], user_coords[1], addr_coords[0], addr_coords[1]) <= MAX_STORE_DISTANCE_KM:
-                        address_verified = True
-                    else:
-                        address_conflict = True
+                    location_mismatch = True
+            elif location_verified:
+                is_location_substantiated = True
 
-        has_location_evidence = bool(user_coords and not address_conflict and (location_verified or address_verified))
-
-        if clean_store_id and has_location_evidence:
+        if clean_store_id and is_location_substantiated and not location_mismatch:
             scope_type = "store"
             region_verified = True
             verification_method = "store_cookie_session"
-            verification_reason = f"Kaufland store session for store {clean_store_id} verified for PLZ {clean_zip}"
+            verification_reason = f"Kaufland store session for store {clean_store_id} verified at PLZ {clean_zip}"
         elif clean_store_id:
             scope_type = "store"
             region_verified = False
             verification_method = "unverified_store_location"
-            verification_reason = f"Kaufland store {clean_store_id} lacks verified geographic location evidence for requested PLZ"
+            if location_mismatch:
+                verification_reason = f"Kaufland store {clean_store_id} is located at PLZ {addr_plz}, which does not match requested PLZ {clean_zip}; promotional applicability unverified"
+            else:
+                verification_reason = f"Kaufland store {clean_store_id} lacks verified geographic location evidence for requested PLZ {clean_zip}"
         else:
             scope_type = "nationwide"
             region_verified = False

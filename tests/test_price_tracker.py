@@ -19,7 +19,7 @@ def _sample_offer(
     unit: str = "kg",
     discount: float | None = None,
     brand: str | None = None,
-    scope_type: str = "nationwide",
+    scope_type: str = "store",
     region_verified: bool = True,
 ) -> Offer:
     slug = retailer.lower().replace(" ", "-")
@@ -41,11 +41,15 @@ def _sample_offer(
         valid_to="2026-05-31",
         image_url=None,
         source_url=f"https://example.com/{slug}/{id}",
+        requested_zip_code="14195",
         scope_type=scope_type,
+        store_id=f"store_{slug}_14195" if scope_type == "store" else None,
+        store_name=f"{retailer} Berlin Dahlem" if scope_type == "store" else None,
+        store_address="Clayallee 100, 14195 Berlin" if scope_type == "store" else None,
         region_verified=region_verified,
-        source_provider="marktguru" if region_verified else None,
+        source_provider="edeka-official" if (region_verified and scope_type == "store") else ("marktguru" if region_verified else None),
         source_region_id="national_flyer:100" if (region_verified and scope_type == "nationwide") else None,
-        verification_method="marktguru_national_flyer" if (region_verified and scope_type == "nationwide") else None,
+        verification_method="store_direct_api" if (region_verified and scope_type == "store") else ("marktguru_national_flyer" if (region_verified and scope_type == "nationwide") else None),
     )
 
 

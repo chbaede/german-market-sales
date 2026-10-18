@@ -137,6 +137,82 @@ AUTHORITATIVE_REGION_COVERAGE_MAP: dict[str, set[str]] = {
 }
 
 
+VERIFIED_CAMPAIGN_REGISTRY: dict[str, set[str]] = {}
+VERIFIED_NATIONWIDE_REGISTRY: dict[str, dict[str, Any]] = {}
+
+
+def register_verified_campaign(campaign_id: str, covered_plzs: set[str] | frozenset[str] | list[str]) -> None:
+    """
+    Registers substantiated promotional campaign coverage evidence for a campaign/flyer.
+    """
+    norm_id = str(campaign_id).strip().casefold()
+    plz_set = {str(p).strip() for p in covered_plzs}
+    VERIFIED_CAMPAIGN_REGISTRY[norm_id] = plz_set
+    clean_id = norm_id.removeprefix("flyer:").removeprefix("campaign:")
+    VERIFIED_CAMPAIGN_REGISTRY[clean_id] = plz_set
+    VERIFIED_CAMPAIGN_REGISTRY[f"flyer:{clean_id}"] = plz_set
+
+
+def register_verified_nationwide_campaign(campaign_id: str, evidence: dict[str, Any] | None = None) -> None:
+    """
+    Registers substantiated scope-specific nationwide coverage evidence for a campaign/flyer.
+    """
+    norm_id = str(campaign_id).strip().casefold()
+    data = evidence or {"scope": "nationwide", "promotional_applicability_confirmed": True}
+    VERIFIED_NATIONWIDE_REGISTRY[norm_id] = data
+    clean_id = norm_id.removeprefix("national_flyer:").removeprefix("national_campaign:")
+    VERIFIED_NATIONWIDE_REGISTRY[clean_id] = data
+    VERIFIED_NATIONWIDE_REGISTRY[f"national_flyer:{clean_id}"] = data
+
+
+def get_verified_campaign_plzs(campaign_or_region_id: str | None) -> set[str] | None:
+    """
+    Returns verified covered 5-digit PLZ set if the campaign or region has verified
+    underlying campaign evidence establishing promotional applicability.
+    """
+    if not campaign_or_region_id:
+        return None
+    key = str(campaign_or_region_id).strip()
+    key_lower = key.casefold()
+
+    # 1. Authoritative region registry / coverage map
+    if key_lower in AUTHORITATIVE_REGION_COVERAGE_MAP:
+        return AUTHORITATIVE_REGION_COVERAGE_MAP[key_lower]
+    if key_lower in AUTHORITATIVE_REGION_REGISTRY:
+        ev = AUTHORITATIVE_REGION_REGISTRY[key_lower]
+        is_valid, _ = validate_regional_coverage_evidence(ev)
+        if is_valid:
+            return set(ev.covered_plzs)
+
+    # 2. Verified campaign distribution manifest registry
+    if key in VERIFIED_CAMPAIGN_REGISTRY:
+        return VERIFIED_CAMPAIGN_REGISTRY[key]
+    if key_lower in VERIFIED_CAMPAIGN_REGISTRY:
+        return VERIFIED_CAMPAIGN_REGISTRY[key_lower]
+
+    clean_id = key_lower.removeprefix("flyer:").removeprefix("campaign:")
+    if clean_id in VERIFIED_CAMPAIGN_REGISTRY:
+        return VERIFIED_CAMPAIGN_REGISTRY[clean_id]
+
+    return None
+
+
+def is_verified_nationwide_campaign(campaign_or_flyer_id: str | None) -> bool:
+    """
+    Returns True only if the nationwide campaign has verifiable scope-specific evidence
+    establishing promotional campaign applicability across Germany.
+    """
+    if not campaign_or_flyer_id:
+        return False
+    key = str(campaign_or_flyer_id).strip().casefold()
+    if key in VERIFIED_NATIONWIDE_REGISTRY:
+        return True
+    clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
+    if clean_id in VERIFIED_NATIONWIDE_REGISTRY:
+        return True
+    return False
+
+
 def _extract_verified_campaign_plzs(flyer_data: dict, flyer_id: str | None) -> tuple[set[str] | None, str | None]:
     """
     Distinguishes verified promotional campaign PLZ applicability from generic
@@ -156,13 +232,9 @@ def _extract_verified_campaign_plzs(flyer_data: dict, flyer_id: str | None) -> t
 
     if isinstance(campaign_dist, dict):
         scope_meaning = campaign_dist.get("scope") or campaign_dist.get("scopeMeaning")
-        if campaign_dist.get("campaignApplicabilityVerified") is True and not scope_meaning:
-            scope_meaning = "promotional_campaign"
         raw_valid_zips = campaign_dist.get("validZipCodes")
     else:
         scope_meaning = flyer_data.get("coverageScope") or flyer_data.get("postalCodeScope")
-        if flyer_data.get("campaignApplicabilityVerified") is True and not scope_meaning:
-            scope_meaning = "promotional_campaign"
         raw_valid_zips = flyer_data.get("validZipCodes")
 
     if raw_valid_zips is None:
@@ -232,6 +304,10 @@ def verify_marktguru_regional_applicability(
         if not has_valid_zip:
             return False, "marktguru_unverified_flyer", "No valid 5-digit PLZ provided to verify leaflet campaign coverage", eff_region_id
         if cleaned_zip in verified_campaign_plzs:
+            VERIFIED_CAMPAIGN_REGISTRY[eff_region_id] = set(verified_campaign_plzs)
+            if flyer_id:
+                VERIFIED_CAMPAIGN_REGISTRY[str(flyer_id)] = set(verified_campaign_plzs)
+                VERIFIED_CAMPAIGN_REGISTRY[f"flyer:{flyer_id}"] = set(verified_campaign_plzs)
             return (
                 True,
                 "marktguru_regional_flyer_postal_match",
@@ -539,23 +615,32 @@ class MarktguruProvider(OfferProvider):
         elif is_national:
             clean_flyer_id = str(flyer_id).strip() if flyer_id is not None else ""
             is_territory_split_retailer = effective_retailer_slug in {"aldi", "aldi-nord", "aldi-sued"}
-            if clean_flyer_id and not has_regional_restriction and not is_territory_split_retailer:
-                scope_type = "nationwide"
-                source_region_id = f"national_flyer:{clean_flyer_id}"
+            scope_type = "nationwide"
+            source_region_id = f"national_flyer:{clean_flyer_id}" if clean_flyer_id else None
+
+            # Scope-specific evidence required for nationwide verification
+            has_nationwide_evidence = bool(
+                clean_flyer_id
+                and not has_regional_restriction
+                and not is_territory_split_retailer
+                and is_verified_nationwide_campaign(source_region_id or clean_flyer_id)
+            )
+
+            if has_nationwide_evidence:
                 region_verified = True
                 verification_method = "marktguru_national_flyer"
-                verification_reason = f"Marktguru leaflet {clean_flyer_id} explicitly marked as national with no regional restrictions"
+                verification_reason = f"Marktguru leaflet {clean_flyer_id} verified with substantiated nationwide campaign evidence"
             else:
-                scope_type = "nationwide"
-                source_region_id = f"national_flyer:{clean_flyer_id}" if clean_flyer_id else None
                 region_verified = False
                 verification_method = "marktguru_unverified_national"
                 if not clean_flyer_id:
                     verification_reason = "Marktguru national claim lacks a traceable flyerId"
                 elif has_regional_restriction:
                     verification_reason = f"Marktguru flyer {clean_flyer_id} claims national scope but contains contradictory regional restrictions"
-                else:
+                elif is_territory_split_retailer:
                     verification_reason = f"Retailer '{effective_retailer_slug}' is territory-split and cannot be verified as nationwide without regional proof"
+                else:
+                    verification_reason = f"Marktguru flyer {clean_flyer_id} claims national scope but lacks substantiated scope-specific nationwide evidence"
 
         elif flyer_id or flyer_data or has_regional_restriction:
             scope_type = "region"
