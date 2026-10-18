@@ -32,8 +32,11 @@
     if (scopeType === "region" && regionVerified) {
       return `<span class="scope-badge scope-region" title="${lTk("지역 검증 할인", "Verified Regional Deal")}">🗺️ ${lTk("지역 검증", "Regional")}</span>`;
     }
-    if (scopeType === "nationwide") {
+    if (scopeType === "nationwide" && regionVerified) {
       return `<span class="scope-badge scope-nationwide" title="${lTk("전국 공통 할인", "Nationwide Deal")}">🌐 ${lTk("전국공통", "Nationwide")}</span>`;
+    }
+    if (scopeType === "nationwide" && !regionVerified) {
+      return `<span class="scope-badge scope-unverified" title="${lTk("전국 행사 (미검증)", "Nationwide Offer (Unverified)")}">🌐 ${lTk("전국(미검증)", "Nationwide (Unverified)")}</span>`;
     }
     if (scopeType === "region" && !regionVerified) {
       return `<span class="scope-badge scope-unverified" title="${lTk("권역 행사 (미검증)", "Territory Offer (Unverified)")}">ℹ️ ${lTk("권역행사", "Territory")}</span>`;
@@ -92,7 +95,7 @@
                 <tr>
                   <td>${item.recorded_at ? item.recorded_at.substring(0, 10) : "-"}</td>
                   <td>
-                    <span class="retailer-badge">${escapeHtml(item.retailer)}</span>
+                    <span class="retailer-badge">${escapeHtml(item.retailer || "")}</span>
                     ${renderScopeBadge(item, lang)}
                   </td>
                   <td><strong>${item.price ? item.price.toFixed(2) + " €" : "-"}</strong></td>
@@ -135,7 +138,7 @@
                 <tr>
                   <td>${item.recorded_at ? item.recorded_at.substring(0, 10) : "-"}</td>
                   <td>
-                    <span class="retailer-badge">${escapeHtml(item.retailer)}</span>
+                    <span class="retailer-badge">${escapeHtml(item.retailer || "")}</span>
                     ${renderScopeBadge(item, lang)}
                   </td>
                   <td><strong>${item.price ? item.price.toFixed(2) + " €" : "-"}</strong></td>

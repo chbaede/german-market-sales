@@ -187,6 +187,38 @@ class PriceHistoryService:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_date ON price_history(recorded_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_retailer ON price_history(retailer_slug)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_zip ON price_history(zip_code)")
+
+            # Audit & revalidate historical records lacking trustworthy provenance
+            # 1. Any record claiming region_verified = 1 without a trustworthy verification_method
+            #    or missing store_id for store scope must be demoted to region_verified = 0.
+            conn.execute(
+                """
+                UPDATE price_history
+                SET region_verified = 0,
+                    verification_method = COALESCE(verification_method, 'unverified_legacy_unsubstantiated')
+                WHERE region_verified = 1
+                  AND (
+                      verification_method IS NULL
+                      OR verification_method = ''
+                      OR verification_method = 'legacy_unverified'
+                      OR (scope_type = 'store' AND (store_id IS NULL OR store_id = '') AND (store_name IS NULL OR store_name = ''))
+                  )
+                """
+            )
+            # 2. Revalidate nationwide records:
+            #    scope_type = 'nationwide' alone must not remain verified if verification_method is unverified
+            #    or if it was an unverified national catalog without verified provenance.
+            conn.execute(
+                """
+                UPDATE price_history
+                SET region_verified = 0
+                WHERE scope_type = 'nationwide'
+                  AND (
+                      verification_method IS NULL
+                      OR verification_method IN ('legacy_unverified', 'national_catalog', 'national_online_catalog', 'unverified_national_catalog')
+                  )
+                """
+            )
             conn.commit()
 
     def record_offers(
@@ -311,7 +343,7 @@ class PriceHistoryService:
                       AND (
                           {store_clause}
                           OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
-                          OR scope_type = 'nationwide'
+                          OR (scope_type = 'nationwide' AND region_verified = 1)
                       )
                     GROUP BY product_key
                 """
@@ -325,7 +357,7 @@ class PriceHistoryService:
                       AND (
                           (scope_type = 'store' AND region_verified = 1)
                           OR (scope_type = 'region' AND region_verified = 1)
-                          OR scope_type = 'nationwide'
+                          OR (scope_type = 'nationwide' AND region_verified = 1)
                       )
                     GROUP BY product_key
                     """
@@ -354,7 +386,7 @@ class PriceHistoryService:
                   AND (
                       (scope_type = 'store' AND region_verified = 1)
                       OR (scope_type = 'region' AND region_verified = 1)
-                      OR scope_type = 'nationwide'
+                      OR (scope_type = 'nationwide' AND region_verified = 1)
                   )
                 """,
                 (product_key,),
@@ -385,7 +417,7 @@ class PriceHistoryService:
                       AND (
                           {store_clause}
                           OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
-                          OR scope_type = 'nationwide'
+                          OR (scope_type = 'nationwide' AND region_verified = 1)
                       )
                 """
                 r_cursor = conn.execute(r_query, r_params)
@@ -414,7 +446,7 @@ class PriceHistoryService:
                       AND (
                           {store_p_clause}
                           OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
-                          OR scope_type = 'nationwide'
+                          OR (scope_type = 'nationwide' AND region_verified = 1)
                       )
                     ORDER BY recorded_at ASC
                     LIMIT 30
@@ -431,7 +463,7 @@ class PriceHistoryService:
                       AND (
                           (scope_type = 'store' AND region_verified = 1)
                           OR (scope_type = 'region' AND region_verified = 1)
-                          OR scope_type = 'nationwide'
+                          OR (scope_type = 'nationwide' AND region_verified = 1)
                       )
                     ORDER BY recorded_at ASC
                     LIMIT 30
@@ -471,9 +503,9 @@ class PriceHistoryService:
                       AND NOT (
                           (scope_type = 'store' AND region_verified = 1)
                           OR (scope_type = 'region' AND region_verified = 1)
-                          OR scope_type = 'nationwide'
+                          OR (scope_type = 'nationwide' AND region_verified = 1)
                       )
-                      AND (zip_code = ? OR zip_code IS NULL)
+                      AND (zip_code = ? OR zip_code IS NULL OR zip_code = '' OR scope_type = 'nationwide')
                     ORDER BY recorded_at ASC
                     LIMIT 30
                 """
@@ -489,7 +521,7 @@ class PriceHistoryService:
                       AND NOT (
                           (scope_type = 'store' AND region_verified = 1)
                           OR (scope_type = 'region' AND region_verified = 1)
-                          OR scope_type = 'nationwide'
+                          OR (scope_type = 'nationwide' AND region_verified = 1)
                       )
                     ORDER BY recorded_at ASC
                     LIMIT 30

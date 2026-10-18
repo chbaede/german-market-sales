@@ -268,8 +268,10 @@
                   <span class="scope-badge scope-unverified" title="{{ offer.verification_reason or (offer.store_name ~ ' (미검증)') }}">📍 {{ offer.store_name or '매장' }} ({% if lang == 'de' %}nicht verifiziert{% elif lang == 'en' %}unverified{% else %}미검증{% endif %})</span>
                 {% elif offer.scope_type == 'region' and offer.region_verified %}
                   <span class="scope-badge scope-region" title="지역 검증 할인">🗺️ {% if lang == 'de' %}Regional verifiziert{% elif lang == 'en' %}Verified Regional{% else %}지역 검증{% endif %}</span>
-                {% elif offer.scope_type == 'nationwide' %}
+                {% elif offer.scope_type == 'nationwide' and offer.region_verified %}
                   <span class="scope-badge scope-nationwide" title="전국 공통 할인">🌐 {% if lang == 'de' %}Bundesweit{% elif lang == 'en' %}Nationwide{% else %}전국공통{% endif %}</span>
+                {% elif offer.scope_type == 'nationwide' and not offer.region_verified %}
+                  <span class="scope-badge scope-unverified" title="{{ offer.verification_reason or '전국 행사 (미검증)' }}">🌐 {% if lang == 'de' %}Bundesweit (nicht verifiziert){% elif lang == 'en' %}Nationwide (unverified){% else %}전국(미검증){% endif %}</span>
                 {% elif offer.scope_type == 'region' and not offer.region_verified %}
                   <span class="scope-badge scope-unverified" title="{{ offer.verification_reason or '권역 행사' }}">ℹ️ {% if lang == 'de' %}Gebietsangebot{% elif lang == 'en' %}Territory Offer{% else %}권역행사{% endif %}</span>
                 {% else %}
@@ -314,7 +316,7 @@
                 <div class="card-competitor-box {% if offer.is_cheapest_in_week %}is-cheapest{% elif offer.cheapest_competitor and offer.cheapest_competitor.price_diff and offer.cheapest_competitor.price_diff > 0 %}has-cheaper{% else %}is-same{% endif %}">
                   <div class="ccb-stores">
                     {% for c in offer.competitors %}
-                      <a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer" class="comp-store-pill retailer-theme retailer-{{ c.retailer_slug }}" title="{{ c.retailer }}{% if c.scope_type == 'store' and c.region_verified %} (📍 {{ c.store_name or '매장' }}){% elif c.scope_type == 'nationwide' %} (🌐 전국공통){% elif not c.region_verified %} (미검증){% endif %}: {{ c.title }}">
+                      <a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer" class="comp-store-pill retailer-theme retailer-{{ c.retailer_slug }}" title="{{ c.retailer }}{% if c.scope_type == 'store' and c.region_verified %} (📍 {{ c.store_name or '매장' }}){% elif c.scope_type == 'nationwide' and c.region_verified %} (🌐 전국공통){% elif not c.region_verified %} (미검증){% endif %}: {{ c.title }}">
                         <span class="csp-retailer">{{ c.retailer }}</span>
                         <strong class="csp-price">{{ c.price|eur }}</strong>
                         {% if c.price_diff is not none and c.price_diff > 0 %}

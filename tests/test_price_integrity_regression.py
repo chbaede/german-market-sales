@@ -578,6 +578,89 @@ def test_legacy_database_migration_preserves_history_without_inventing_verificat
             assert raw_row["price"] == 1.99
 
 
+def test_legacy_database_revalidation_demotes_unsubstantiated_records():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "price_history.db"
+
+        # Create schema with verification fields and insert rows with mixed provenance claiming region_verified = 1
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE price_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                brand TEXT,
+                category TEXT NOT NULL,
+                retailer_slug TEXT NOT NULL,
+                retailer_name TEXT NOT NULL,
+                price REAL NOT NULL,
+                old_price REAL,
+                unit_price REAL,
+                unit TEXT,
+                discount_percent REAL,
+                recorded_at TEXT NOT NULL,
+                valid_from TEXT,
+                valid_to TEXT,
+                source_url TEXT NOT NULL,
+                zip_code TEXT,
+                scope_type TEXT,
+                store_id TEXT,
+                store_name TEXT,
+                region_verified INTEGER DEFAULT 0,
+                source_provider TEXT,
+                source_region_id TEXT,
+                verification_method TEXT
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO price_history (
+                id, product_key, title, category, retailer_slug, retailer_name, price, recorded_at,
+                source_url, zip_code, scope_type, store_id, store_name, region_verified, verification_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                # Row 1: Claims region_verified = 1, but verification_method is 'legacy_unverified' -> demote to 0
+                (1, "kaffee", "Kaffee", "coffee", "penny", "Penny", 1.99, "2026-01-01T10:00:00", "https://penny.de", "10115", "store", "penny_1", "Penny Mitte", 1, "legacy_unverified"),
+                # Row 2: Claims region_verified = 1, but verification_method is NULL -> demote to 0
+                (2, "kaffee", "Kaffee", "coffee", "penny", "Penny", 1.89, "2026-01-01T10:00:00", "https://penny.de", "10115", "store", "penny_1", "Penny Mitte", 1, None),
+                # Row 3: Claims region_verified = 1 for store, but lacks store_id and store_name -> demote to 0
+                (3, "kaffee", "Kaffee", "coffee", "edeka", "EDEKA", 1.79, "2026-01-01T10:00:00", "https://edeka.de", "10115", "store", None, None, 1, "store_direct_api"),
+                # Row 4: Claims nationwide with unverified online catalog method -> demote to 0
+                (4, "kaffee", "Kaffee", "coffee", "rewe", "REWE", 2.29, "2026-01-01T10:00:00", "https://rewe.de", "10115", "nationwide", None, None, 1, "national_catalog"),
+                # Row 5: Legitimate verified store offer with store_direct_api and store_id -> KEEP verified = 1
+                (5, "kaffee", "Kaffee", "coffee", "edeka", "EDEKA", 2.49, "2026-01-01T10:00:00", "https://edeka.de", "10115", "store", "edeka_berlin_1", "EDEKA Berlin", 1, "store_direct_api"),
+                # Row 6: Legitimate verified nationwide offer with marktguru_national_flyer -> KEEP verified = 1
+                (6, "kaffee", "Kaffee", "coffee", "aldi", "ALDI", 2.99, "2026-01-01T10:00:00", "https://aldi.de", "10115", "nationwide", None, None, 1, "marktguru_national_flyer"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        # Initializing PriceHistoryService triggers migration / revalidation
+        service = PriceHistoryService(Path(tmp_dir))
+
+        with service._get_connection() as c:
+            rows = {
+                r["id"]: (r["region_verified"], r["verification_method"])
+                for r in c.execute("SELECT id, region_verified, verification_method FROM price_history").fetchall()
+            }
+
+        # Assert unsubstantiated records demoted
+        assert rows[1][0] == 0  # demoted
+        assert rows[2][0] == 0  # demoted
+        assert rows[3][0] == 0  # demoted
+        assert rows[4][0] == 0  # demoted
+
+        # Assert substantiated records kept
+        assert rows[5][0] == 1
+        assert rows[5][1] == "store_direct_api"
+        assert rows[6][0] == 1
+        assert rows[6][1] == "marktguru_national_flyer"
+
+
 # ---------------------------------------------------------------------------
 # 4. Cache Migration and Isolation Regression Tests
 # ---------------------------------------------------------------------------
@@ -958,7 +1041,8 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
             image_url=None,
             source_url="https://rewe.de",
             scope_type="nationwide",
-            region_verified=False,
+            region_verified=True,
+            verification_method="marktguru_national_flyer",
         )
 
         offer_unverified = Offer(
@@ -982,10 +1066,34 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
             requested_zip_code="10115",
             scope_type="unknown",
             region_verified=False,
+            verification_method="legacy_unverified",
+        )
+
+        offer_unverified_nationwide = Offer(
+            id="unv-nat-kaffee",
+            source_offer_id=5,
+            retailer="Penny",
+            retailer_slug="penny",
+            title="Kaffee 500g",
+            brand=None,
+            category="coffee",
+            price=0.80,
+            old_price=None,
+            unit_price=1.60,
+            unit="kg",
+            discount_percent=None,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://penny.de",
+            scope_type="nationwide",
+            region_verified=False,
+            verification_method="national_online_catalog",
         )
 
         service.record_offers(
-            [offer_berlin, offer_munich, offer_nationwide, offer_unverified],
+            [offer_berlin, offer_munich, offer_nationwide, offer_unverified, offer_unverified_nationwide],
             zip_code="10115",
             recorded_at="2026-06-01T10:00:00",
         )
@@ -993,20 +1101,20 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
         pkey = normalize_product_key("Kaffee 500g")
 
         # 1. Berlin regional ATL:
-        # Includes Berlin store (3.49) and Nationwide (3.99).
-        # MUST EXCLUDE Munich store (2.99) and Unverified fake (0.50).
+        # Includes Berlin store (3.49) and Nationwide verified (3.99).
+        # MUST EXCLUDE Munich store (2.99), Unverified fake (0.50), and Unverified nationwide (0.80).
         berlin_atl = service.get_all_time_low_map(zip_code="10115")
         assert berlin_atl[pkey] == 3.49
 
         # 2. Munich regional ATL:
-        # Includes Munich store (2.99) and Nationwide (3.99).
-        # MUST EXCLUDE Berlin store (3.49) and Unverified (0.50).
+        # Includes Munich store (2.99) and Nationwide verified (3.99).
+        # MUST EXCLUDE Berlin store (3.49), Unverified fake (0.50), and Unverified nationwide (0.80).
         munich_atl = service.get_all_time_low_map(zip_code="80331")
         assert munich_atl[pkey] == 2.99
 
         # 3. National verified ATL:
-        # Includes verified observations (Munich 2.99, Berlin 3.49, Nationwide 3.99).
-        # MUST EXCLUDE unverified (0.50).
+        # Includes verified observations (Munich 2.99, Berlin 3.49, Nationwide verified 3.99).
+        # MUST EXCLUDE unverified (0.50) and unverified nationwide (0.80).
         national_atl = service.get_all_time_low_map(zip_code=None)
         assert national_atl[pkey] == 2.99
 
@@ -1017,9 +1125,10 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
         assert berlin_stats["all_time_low"] == 3.49
         assert berlin_stats["record_count"] == 3  # Verified records (Berlin 3.49, Munich 2.99, Nationwide 3.99)
         assert len(berlin_stats["history"]) == 2  # Berlin Mitte + Nationwide
-        assert not any(h["price"] == 0.50 for h in berlin_stats["history"])
-        assert len(berlin_stats["unverified_history"]) == 1  # Unverified 0.50 exposed separately
-        assert berlin_stats["unverified_history"][0]["price"] == 0.50
+        assert not any(h["price"] in (0.50, 0.80) for h in berlin_stats["history"])
+        assert len(berlin_stats["unverified_history"]) == 2  # Unverified 0.50 and unverified nationwide 0.80 exposed separately
+        unverified_prices = {h["price"] for h in berlin_stats["unverified_history"]}
+        assert unverified_prices == {0.50, 0.80}
 
         # History points for Berlin user:
         # Must ONLY contain observations for Berlin or Nationwide.
@@ -1035,13 +1144,14 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
         assert national_stats["all_time_high"] == 3.99  # Nationwide 3.99
         assert national_stats["avg_price"] == round((3.49 + 2.99 + 3.99) / 3, 2)
         assert national_stats["record_count"] == 3
-        # Must contain all verified observations (Berlin, Munich, Nationwide), but MUST NOT contain unverified (0.50)!
+        # Must contain all verified observations (Berlin, Munich, Nationwide), but MUST NOT contain unverified (0.50, 0.80)!
         assert len(national_stats["history"]) == 3
-        assert not any(h["price"] == 0.50 for h in national_stats["history"])
+        assert not any(h["price"] in (0.50, 0.80) for h in national_stats["history"])
         assert all(h["price"] >= 2.99 for h in national_stats["history"])
         # Unverified history exposed separately
-        assert len(national_stats["unverified_history"]) == 1
-        assert national_stats["unverified_history"][0]["price"] == 0.50
+        assert len(national_stats["unverified_history"]) == 2
+        unverified_nat_prices = {h["price"] for h in national_stats["unverified_history"]}
+        assert unverified_nat_prices == {0.50, 0.80}
 
 
 def test_cache_migration_forces_legacy_unverified_even_with_store_or_region_scope():
@@ -1218,8 +1328,8 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
             source_url="https://rewe.de/angebote",
             requested_zip_code="10115",
             scope_type="nationwide",
-            region_verified=False,
-            verification_method="national_catalog",
+            region_verified=True,
+            verification_method="marktguru_national_flyer",
         )
 
         # 3. Unverified observation at 0.50 € (misleading unverified data)
@@ -1246,7 +1356,58 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
             verification_method="legacy_unverified",
         )
 
-        service.record_offers([verified_berlin, verified_national, unverified_offer], zip_code="10115")
+        # 4. Unverified nationwide observation at 0.75 €
+        unverified_national = Offer(
+            id="unv-nat",
+            source_offer_id=4,
+            retailer="Netto",
+            retailer_slug="netto",
+            title="Kaffee 500g",
+            brand="Tchibo",
+            category="coffee",
+            price=0.75,
+            old_price=4.99,
+            unit_price=1.50,
+            unit="kg",
+            discount_percent=85.0,
+            description="",
+            valid_from="2026-06-01",
+            valid_to="2026-06-07",
+            image_url=None,
+            source_url="https://netto.de",
+            scope_type="nationwide",
+            region_verified=False,
+            verification_method="national_online_catalog",
+        )
+
+        # 5. Missing / sparse fields observation with unknown scope
+        unverified_missing_fields = Offer(
+            id="unv-sparse",
+            source_offer_id=5,
+            retailer="Unknown",
+            retailer_slug="unknown",
+            title="Kaffee 500g",
+            brand="Tchibo",
+            category="coffee",
+            price=0.60,
+            old_price=None,
+            unit_price=None,
+            unit=None,
+            discount_percent=None,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://example.com/sparse",
+            scope_type=None,
+            region_verified=False,
+            verification_method="legacy_unverified",
+        )
+
+        service.record_offers(
+            [verified_berlin, verified_national, unverified_offer, unverified_national, unverified_missing_fields],
+            zip_code="10115",
+        )
 
         class FakeOfferServiceWithHistory:
             def __init__(self, history_service):
@@ -1267,8 +1428,9 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
         assert data["all_time_low"] == 3.49
         assert data["is_all_time_low"] is True
         assert len(data["history"]) == 2
-        assert len(data["unverified_history"]) == 1
-        assert data["unverified_history"][0]["price"] == 0.50
+        assert len(data["unverified_history"]) == 3
+        unv_prices = {h["price"] for h in data["unverified_history"]}
+        assert unv_prices == {0.50, 0.75, 0.60}
 
         # Execute Node.js frontend rendering
         js_file = Path(__file__).resolve().parent.parent / "app" / "static" / "js" / "shopping_list.js"
@@ -1287,7 +1449,7 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
         rendered_html = proc.stdout
 
         # Assertions on rendered UI:
-        # A. Stats grid: All-time low is verified 3.49 €, NEVER unverified 0.50 €
+        # A. Stats grid: All-time low is verified 3.49 €, NEVER unverified 0.50 €, 0.60 €, or 0.75 €
         assert "3.49 €" in rendered_html
         assert "역대 최저가" in rendered_html
         assert "현재 최저가" in rendered_html
@@ -1297,18 +1459,27 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
         assert "EDEKA Berlin Mitte" in rendered_html
         assert "scope-store" in rendered_html
         assert "scope-nationwide" in rendered_html
+        assert "전국공통" in rendered_html
 
         # C. Unverified section is rendered with clear warning and separate container
         assert "unverified-history-wrap" in rendered_html
         assert "미검증 관측 이력 (참고용)" in rendered_html
         assert "공식 매장 또는 지역 적용 여부가 확인되지 않아 공식 통계에서 분리된 관측 데이터입니다." in rendered_html
         assert "0.50 €" in rendered_html
-        assert "scope-unknown" in rendered_html or "scope-unverified" in rendered_html
+        assert "0.75 €" in rendered_html
+        assert "0.60 €" in rendered_html
+        assert "scope-unverified" in rendered_html
+        assert "전국(미검증)" in rendered_html
+        assert "미확인" in rendered_html
 
-        # D. Verified table portion must NOT contain 0.50 €
+        # D. Verified table portion must NOT contain unverified prices
         verified_section, unverified_section = rendered_html.split("unverified-history-wrap", 1)
         assert "0.50 €" not in verified_section
+        assert "0.75 €" not in verified_section
+        assert "0.60 €" not in verified_section
         assert "0.50 €" in unverified_section
+        assert "0.75 €" in unverified_section
+        assert "0.60 €" in unverified_section
         assert "3.49 €" not in unverified_section
 
 

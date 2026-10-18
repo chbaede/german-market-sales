@@ -174,3 +174,66 @@ def test_marktguru_regional_verification_mappings():
     assert method == "marktguru_unverified_flyer"
 
 
+def test_audited_regional_coverage_registry_traceability():
+    from app.providers.marktguru import (
+        AUTHORITATIVE_REGION_REGISTRY,
+        AUTHORITATIVE_REGION_COVERAGE_MAP,
+        verify_marktguru_regional_applicability,
+    )
+
+    # 1. All registered regions must have traceable evidence metadata
+    assert len(AUTHORITATIVE_REGION_REGISTRY) > 0
+    for key, evidence in AUTHORITATIVE_REGION_REGISTRY.items():
+        assert evidence.region_key == key
+        assert evidence.source_url.startswith("http")
+        assert evidence.evidence_type != ""
+        assert evidence.verification_date != ""
+        assert len(evidence.covered_plzs) > 0
+        for plz in evidence.covered_plzs:
+            assert len(plz) == 5 and plz.isdigit()
+        assert evidence.limitations != ""
+
+    # 2. Unsupported / non-audited mappings (like old synthetic city center keys) must fail closed
+    unsupported_keys = ["muenchen_zentrum", "koeln_innenstadt", "hamburg_mitte", "frankfurt_innenstadt"]
+    for unverified_key in unsupported_keys:
+        assert unverified_key not in AUTHORITATIVE_REGION_REGISTRY
+        assert unverified_key not in AUTHORITATIVE_REGION_COVERAGE_MAP
+
+        # Must fail closed if presented in verification
+        v, method, reason, reg_id = verify_marktguru_regional_applicability(
+            "80331",
+            {"regionId": unverified_key},
+            {},
+        )
+        assert v is False
+        assert method == "marktguru_unverified_flyer"
+
+    # For muenchen_zentrum in 80331 (same city name heuristic, but unmapped):
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "80331",
+        {"regionId": "muenchen_zentrum"},
+        {},
+    )
+    assert v is False
+    assert method == "marktguru_unverified_flyer"
+    assert "lacks authoritative geographic coverage mapping" in reason
+
+    # 3. Evidence-backed mapping ("berlin_north") succeeds for covered PLZ, fails for uncovered PLZ
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"regionId": "berlin_north"},
+        {},
+    )
+    assert v is True
+    assert method == "marktguru_authoritative_region_mapping"
+
+    v_uncovered, method_uncovered, reason_uncovered, _ = verify_marktguru_regional_applicability(
+        "10178",  # Mitte / Alexanderplatz (not in berlin_north)
+        {"regionId": "berlin_north"},
+        {},
+    )
+    assert v_uncovered is False
+    assert method_uncovered == "marktguru_unverified_flyer"
+    assert "authoritative coverage does not include PLZ 10178" in reason_uncovered
+
+
