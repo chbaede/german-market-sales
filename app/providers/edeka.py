@@ -70,6 +70,7 @@ class EdekaProvider(OfferProvider):
                     store_id=store_id,
                     store_address=store_address,
                     requested_zip=zip_code,
+                    location_verified=True,
                 )
                 if offers:
                     # Select the closest geographical market with valid offers
@@ -92,6 +93,7 @@ class EdekaProvider(OfferProvider):
         store_id: str | None = None,
         store_address: str | None = None,
         requested_zip: str | None = None,
+        location_verified: bool = False,
     ) -> list[Offer]:
         soup = BeautifulSoup(html, "html.parser")
         valid_from, valid_to = _page_validity(soup)
@@ -107,6 +109,7 @@ class EdekaProvider(OfferProvider):
                 store_id=store_id,
                 store_address=store_address,
                 requested_zip=requested_zip,
+                location_verified=location_verified,
             )
             if offer is None:
                 continue
@@ -126,7 +129,10 @@ class EdekaProvider(OfferProvider):
         store_id: str | None = None,
         store_address: str | None = None,
         requested_zip: str | None = None,
+        location_verified: bool = False,
     ) -> Offer | None:
+        from app.services.location import get_coordinates_for_plz, haversine_distance_km
+
         dialog_id = dialog.get("id", "")
         source_key = dialog_id.removeprefix("dialog-angebot-")
         title = _title(dialog)
@@ -142,12 +148,38 @@ class EdekaProvider(OfferProvider):
         description = _description(dialog, price_note, market_name)
         valid_from = _valid_from(dialog) or fallback_from
 
-        has_store_identity = bool(store_id and (market_name or store_address))
-        if has_store_identity:
+        clean_store_id = str(store_id).strip() if store_id is not None else ""
+        has_store_identity = bool(clean_store_id and (market_name or store_address))
+
+        clean_zip = (requested_zip or "").strip()
+        user_coords = get_coordinates_for_plz(clean_zip) if len(clean_zip) == 5 and clean_zip.isdigit() else None
+        address_verified = False
+        address_conflict = False
+        if user_coords and store_address:
+            m_plz = re.search(r"\b(\d{5})\b", store_address)
+            if m_plz:
+                addr_plz = m_plz.group(1)
+                if addr_plz == clean_zip:
+                    address_verified = True
+                else:
+                    addr_coords = get_coordinates_for_plz(addr_plz)
+                    if addr_coords and haversine_distance_km(user_coords[0], user_coords[1], addr_coords[0], addr_coords[1]) <= MAX_STORE_DISTANCE_KM:
+                        address_verified = True
+                    else:
+                        address_conflict = True
+
+        has_location_evidence = bool(user_coords and not address_conflict and (location_verified or address_verified))
+
+        if has_store_identity and has_location_evidence:
             scope_type = "store"
             region_verified = True
             verification_method = "store_direct_api"
-            verification_reason = f"Official EDEKA store endpoint for market {store_id}"
+            verification_reason = f"Official EDEKA store endpoint for market {clean_store_id} verified for PLZ {clean_zip}"
+        elif has_store_identity:
+            scope_type = "store"
+            region_verified = False
+            verification_method = "unverified_store_location"
+            verification_reason = f"EDEKA store {clean_store_id} lacks verified geographic location evidence for requested PLZ"
         else:
             scope_type = "unknown"
             region_verified = False
@@ -174,7 +206,7 @@ class EdekaProvider(OfferProvider):
             source_url=source_url,
             requested_zip_code=requested_zip,
             scope_type=scope_type,
-            store_id=store_id,
+            store_id=clean_store_id or None,
             store_name=market_name,
             store_address=store_address,
             source_provider="edeka-official",

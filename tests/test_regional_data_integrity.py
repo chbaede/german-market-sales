@@ -165,8 +165,11 @@ def test_price_history_regional_atl_separation():
             source_url="https://edeka.de",
             requested_zip_code="10115",
             scope_type="store",
+            store_id="edeka_berlin_1",
             store_name="EDEKA Berlin",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
 
         # Record offer for Barilla in Munich 80331 at 0.79 EUR (cheaper in Munich)
@@ -190,8 +193,11 @@ def test_price_history_regional_atl_separation():
             source_url="https://edeka.de",
             requested_zip_code="80331",
             scope_type="store",
+            store_id="edeka_munich_1",
             store_name="EDEKA Munich",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
 
         service.record_offers([offer_berlin], zip_code="10115", recorded_at="2026-05-25T10:00:00")

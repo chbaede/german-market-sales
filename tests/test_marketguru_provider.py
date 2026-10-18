@@ -71,39 +71,89 @@ def test_aldi_sued_preserves_requested_zip_without_rewriting_to_80331(monkeypatc
 def test_marktguru_regional_verification_mappings():
     from app.providers.marktguru import verify_marktguru_regional_applicability
 
-    # 1. Valid authoritative coverage:
-    # A. Explicit source postalCodes match
+    # 1. Valid authoritative campaign coverage:
+    # A. Explicit validZipCodes + confirmed promotional campaign scope + flyer ID
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
-        {"postalCodes": ["10115", "10117"], "regionId": 10},
+        {
+            "id": 888,
+            "validZipCodes": ["10115", "10117"],
+            "coverageScope": "promotional_campaign",
+            "regionId": 10,
+        },
         {},
     )
     assert v is True
     assert method == "marktguru_regional_flyer_postal_match"
     assert reg_id == "10"
 
-    # B. Documented authoritative region mapping ("berlin_north" covers 10115)
+    # B. Explicit campaignDistribution manifest with confirmed applicability and validZipCodes
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {
+            "id": 889,
+            "campaignDistribution": {
+                "campaignId": "camp-889",
+                "scope": "promotional_campaign",
+                "validZipCodes": ["10115", "10117"],
+            },
+        },
+        {},
+    )
+    assert v is True
+    assert method == "marktguru_regional_flyer_postal_match"
+    assert reg_id == "flyer:889"
+
+    # 2. Generic postal-code metadata without confirmed campaign applicability -> diagnostic match ONLY (region_verified=False)
+    for field_name in ("postalCodes", "zipCodes", "coveragePostalCodes", "validZipCodes"):
+        v, method, reason, reg_id = verify_marktguru_regional_applicability(
+            "10115",
+            {"id": 900, field_name: ["10115", "10117"], "regionId": 10},
+            {},
+        )
+        assert v is False
+        assert method == "marktguru_diagnostic_region_match"
+        assert reg_id == "10"
+        assert "Diagnostic PLZ match" in reason
+
+    # Nested region.postalCodes also treated as diagnostic only
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"id": 901, "region": {"id": "r10", "postalCodes": ["10115"]}},
+        {},
+    )
+    assert v is False
+    assert method == "marktguru_diagnostic_region_match"
+    assert reg_id == "r10"
+
+    # 3. Unsupported "berlin_north" mapping removed -> fails closed with region_verified=False
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
         {"regionId": "berlin_north"},
         {},
     )
-    assert v is True
-    assert method == "marktguru_authoritative_region_mapping"
+    assert v is False
+    assert method == "marktguru_unverified_flyer"
     assert reg_id == "berlin_north"
+    assert "lacks authoritative geographic coverage mapping" in reason
 
-    # 2. Nearby-but-uncovered PLZs fail closed:
-    # A. Flyer covers 10115 and 10117; user is in neighboring 10119 in Berlin Mitte (~1-2km away)
+    # 4. Nearby-but-uncovered PLZs fail closed:
+    # A. Confirmed campaign flyer covers 10115 and 10117; user is in neighboring 10119
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10119",
-        {"postalCodes": ["10115", "10117"], "regionId": 10},
+        {
+            "id": 888,
+            "validZipCodes": ["10115", "10117"],
+            "coverageScope": "promotional_campaign",
+            "regionId": 10,
+        },
         {},
     )
     assert v is False
     assert method == "marktguru_unverified_flyer"
     assert "postal codes do not cover" in reason
 
-    # B. Flyer has coordinates nearby (e.g. 1.5km away) but lacks postal codes and authoritative mapping
+    # B. Flyer has coordinates nearby (e.g. 1.5km away) but lacks confirmed campaign coverage
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
         {"coordinates": {"lat": 52.53, "lon": 13.38}, "id": 555},
@@ -112,8 +162,7 @@ def test_marktguru_regional_verification_mappings():
     assert v is False
     assert method == "marktguru_unverified_flyer"
 
-    # 3. Misleading city names and prefix heuristics fail closed:
-    # A. City name "Berlin Special Promo" or "Berlin Mitte" without explicit postal codes
+    # 5. Misleading city names and prefix heuristics fail closed:
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
         {"regionName": "Berlin Special Promo"},
@@ -122,7 +171,6 @@ def test_marktguru_regional_verification_mappings():
     assert v is False
     assert method == "marktguru_unverified_flyer"
 
-    # B. Two-digit PLZ prefix heuristic ("10") without full 5-digit coverage
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
         {"region": {"plzPrefixes": ["10", "12"]}},
@@ -131,8 +179,7 @@ def test_marktguru_regional_verification_mappings():
     assert v is False
     assert method == "marktguru_unverified_flyer"
 
-    # 4. Mismatched regions:
-    # A. Leaflet postalCodes do not cover requested PLZ (Munich leaflet for Berlin user)
+    # 6. Mismatched regions:
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
         {"postalCodes": ["80331", "80333"], "regionId": "munich_central"},
@@ -142,7 +189,6 @@ def test_marktguru_regional_verification_mappings():
     assert method == "marktguru_unverified_flyer"
     assert "postal codes do not cover" in reason
 
-    # B. Leaflet region name/id explicitly for another city (Munich region for Berlin user)
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
         {"regionId": "munich_south", "regionName": "München Süd"},
@@ -152,8 +198,7 @@ def test_marktguru_regional_verification_mappings():
     assert method == "marktguru_unverified_flyer"
     assert "mismatches requested PLZ" in reason
 
-    # 5. Missing mapping metadata:
-    # Arbitrary regionId exists, but no postal codes, no coordinates, no mapping table entry
+    # 7. Missing mapping metadata:
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
         {"regionId": 42},
@@ -164,7 +209,6 @@ def test_marktguru_regional_verification_mappings():
     assert reg_id == "42"
     assert "lacks authoritative geographic coverage mapping" in reason
 
-    # Leaflet with only an arbitrary ID and no geographic metadata
     v, method, reason, reg_id = verify_marktguru_regional_applicability(
         "10115",
         {"id": 9999},
@@ -174,66 +218,110 @@ def test_marktguru_regional_verification_mappings():
     assert method == "marktguru_unverified_flyer"
 
 
-def test_audited_regional_coverage_registry_traceability():
+def test_audited_regional_coverage_registry_traceability(tmp_path, monkeypatch):
     from app.providers.marktguru import (
         AUTHORITATIVE_REGION_REGISTRY,
         AUTHORITATIVE_REGION_COVERAGE_MAP,
+        RegionalCoverageEvidence,
+        validate_regional_coverage_evidence,
         verify_marktguru_regional_applicability,
     )
 
-    # 1. All registered regions must have traceable evidence metadata
-    assert len(AUTHORITATIVE_REGION_REGISTRY) > 0
-    for key, evidence in AUTHORITATIVE_REGION_REGISTRY.items():
-        assert evidence.region_key == key
-        assert evidence.source_url.startswith("http")
-        assert evidence.evidence_type != ""
-        assert evidence.verification_date != ""
-        assert len(evidence.covered_plzs) > 0
-        for plz in evidence.covered_plzs:
-            assert len(plz) == 5 and plz.isdigit()
-        assert evidence.limitations != ""
+    # 1. Default registry is empty because no external Marktguru distribution-zone API
+    #    endpoint is backed by accessible local manifest artifacts in the repo.
+    #    Specifically, "berlin_north" must NOT be registered.
+    assert "berlin_north" not in AUTHORITATIVE_REGION_REGISTRY
+    assert "berlin_north" not in AUTHORITATIVE_REGION_COVERAGE_MAP
 
-    # 2. Unsupported / non-audited mappings (like old synthetic city center keys) must fail closed
-    unsupported_keys = ["muenchen_zentrum", "koeln_innenstadt", "hamburg_mitte", "frankfurt_innenstadt"]
+    # 2. Unsupported keys fail closed
+    unsupported_keys = [
+        "berlin_north",
+        "muenchen_zentrum",
+        "koeln_innenstadt",
+        "hamburg_mitte",
+        "frankfurt_innenstadt",
+    ]
     for unverified_key in unsupported_keys:
         assert unverified_key not in AUTHORITATIVE_REGION_REGISTRY
-        assert unverified_key not in AUTHORITATIVE_REGION_COVERAGE_MAP
-
-        # Must fail closed if presented in verification
-        v, method, reason, reg_id = verify_marktguru_regional_applicability(
-            "80331",
+        v, method, reason, _ = verify_marktguru_regional_applicability(
+            "10115",
             {"regionId": unverified_key},
             {},
         )
         assert v is False
         assert method == "marktguru_unverified_flyer"
 
-    # For muenchen_zentrum in 80331 (same city name heuristic, but unmapped):
-    v, method, reason, reg_id = verify_marktguru_regional_applicability(
-        "80331",
-        {"regionId": "muenchen_zentrum"},
+    # 3. Registry entry with a plausible URL but missing local artifact file MUST fail validation
+    missing_artifact_ev = RegionalCoverageEvidence(
+        region_key="test_zone_missing_file",
+        covered_plzs=frozenset({"10115", "10117"}),
+        source_url="https://api.marktguru.de/api/v1/distribution-zones/fake",
+        evidence_type="verified_campaign_distribution_manifest",
+        verification_date="2026-06-01",
+        limitations="Missing artifact file",
+        evidence_artifact_path=str(tmp_path / "nonexistent_manifest.json"),
+        promotional_applicability_confirmed=True,
+    )
+    ok, err = validate_regional_coverage_evidence(missing_artifact_ev)
+    assert ok is False
+    assert "does not exist" in err
+
+    monkeypatch.setitem(AUTHORITATIVE_REGION_REGISTRY, "test_zone_missing_file", missing_artifact_ev)
+    v, method, reason, _ = verify_marktguru_regional_applicability(
+        "10115",
+        {"regionId": "test_zone_missing_file"},
         {},
     )
     assert v is False
     assert method == "marktguru_unverified_flyer"
-    assert "lacks authoritative geographic coverage mapping" in reason
+    assert "mapping rejected because evidence is invalid" in reason
 
-    # 3. Evidence-backed mapping ("berlin_north") succeeds for covered PLZ, fails for uncovered PLZ
-    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+    # 4. Registry entry with an existing, valid manifest artifact succeeds for covered PLZ and fails for uncovered PLZ
+    manifest_file = tmp_path / "valid_manifest.json"
+    manifest_file.write_text(
+        json.dumps(
+            {
+                "region_key": "verified_test_zone",
+                "source_url": "https://www.marktguru.de/r/edeka",
+                "campaign_id": "camp-verified-100",
+                "scope_meaning": "promotional_campaign_applicability",
+                "covered_plzs": ["10115", "10117"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    valid_ev = RegionalCoverageEvidence(
+        region_key="verified_test_zone",
+        covered_plzs=frozenset({"10115", "10117"}),
+        source_url="https://www.marktguru.de/r/edeka",
+        evidence_type="verified_campaign_distribution_manifest",
+        verification_date="2026-06-01",
+        limitations="Applies only to campaign camp-verified-100",
+        evidence_artifact_path=str(manifest_file),
+        promotional_applicability_confirmed=True,
+    )
+    ok_valid, err_valid = validate_regional_coverage_evidence(valid_ev)
+    assert ok_valid is True
+    assert err_valid == "Verified promotional campaign distribution manifest"
+
+    monkeypatch.setitem(AUTHORITATIVE_REGION_REGISTRY, "verified_test_zone", valid_ev)
+    v_cov, method_cov, _, reg_id_cov = verify_marktguru_regional_applicability(
         "10115",
-        {"regionId": "berlin_north"},
+        {"regionId": "verified_test_zone"},
         {},
     )
-    assert v is True
-    assert method == "marktguru_authoritative_region_mapping"
+    assert v_cov is True
+    assert method_cov == "marktguru_authoritative_region_mapping"
+    assert reg_id_cov == "verified_test_zone"
 
-    v_uncovered, method_uncovered, reason_uncovered, _ = verify_marktguru_regional_applicability(
-        "10178",  # Mitte / Alexanderplatz (not in berlin_north)
-        {"regionId": "berlin_north"},
+    v_uncov, method_uncov, reason_uncov, _ = verify_marktguru_regional_applicability(
+        "10178",
+        {"regionId": "verified_test_zone"},
         {},
     )
-    assert v_uncovered is False
-    assert method_uncovered == "marktguru_unverified_flyer"
-    assert "authoritative coverage does not include PLZ 10178" in reason_uncovered
+    assert v_uncov is False
+    assert method_uncov == "marktguru_unverified_flyer"
+    assert "authoritative coverage does not include PLZ 10178" in reason_uncov
+
 
 

@@ -43,6 +43,9 @@ def _sample_offer(
         source_url=f"https://example.com/{slug}/{id}",
         scope_type=scope_type,
         region_verified=region_verified,
+        source_provider="marktguru" if region_verified else None,
+        source_region_id="national_flyer:100" if (region_verified and scope_type == "nationwide") else None,
+        verification_method="marktguru_national_flyer" if (region_verified and scope_type == "nationwide") else None,
     )
 
 

@@ -34,60 +34,177 @@ NO_BRAND_NAME = "thisisnobrand123"
 #   3. Therefore, this mapping is restricted to explicitly verified distribution zone keys
 #      with confirmed 5-digit PLZ sets. Any unlisted region or campaign lacking explicit
 #      source-provided postal codes fails closed (region_verified=False).
+from pathlib import Path
+
+
 @dataclass(frozen=True, slots=True)
 class RegionalCoverageEvidence:
     region_key: str
     source_url: str
     evidence_type: str
     verification_date: str
-    covered_plzs: set[str]
+    covered_plzs: set[str] | frozenset[str]
     limitations: str
+    evidence_artifact_path: str | Path | None = None
+    promotional_applicability_confirmed: bool = False
+
+
+def validate_regional_coverage_evidence(
+    evidence: RegionalCoverageEvidence | None,
+) -> tuple[bool, str]:
+    """
+    Validates that a RegionalCoverageEvidence entry is backed by an accessible,
+    verifiable artifact confirming promotional campaign applicability and exact
+    5-digit German PLZ coverage. Plausible URLs, non-empty strings, or generic
+    geographic boundaries alone are rejected.
+    """
+    from app.services.location import get_coordinates_for_plz
+
+    if not isinstance(evidence, RegionalCoverageEvidence):
+        return False, "Missing RegionalCoverageEvidence instance"
+    if not evidence.region_key or not str(evidence.region_key).strip():
+        return False, "Missing region_key"
+    if not evidence.source_url or not str(evidence.source_url).strip().startswith(("http://", "https://")):
+        return False, "Invalid or missing source_url"
+    if not evidence.verification_date or not re.match(r"^\d{4}-\d{2}-\d{2}$", str(evidence.verification_date).strip()):
+        return False, "Invalid or missing verification_date"
+    if not evidence.limitations or not str(evidence.limitations).strip():
+        return False, "Missing limitations documentation"
+    if evidence.promotional_applicability_confirmed is not True:
+        return False, "Promotional campaign applicability is not confirmed (generic geography rejected)"
+    if evidence.evidence_type != "verified_campaign_distribution_manifest":
+        return False, f"Unsupported evidence_type '{evidence.evidence_type}'"
+    if not evidence.covered_plzs:
+        return False, "Empty covered_plzs set"
+
+    normalized_plzs: set[str] = set()
+    for plz in evidence.covered_plzs:
+        s_plz = str(plz).strip()
+        if len(s_plz) != 5 or not s_plz.isdigit() or get_coordinates_for_plz(s_plz) is None:
+            return False, f"Invalid or unrecognized 5-digit German PLZ '{plz}'"
+        normalized_plzs.add(s_plz)
+
+    if not evidence.evidence_artifact_path:
+        return False, "Remote source_url cannot establish coverage without an accessible recorded evidence artifact"
+
+    artifact_path = Path(evidence.evidence_artifact_path)
+    if not artifact_path.is_file():
+        return False, f"Recorded evidence artifact '{artifact_path}' does not exist"
+
+    try:
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"Failed to read recorded evidence artifact: {exc}"
+
+    if not isinstance(artifact, dict):
+        return False, "Recorded evidence artifact must be a JSON object"
+    if str(artifact.get("region_key") or "").strip().casefold() != evidence.region_key.strip().casefold():
+        return False, "Artifact region_key mismatches evidence region_key"
+    if str(artifact.get("source_url") or "").strip() != evidence.source_url.strip():
+        return False, "Artifact source_url mismatches evidence source_url"
+    if artifact.get("scope_meaning") != "promotional_campaign_applicability":
+        return False, "Artifact does not confirm promotional_campaign_applicability"
+    if not str(artifact.get("campaign_id") or "").strip():
+        return False, "Artifact lacks a verifiable campaign_id"
+
+    artifact_plzs_raw = artifact.get("covered_plzs")
+    if not isinstance(artifact_plzs_raw, list) or not artifact_plzs_raw:
+        return False, "Artifact lacks covered_plzs list"
+    artifact_plzs = {str(p).strip() for p in artifact_plzs_raw if p is not None}
+    if artifact_plzs != normalized_plzs:
+        return False, "Artifact covered_plzs does not match claimed covered_plzs"
+
+    return True, "Verified promotional campaign distribution manifest"
 
 
 # ===========================================================================
 # Audited Authoritative Regional Coverage Registry
 #
-# Requirements & Audit Standards:
-#   1. Every mapping MUST provide traceable evidence that the region key represents
-#      an authentic promotional distribution zone and that the listed five-digit
-#      German postal codes (PLZs) are verified.
-#   2. General geographic proximity, city-center assumptions, and two-digit PLZ
-#      wildcard prefixes are strictly REJECTED as proof of promotional applicability.
-#   3. Any mapping lacking traceable source documentation is removed from the
-#      registry, failing closed to region_verified = False.
+# Audit Status:
+#   Marktguru's public API does not expose an authoritative static distribution-zone
+#   manifest mapping region keys (such as 'berlin_north') to verified 5-digit PLZ
+#   promotional coverage. Per fail-closed integrity rules, no unsubstantiated
+#   mappings are registered here. Any entry added in the future MUST pass
+#   `validate_regional_coverage_evidence()` with a recorded manifest artifact.
 # ===========================================================================
-AUTHORITATIVE_REGION_REGISTRY: dict[str, RegionalCoverageEvidence] = {
-    "berlin_north": RegionalCoverageEvidence(
-        region_key="berlin_north",
-        source_url="https://api.marktguru.de/api/v1/distribution-zones/berlin-north",
-        evidence_type="verified_publisher_distribution_manifest",
-        verification_date="2026-10-18",
-        covered_plzs={"10115", "10117", "13347", "13353", "13355", "13357"},
-        limitations="Restricted to documented Northern Berlin promotional distribution sector; subject to weekly campaign flyer adjustments.",
-    ),
+AUTHORITATIVE_REGION_REGISTRY: dict[str, RegionalCoverageEvidence] = {}
+
+# Derived mapping containing only validated registry entries
+AUTHORITATIVE_REGION_COVERAGE_MAP: dict[str, set[str]] = {
+    k: set(v.covered_plzs)
+    for k, v in AUTHORITATIVE_REGION_REGISTRY.items()
+    if validate_regional_coverage_evidence(v)[0]
 }
 
-# Derived mapping for fast lookup in verification pipeline
-AUTHORITATIVE_REGION_COVERAGE_MAP: dict[str, set[str]] = {
-    k: v.covered_plzs for k, v in AUTHORITATIVE_REGION_REGISTRY.items()
-}
+
+def _extract_verified_campaign_plzs(flyer_data: dict, flyer_id: str | None) -> tuple[set[str] | None, str | None]:
+    """
+    Distinguishes verified promotional campaign PLZ applicability from generic
+    geographic / postal metadata (`postalCodes`, `zipCodes`, `coveragePostalCodes`,
+    `region.postalCodes`).
+    Returns (verified_plz_set, rejection_or_match_note).
+    """
+    from app.services.location import get_coordinates_for_plz
+
+    if not flyer_id:
+        return None, "Leaflet lacks campaign/flyer identifier"
+
+    # Check for an explicit campaignDistribution manifest object on the flyer
+    campaign_dist = flyer_data.get("campaignDistribution")
+    raw_valid_zips = None
+    scope_meaning = None
+
+    if isinstance(campaign_dist, dict):
+        scope_meaning = campaign_dist.get("scope") or campaign_dist.get("scopeMeaning")
+        if campaign_dist.get("campaignApplicabilityVerified") is True and not scope_meaning:
+            scope_meaning = "promotional_campaign"
+        raw_valid_zips = campaign_dist.get("validZipCodes")
+    else:
+        scope_meaning = flyer_data.get("coverageScope") or flyer_data.get("postalCodeScope")
+        if flyer_data.get("campaignApplicabilityVerified") is True and not scope_meaning:
+            scope_meaning = "promotional_campaign"
+        raw_valid_zips = flyer_data.get("validZipCodes")
+
+    if raw_valid_zips is None:
+        return None, None
+
+    if scope_meaning != "promotional_campaign":
+        return None, f"validZipCodes scope '{scope_meaning or 'unspecified'}' does not confirm promotional campaign applicability"
+
+    if not isinstance(raw_valid_zips, (list, tuple, set)) or not raw_valid_zips:
+        return None, "validZipCodes is empty or malformed"
+
+    verified_plzs: set[str] = set()
+    for p in raw_valid_zips:
+        s_plz = str(p).strip()
+        if len(s_plz) != 5 or not s_plz.isdigit() or get_coordinates_for_plz(s_plz) is None:
+            return None, f"validZipCodes contains invalid or non-5-digit PLZ '{p}'"
+        verified_plzs.add(s_plz)
+
+    return verified_plzs, None
 
 
 def verify_marktguru_regional_applicability(
     zip_code: str | None,
     flyer_data: dict,
     item: dict,
+    registry: dict[str, RegionalCoverageEvidence] | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """
-    Verifies whether a Marktguru regional leaflet actually covers the requested PLZ.
+    Verifies whether a Marktguru regional leaflet actually covers the requested PLZ
+    for a promotional campaign.
     Evidence rules:
-      1. Explicit source-provided postal code coverage (`postalCodes` / `zipCodes` / `validZipCodes`).
-      2. Documented, authoritative mapping from source region key to verified 5-digit PLZ coverage.
-      3. Fail-closed: Heuristic checks (city name matching, 2-digit prefixes, and coordinate distance)
-         are NOT accepted as proof of coverage and fail closed with region_verified=False.
+      1. Explicit campaign distribution manifest (`validZipCodes` with confirmed
+         `promotional_campaign` scope and valid flyer/campaign ID).
+      2. Registered mapping in `AUTHORITATIVE_REGION_REGISTRY` that passes
+         `validate_regional_coverage_evidence()` with a recorded manifest artifact.
+      3. Generic postal code lists (`postalCodes`, `zipCodes`, `coveragePostalCodes`,
+         `region.postalCodes`, or unconfirmed `validZipCodes`) are treated strictly
+         as diagnostic geographic metadata (`region_verified=False`).
+      4. Heuristics (city names, 2-digit PLZ prefixes, distance thresholds) fail closed.
     Returns: (region_verified, verification_method, verification_reason, source_region_id)
     """
-    from app.services.location import resolve_plz_city
+    from app.services.location import get_coordinates_for_plz, resolve_plz_city
 
     region_data = (
         flyer_data.get("region")
@@ -101,50 +218,106 @@ def verify_marktguru_regional_applicability(
         or region_data.get("regionId")
         or item.get("regionId")
     )
-    source_region_id = str(raw_region_id) if raw_region_id is not None else None
+    source_region_id = str(raw_region_id).strip() if raw_region_id is not None and str(raw_region_id).strip() else None
+    raw_flyer_id = flyer_data.get("id") or flyer_data.get("campaignId") or item.get("flyerId")
+    flyer_id = str(raw_flyer_id).strip() if raw_flyer_id is not None and str(raw_flyer_id).strip() else None
 
-    # 1. Authoritative source-provided postal code coverage
-    flyer_pcs = (
-        flyer_data.get("postalCodes")
-        or flyer_data.get("zipCodes")
-        or flyer_data.get("validZipCodes")
-        or flyer_data.get("coveragePostalCodes")
-        or region_data.get("postalCodes")
-        or region_data.get("zipCodes")
-        or item.get("postalCodes")
-    )
-    if isinstance(flyer_pcs, (list, tuple, set)) and flyer_pcs:
-        pcs = {str(p).strip() for p in flyer_pcs if p}
-        if not zip_code:
-            return False, "marktguru_unverified_flyer", "No PLZ provided to verify leaflet postal coverage", source_region_id
-        if zip_code in pcs:
-            return True, "marktguru_regional_flyer_postal_match", f"Marktguru source leaflet explicitly covers PLZ {zip_code}", source_region_id
-        else:
-            return False, "marktguru_unverified_flyer", f"Marktguru leaflet postal codes do not cover requested PLZ {zip_code}", source_region_id
+    cleaned_zip = (zip_code or "").strip()
+    has_valid_zip = bool(len(cleaned_zip) == 5 and cleaned_zip.isdigit() and get_coordinates_for_plz(cleaned_zip) is not None)
 
-    # 2. Documented authoritative region mapping
+    # 1. Verified promotional campaign PLZ manifest on the leaflet
+    verified_campaign_plzs, campaign_note = _extract_verified_campaign_plzs(flyer_data, flyer_id)
+    if verified_campaign_plzs is not None:
+        eff_region_id = source_region_id or f"flyer:{flyer_id}"
+        if not has_valid_zip:
+            return False, "marktguru_unverified_flyer", "No valid 5-digit PLZ provided to verify leaflet campaign coverage", eff_region_id
+        if cleaned_zip in verified_campaign_plzs:
+            return (
+                True,
+                "marktguru_regional_flyer_postal_match",
+                f"Marktguru promotional campaign leaflet {flyer_id} verified to cover PLZ {cleaned_zip}",
+                eff_region_id,
+            )
+        return (
+            False,
+            "marktguru_unverified_flyer",
+            f"Marktguru promotional campaign leaflet {flyer_id} postal codes do not cover requested PLZ {cleaned_zip}",
+            eff_region_id,
+        )
+
+    # 2. Audited authoritative region registry (requires validated evidence artifact)
     region_name = (
         flyer_data.get("regionName")
         or flyer_data.get("geographicRegionName")
         or region_data.get("name")
         or region_data.get("title")
     )
-    region_key = str(raw_region_id).strip().casefold() if raw_region_id is not None else (
-        str(region_name).strip().casefold() if region_name else None
+    region_key = (
+        str(raw_region_id).strip().casefold()
+        if raw_region_id is not None
+        else (str(region_name).strip().casefold() if region_name else None)
     )
+    active_registry = registry if registry is not None else AUTHORITATIVE_REGION_REGISTRY
 
-    if region_key and region_key in AUTHORITATIVE_REGION_REGISTRY:
-        if not zip_code:
-            return False, "marktguru_unverified_flyer", "No PLZ provided to verify regional mapping", source_region_id
-        evidence = AUTHORITATIVE_REGION_REGISTRY[region_key]
-        if zip_code in evidence.covered_plzs:
-            return True, "marktguru_authoritative_region_mapping", f"Source region '{region_key}' authoritatively mapped to cover PLZ {zip_code}", source_region_id
-        else:
-            return False, "marktguru_unverified_flyer", f"Source region '{region_key}' authoritative coverage does not include PLZ {zip_code}", source_region_id
+    if region_key and region_key in active_registry:
+        evidence = active_registry[region_key]
+        is_valid_ev, ev_reason = validate_regional_coverage_evidence(evidence)
+        eff_region_id = source_region_id or region_key
+        if not is_valid_ev:
+            return (
+                False,
+                "marktguru_unverified_flyer",
+                f"Region '{region_key}' mapping rejected because evidence is invalid: {ev_reason}",
+                eff_region_id,
+            )
+        if not has_valid_zip:
+            return False, "marktguru_unverified_flyer", "No valid 5-digit PLZ provided to verify regional mapping", eff_region_id
+        if cleaned_zip in evidence.covered_plzs:
+            return (
+                True,
+                "marktguru_authoritative_region_mapping",
+                f"Source region '{region_key}' authoritatively mapped via verified manifest to cover PLZ {cleaned_zip}",
+                eff_region_id,
+            )
+        return (
+            False,
+            "marktguru_unverified_flyer",
+            f"Source region '{region_key}' authoritative coverage does not include PLZ {cleaned_zip}",
+            eff_region_id,
+        )
 
-    # 3. Detect mismatched region against requested PLZ for diagnostic clarity
-    if zip_code and (region_name or (raw_region_id and not str(raw_region_id).isdigit())):
-        city_name = resolve_plz_city(zip_code)
+    # 3. Generic / diagnostic postal-code lists (postalCodes, zipCodes, coveragePostalCodes, region.postalCodes, unconfirmed validZipCodes)
+    generic_pcs = (
+        flyer_data.get("postalCodes")
+        or flyer_data.get("zipCodes")
+        or flyer_data.get("coveragePostalCodes")
+        or flyer_data.get("validZipCodes")
+        or region_data.get("postalCodes")
+        or region_data.get("zipCodes")
+        or item.get("postalCodes")
+    )
+    if isinstance(generic_pcs, (list, tuple, set)) and generic_pcs:
+        pcs = {str(p).strip() for p in generic_pcs if p}
+        if not has_valid_zip:
+            return False, "marktguru_unverified_flyer", "No valid PLZ provided to check leaflet postal metadata", source_region_id
+        if cleaned_zip in pcs:
+            detail = f" ({campaign_note})" if campaign_note else ""
+            return (
+                False,
+                "marktguru_diagnostic_region_match",
+                f"Diagnostic PLZ match for {cleaned_zip} in generic postal metadata; promotional campaign applicability is not verified{detail}",
+                source_region_id,
+            )
+        return (
+            False,
+            "marktguru_unverified_flyer",
+            f"Marktguru leaflet postal codes do not cover requested PLZ {cleaned_zip}",
+            source_region_id,
+        )
+
+    # 4. Detect mismatched region against requested PLZ for diagnostic clarity
+    if cleaned_zip and (region_name or (raw_region_id and not str(raw_region_id).isdigit())):
+        city_name = resolve_plz_city(cleaned_zip)
         norm_city = city_name.strip().casefold().replace("ü", "ue").replace("ö", "oe").replace("ä", "ae").replace("ß", "ss")
         norm_r = str(region_name or raw_region_id).strip().casefold().replace("ü", "ue").replace("ö", "oe").replace("ä", "ae").replace("ß", "ss")
         known_cities = (
@@ -152,10 +325,9 @@ def verify_marktguru_regional_applicability(
             "frankfurt", "stuttgart", "duesseldorf", "dortmund", "essen", "leipzig", "dresden"
         )
         if any(k in norm_r for k in known_cities) and (not norm_city or norm_city not in norm_r):
-            return False, "marktguru_unverified_flyer", f"Marktguru region '{region_name or raw_region_id}' mismatches requested PLZ {zip_code} ({city_name})", source_region_id
+            return False, "marktguru_unverified_flyer", f"Marktguru region '{region_name or raw_region_id}' mismatches requested PLZ {cleaned_zip} ({city_name})", source_region_id
 
-    # 4. Fail-closed: Heuristics rejected & missing authoritative mapping
-    # (Distance threshold, city name matching, and 2-digit prefixes are rejected as proof of coverage)
+    # 5. Fail-closed: Heuristics rejected & missing authoritative mapping
     if raw_region_id is not None:
         return False, "marktguru_unverified_flyer", f"Marktguru regional leaflet '{raw_region_id}' lacks authoritative geographic coverage mapping for PLZ {zip_code}", source_region_id
 
@@ -293,6 +465,10 @@ class MarktguruProvider(OfferProvider):
         verification_method = "unknown_scope"
         verification_reason = "No geographic scope could be established"
 
+        effective_retailer_slug = (retailer.get("uniqueName") or retailer_slug or "").strip().lower()
+        clean_zip = (zip_code or "").strip()
+        user_coords = get_coordinates_for_plz(clean_zip) if len(clean_zip) == 5 and clean_zip.isdigit() else None
+
         # Check if item or flyer explicitly defines national scope
         is_national = (
             flyer_data.get("isNational") is True
@@ -302,9 +478,25 @@ class MarktguruProvider(OfferProvider):
             or flyer_data.get("scope") == "national"
             or item.get("scope") == "national"
         )
+        has_regional_restriction = any(
+            bool(d.get(k))
+            for d in (flyer_data, item)
+            if isinstance(d, dict)
+            for k in (
+                "regionId",
+                "region",
+                "regionName",
+                "postalCodes",
+                "zipCodes",
+                "validZipCodes",
+                "coveragePostalCodes",
+                "plzList",
+                "campaignDistribution",
+            )
+        )
 
-        if branch_id:
-            store_id = str(branch_id)
+        if branch_id is not None and str(branch_id).strip() != "":
+            store_id = str(branch_id).strip()
             scope_type = "store"
 
             # Verify branch against requested zip_code
@@ -315,32 +507,57 @@ class MarktguruProvider(OfferProvider):
             lon = coords.get("lon") or branch_data.get("longitude")
 
             matched_geo = False
-            if zip_code:
-                if branch_pc and branch_pc == zip_code:
+            pc_conflict = False
+            if user_coords and branch_pc:
+                if branch_pc == clean_zip:
                     matched_geo = True
-                elif isinstance(branch_dist, (int, float)) and 0 <= float(branch_dist) <= 60.0:
+                elif len(branch_pc) == 5 and branch_pc.isdigit():
+                    b_coords = get_coordinates_for_plz(branch_pc)
+                    if b_coords and haversine_distance_km(user_coords[0], user_coords[1], b_coords[0], b_coords[1]) <= 60.0:
+                        matched_geo = True
+                    else:
+                        pc_conflict = True
+                else:
+                    pc_conflict = True
+
+            if user_coords and not matched_geo and not pc_conflict:
+                if isinstance(branch_dist, (int, float)) and not isinstance(branch_dist, bool) and 0 <= float(branch_dist) <= 60.0:
                     matched_geo = True
                 elif is_valid_coordinates(lat, lon):
-                    user_coords = get_coordinates_for_plz(zip_code)
-                    if user_coords and haversine_distance_km(user_coords[0], user_coords[1], lat, lon) <= 60.0:
+                    if haversine_distance_km(user_coords[0], user_coords[1], lat, lon) <= 60.0:
                         matched_geo = True
 
             if matched_geo:
                 region_verified = True
                 verification_method = "marktguru_store_branch_verified"
-                verification_reason = f"Marktguru branch {branch_id} geographically verified for PLZ {zip_code}"
+                verification_reason = f"Marktguru branch {store_id} geographically verified for PLZ {clean_zip}"
             else:
                 region_verified = False
                 verification_method = "marktguru_unverified_branch"
-                verification_reason = f"Marktguru branch {branch_id} lacks geographic verification for PLZ {zip_code}"
+                verification_reason = f"Marktguru branch {store_id} lacks geographic verification for PLZ {zip_code}"
 
         elif is_national:
-            scope_type = "nationwide"
-            region_verified = True
-            verification_method = "marktguru_national_flyer"
-            verification_reason = "Marktguru leaflet explicitly marked as national"
+            clean_flyer_id = str(flyer_id).strip() if flyer_id is not None else ""
+            is_territory_split_retailer = effective_retailer_slug in {"aldi", "aldi-nord", "aldi-sued"}
+            if clean_flyer_id and not has_regional_restriction and not is_territory_split_retailer:
+                scope_type = "nationwide"
+                source_region_id = f"national_flyer:{clean_flyer_id}"
+                region_verified = True
+                verification_method = "marktguru_national_flyer"
+                verification_reason = f"Marktguru leaflet {clean_flyer_id} explicitly marked as national with no regional restrictions"
+            else:
+                scope_type = "nationwide"
+                source_region_id = f"national_flyer:{clean_flyer_id}" if clean_flyer_id else None
+                region_verified = False
+                verification_method = "marktguru_unverified_national"
+                if not clean_flyer_id:
+                    verification_reason = "Marktguru national claim lacks a traceable flyerId"
+                elif has_regional_restriction:
+                    verification_reason = f"Marktguru flyer {clean_flyer_id} claims national scope but contains contradictory regional restrictions"
+                else:
+                    verification_reason = f"Retailer '{effective_retailer_slug}' is territory-split and cannot be verified as nationwide without regional proof"
 
-        elif flyer_id or flyer_data:
+        elif flyer_id or flyer_data or has_regional_restriction:
             scope_type = "region"
             region_verified, verification_method, verification_reason, source_region_id = verify_marktguru_regional_applicability(
                 zip_code, flyer_data, item

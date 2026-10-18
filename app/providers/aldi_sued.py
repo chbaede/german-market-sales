@@ -87,13 +87,16 @@ class AldiSuedProvider(OfferProvider):
 
     @classmethod
     def _extract_date_urls(cls, html: str) -> list[str]:
-        matches = re.findall(r'href=["\']((?:/de)?/angebote/\d{4}-\d{2}-\d{2})["\']', html)
+        matches = re.findall(
+            r'href=["\']((?:/de)?/angebote/\d{4}-\d{2}-\d{2}|(?:/de)?/produkte/wochenangebote/[^"\'?#]+)["\']',
+            html,
+        )
         seen: list[str] = []
         for path in matches:
             full_url = urljoin(ALDI_SUED_BASE_URL, path)
             if full_url not in seen:
                 seen.append(full_url)
-        return seen[:8]
+        return seen[:12]
 
     @classmethod
     def offers_from_html(

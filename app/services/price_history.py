@@ -102,6 +102,235 @@ def normalize_product_key(title: str, brand: str | None = None) -> str:
     return base
 
 
+VERIFIED_METHODS_BY_SCOPE: dict[str, frozenset[str]] = {
+    "store": frozenset(
+        {
+            "store_direct_api",
+            "store_cookie_session",
+            "marktguru_store_branch_verified",
+        }
+    ),
+    "region": frozenset(
+        {
+            "marktguru_regional_flyer_postal_match",
+            "marktguru_authoritative_region_mapping",
+        }
+    ),
+    "nationwide": frozenset(
+        {
+            "marktguru_national_flyer",
+            "verified_nationwide_campaign",
+        }
+    ),
+}
+
+TERRITORY_SPLIT_RETAILERS: frozenset[str] = frozenset({"aldi", "aldi-nord", "aldi-sued"})
+
+_VERIFIED_STORE_SQL = (
+    "scope_type = 'store' AND region_verified = 1 "
+    "AND store_id IS NOT NULL AND TRIM(store_id) != '' "
+    "AND zip_code IS NOT NULL AND LENGTH(TRIM(zip_code)) = 5 "
+    "AND verification_method IN ('store_direct_api', 'store_cookie_session', 'marktguru_store_branch_verified')"
+)
+_VERIFIED_REGION_SQL = (
+    "scope_type = 'region' AND region_verified = 1 "
+    "AND source_region_id IS NOT NULL AND TRIM(source_region_id) != '' "
+    "AND LOWER(source_region_id) NOT LIKE '%territory%' "
+    "AND zip_code IS NOT NULL AND LENGTH(TRIM(zip_code)) = 5 "
+    "AND verification_method IN ('marktguru_regional_flyer_postal_match', 'marktguru_authoritative_region_mapping')"
+)
+_VERIFIED_NATIONWIDE_SQL = (
+    "scope_type = 'nationwide' AND region_verified = 1 "
+    "AND source_region_id IS NOT NULL "
+    "AND (source_region_id LIKE 'national_flyer:%' OR source_region_id LIKE 'national_campaign:%') "
+    "AND source_provider IS NOT NULL AND TRIM(source_provider) != '' "
+    "AND LOWER(retailer_slug) NOT IN ('aldi', 'aldi-nord', 'aldi-sued') "
+    "AND verification_method IN ('marktguru_national_flyer', 'verified_nationwide_campaign')"
+)
+
+
+def validate_observation_provenance(
+    *,
+    scope_type: str | None,
+    region_verified: bool | int | None,
+    verification_method: str | None,
+    store_id: str | None = None,
+    store_name: str | None = None,
+    store_address: str | None = None,
+    source_region_id: str | None = None,
+    source_provider: str | None = None,
+    source_url: str | None = None,
+    zip_code: str | None = None,
+    retailer_slug: str | None = None,
+) -> tuple[bool, str, str]:
+    """
+    Validates whether an offer or historical price observation has complete,
+    non-contradictory, allowlisted provenance for its claimed scope_type.
+
+    Returns (is_verified, normalized_verification_method, reason).
+    """
+    from app.services.location import get_coordinates_for_plz, haversine_distance_km
+
+    raw_method = (verification_method or "").strip()
+    if not bool(region_verified):
+        return (False, raw_method or "unverified", "Observation is not marked verified")
+
+    scope = (scope_type or "").strip()
+    if scope not in VERIFIED_METHODS_BY_SCOPE:
+        return (
+            False,
+            f"demoted_invalid_scope:{raw_method or 'missing'}",
+            f"Scope '{scope}' cannot be verified",
+        )
+
+    if not raw_method or raw_method not in VERIFIED_METHODS_BY_SCOPE[scope]:
+        return (
+            False,
+            f"demoted_unrecognized_method:{raw_method or 'missing'}",
+            f"Verification method '{raw_method}' is not in the allowlist for scope '{scope}'",
+        )
+
+    clean_url = (source_url or "").strip()
+    if not clean_url or not (clean_url.startswith("http://") or clean_url.startswith("https://")):
+        return (
+            False,
+            "demoted_missing_source_url",
+            "Verified observation requires a valid HTTP(S) source_url",
+        )
+
+    clean_provider = (source_provider or "").strip().lower()
+    clean_retailer = (retailer_slug or "").strip().lower()
+
+    if scope == "store":
+        clean_store_id = (store_id or "").strip()
+        if not clean_store_id:
+            return (
+                False,
+                "demoted_missing_store_id",
+                "Store-scoped verification requires a non-empty store_id",
+            )
+
+        clean_zip = (zip_code or "").strip()
+        user_coords = get_coordinates_for_plz(clean_zip) if len(clean_zip) == 5 and clean_zip.isdigit() else None
+        if not user_coords:
+            return (
+                False,
+                "demoted_missing_location_evidence",
+                f"Store-scoped verification requires a valid 5-digit German PLZ with coordinates (got '{clean_zip}')",
+            )
+
+        if store_address:
+            m_plz = re.search(r"\b(\d{5})\b", store_address)
+            if m_plz:
+                addr_plz = m_plz.group(1)
+                if addr_plz != clean_zip:
+                    addr_coords = get_coordinates_for_plz(addr_plz)
+                    if (
+                        not addr_coords
+                        or haversine_distance_km(user_coords[0], user_coords[1], addr_coords[0], addr_coords[1]) > 60.0
+                    ):
+                        return (
+                            False,
+                            "demoted_conflicting_store_address",
+                            f"Store address PLZ {addr_plz} conflicts with requested PLZ {clean_zip}",
+                        )
+
+        if raw_method == "marktguru_store_branch_verified" and clean_provider and clean_provider != "marktguru":
+            return (
+                False,
+                "demoted_inconsistent_provider",
+                f"Inconsistent source_provider '{clean_provider}' for marktguru_store_branch_verified",
+            )
+        if raw_method in ("store_direct_api", "store_cookie_session") and clean_provider == "marktguru":
+            return (
+                False,
+                "demoted_inconsistent_provider",
+                f"Inconsistent source_provider '{clean_provider}' for {raw_method}",
+            )
+
+        return (True, raw_method, f"Verified store observation for store {clean_store_id} at PLZ {clean_zip}")
+
+    if scope == "region":
+        clean_reg_id = (source_region_id or "").strip()
+        if not clean_reg_id:
+            return (
+                False,
+                "demoted_missing_region_id",
+                "Regional verification requires a non-empty source_region_id",
+            )
+        if "territory" in clean_reg_id.lower():
+            return (
+                False,
+                "demoted_territory_not_regional_proof",
+                f"Retailer territory '{clean_reg_id}' is not offer-level regional proof",
+            )
+
+        clean_zip = (zip_code or "").strip()
+        user_coords = get_coordinates_for_plz(clean_zip) if len(clean_zip) == 5 and clean_zip.isdigit() else None
+        if not user_coords:
+            return (
+                False,
+                "demoted_missing_location_evidence",
+                f"Regional verification requires a valid 5-digit German PLZ with coordinates (got '{clean_zip}')",
+            )
+
+        if raw_method == "marktguru_authoritative_region_mapping":
+            from app.providers.marktguru import AUTHORITATIVE_REGION_REGISTRY, validate_regional_coverage_evidence
+
+            evidence = AUTHORITATIVE_REGION_REGISTRY.get(clean_reg_id.lower())
+            if (
+                not evidence
+                or not validate_regional_coverage_evidence(evidence)[0]
+                or clean_zip not in evidence.covered_plzs
+            ):
+                return (
+                    False,
+                    "demoted_unsubstantiated_region_mapping",
+                    f"Region '{clean_reg_id}' lacks valid authoritative coverage evidence for PLZ {clean_zip}",
+                )
+
+        return (True, raw_method, f"Verified regional observation for region {clean_reg_id} at PLZ {clean_zip}")
+
+    if scope == "nationwide":
+        if clean_retailer in TERRITORY_SPLIT_RETAILERS:
+            return (
+                False,
+                "demoted_territory_split_nationwide",
+                f"Retailer '{clean_retailer}' is territory-split and cannot be verified as nationwide",
+            )
+
+        clean_reg_id = (source_region_id or "").strip()
+        has_valid_campaign_id = False
+        for prefix in ("national_flyer:", "national_campaign:"):
+            if clean_reg_id.startswith(prefix) and len(clean_reg_id[len(prefix) :].strip()) > 0:
+                has_valid_campaign_id = True
+                break
+        if not has_valid_campaign_id:
+            return (
+                False,
+                "demoted_missing_nationwide_campaign_id",
+                "Nationwide verification requires source_region_id with 'national_flyer:<id>' or 'national_campaign:<id>'",
+            )
+
+        if not clean_provider:
+            return (
+                False,
+                "demoted_missing_source_provider",
+                "Nationwide verification requires a non-empty source_provider",
+            )
+
+        if raw_method == "marktguru_national_flyer" and clean_provider != "marktguru":
+            return (
+                False,
+                "demoted_inconsistent_provider",
+                f"Inconsistent source_provider '{clean_provider}' for marktguru_national_flyer",
+            )
+
+        return (True, raw_method, f"Verified nationwide observation ({clean_reg_id})")
+
+    return (False, "demoted_unknown_scope", "Unrecognized scope")
+
+
 def get_geographic_identity(offer: Offer, fallback_zip: str) -> tuple[str, str, str]:
     """
     Returns (scope_type, geo_id, effective_zip) ensuring consistent identity per scope:
@@ -188,38 +417,71 @@ class PriceHistoryService:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_retailer ON price_history(retailer_slug)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_zip ON price_history(zip_code)")
 
-            # Audit & revalidate historical records lacking trustworthy provenance
-            # 1. Any record claiming region_verified = 1 without a trustworthy verification_method
-            #    or missing store_id for store scope must be demoted to region_verified = 0.
-            conn.execute(
+            self._revalidate_historical_records_conn(conn)
+            conn.commit()
+
+    def revalidate_historical_records(self) -> int:
+        """
+        Idempotently audits all historical rows in price_history against the
+        strict provenance allowlist and demotes any unsubstantiated records to
+        region_verified = 0 without deleting raw rows. Returns number of demoted rows.
+        """
+        with self._get_connection() as conn:
+            demoted = self._revalidate_historical_records_conn(conn)
+            conn.commit()
+            if demoted > 0:
+                self._atl_cache = None
+            return demoted
+
+    @staticmethod
+    def _revalidate_historical_records_conn(conn: sqlite3.Connection) -> int:
+        rows = conn.execute(
+            """
+            SELECT id, scope_type, region_verified, verification_method,
+                   store_id, store_name, source_region_id, source_provider,
+                   source_url, zip_code, retailer_slug
+            FROM price_history
+            WHERE region_verified = 1
+            """
+        ).fetchall()
+
+        updates: list[tuple[str, int]] = []
+        for row in rows:
+            is_valid, norm_method, _ = validate_observation_provenance(
+                scope_type=row["scope_type"],
+                region_verified=row["region_verified"],
+                verification_method=row["verification_method"],
+                store_id=row["store_id"],
+                store_name=row["store_name"],
+                source_region_id=row["source_region_id"],
+                source_provider=row["source_provider"],
+                source_url=row["source_url"],
+                zip_code=row["zip_code"],
+                retailer_slug=row["retailer_slug"],
+            )
+            if not is_valid:
+                updates.append((norm_method, row["id"]))
+
+        if updates:
+            conn.executemany(
                 """
                 UPDATE price_history
                 SET region_verified = 0,
-                    verification_method = COALESCE(verification_method, 'unverified_legacy_unsubstantiated')
-                WHERE region_verified = 1
-                  AND (
-                      verification_method IS NULL
-                      OR verification_method = ''
-                      OR verification_method = 'legacy_unverified'
-                      OR (scope_type = 'store' AND (store_id IS NULL OR store_id = '') AND (store_name IS NULL OR store_name = ''))
-                  )
-                """
+                    verification_method = ?
+                WHERE id = ?
+                """,
+                updates,
             )
-            # 2. Revalidate nationwide records:
-            #    scope_type = 'nationwide' alone must not remain verified if verification_method is unverified
-            #    or if it was an unverified national catalog without verified provenance.
-            conn.execute(
-                """
-                UPDATE price_history
-                SET region_verified = 0
-                WHERE scope_type = 'nationwide'
-                  AND (
-                      verification_method IS NULL
-                      OR verification_method IN ('legacy_unverified', 'national_catalog', 'national_online_catalog', 'unverified_national_catalog')
-                  )
-                """
-            )
-            conn.commit()
+
+        conn.execute(
+            """
+            UPDATE price_history
+            SET verification_method = 'unverified_legacy_unsubstantiated'
+            WHERE region_verified = 0
+              AND (verification_method IS NULL OR TRIM(verification_method) = '')
+            """
+        )
+        return len(updates)
 
     def record_offers(
         self,
@@ -238,30 +500,35 @@ class PriceHistoryService:
                 """
                 SELECT product_key, retailer_slug, COALESCE(scope_type, 'unknown') as scope_type,
                        COALESCE(store_id, '') as store_id, COALESCE(source_region_id, '') as source_region_id,
-                       COALESCE(zip_code, '') as zip_code, price
+                       COALESCE(zip_code, '') as zip_code, COALESCE(region_verified, 0) as region_verified, price
                 FROM price_history
                 WHERE recorded_at LIKE ? AND price IS NOT NULL
                 """,
                 (f"{date_prefix}%",),
             ).fetchall()
-            seen_today: set[tuple[str, str, str, str, float]] = set()
+            seen_today: set[tuple[str, str, str, str, str, int, float]] = set()
             for row in existing_rows:
                 s_type = row["scope_type"]
+                eff_zip = "DE" if s_type == "nationwide" else row["zip_code"]
                 if s_type == "store":
-                    g_id = row["store_id"]
+                    g_id = row["store_id"] or eff_zip
                 elif s_type == "region":
-                    g_id = row["source_region_id"] or row["zip_code"]
+                    g_id = row["source_region_id"] or eff_zip
                 elif s_type == "nationwide":
                     g_id = "DE"
                 else:
-                    g_id = row["zip_code"]
-                seen_today.add((
-                    row["product_key"],
-                    row["retailer_slug"],
-                    s_type,
-                    g_id,
-                    round(float(row["price"]), 4),
-                ))
+                    g_id = eff_zip
+                seen_today.add(
+                    (
+                        row["product_key"],
+                        row["retailer_slug"],
+                        s_type,
+                        g_id,
+                        eff_zip,
+                        int(row["region_verified"]),
+                        round(float(row["price"]), 4),
+                    )
+                )
 
             rows_to_insert: list[tuple] = []
             for offer in offers:
@@ -270,11 +537,28 @@ class PriceHistoryService:
 
                 product_key = offer.product_key or normalize_product_key(offer.title, offer.brand)
                 scope_type, geo_id, effective_zip = get_geographic_identity(offer, zip_code)
+                is_verified, norm_method, _ = validate_observation_provenance(
+                    scope_type=scope_type,
+                    region_verified=offer.region_verified,
+                    verification_method=offer.verification_method,
+                    store_id=offer.store_id,
+                    store_name=offer.store_name,
+                    store_address=offer.store_address,
+                    source_region_id=offer.source_region_id,
+                    source_provider=offer.source_provider,
+                    source_url=offer.source_url,
+                    zip_code=effective_zip,
+                    retailer_slug=offer.retailer_slug,
+                )
+                verified_int = 1 if is_verified else 0
+
                 dedup_key = (
                     product_key,
                     offer.retailer_slug,
                     scope_type,
                     geo_id,
+                    effective_zip,
+                    verified_int,
                     round(float(offer.price), 4),
                 )
                 if dedup_key in seen_today:
@@ -302,10 +586,10 @@ class PriceHistoryService:
                         scope_type,
                         offer.store_id,
                         offer.store_name,
-                        1 if offer.region_verified else 0,
+                        verified_int,
                         offer.source_provider,
                         offer.source_region_id,
-                        offer.verification_method,
+                        norm_method if offer.region_verified and not is_verified else (offer.verification_method or norm_method),
                     )
                 )
 
@@ -331,10 +615,10 @@ class PriceHistoryService:
         with self._get_connection() as conn:
             if zip_code:
                 if store_id:
-                    store_clause = "(scope_type = 'store' AND region_verified = 1 AND store_id = ?)"
+                    store_clause = f"({_VERIFIED_STORE_SQL} AND store_id = ?)"
                     params = (store_id, zip_code)
                 else:
-                    store_clause = "(scope_type = 'store' AND region_verified = 1 AND zip_code = ?)"
+                    store_clause = f"({_VERIFIED_STORE_SQL} AND zip_code = ?)"
                     params = (zip_code, zip_code)
                 query = f"""
                     SELECT product_key, MIN(price) as min_price
@@ -342,22 +626,22 @@ class PriceHistoryService:
                     WHERE price IS NOT NULL AND price > 0
                       AND (
                           {store_clause}
-                          OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
-                          OR (scope_type = 'nationwide' AND region_verified = 1)
+                          OR ({_VERIFIED_REGION_SQL} AND zip_code = ?)
+                          OR ({_VERIFIED_NATIONWIDE_SQL})
                       )
                     GROUP BY product_key
                 """
                 cursor = conn.execute(query, params)
             else:
                 cursor = conn.execute(
-                    """
+                    f"""
                     SELECT product_key, MIN(price) as min_price
                     FROM price_history
                     WHERE price IS NOT NULL AND price > 0
                       AND (
-                          (scope_type = 'store' AND region_verified = 1)
-                          OR (scope_type = 'region' AND region_verified = 1)
-                          OR (scope_type = 'nationwide' AND region_verified = 1)
+                          ({_VERIFIED_STORE_SQL})
+                          OR ({_VERIFIED_REGION_SQL})
+                          OR ({_VERIFIED_NATIONWIDE_SQL})
                       )
                     GROUP BY product_key
                     """
@@ -375,7 +659,7 @@ class PriceHistoryService:
         product_key = normalize_product_key(title, brand)
         with self._get_connection() as conn:
             cursor = conn.execute(
-                """
+                f"""
                 SELECT
                     MIN(price) as min_price,
                     MAX(price) as max_price,
@@ -384,18 +668,18 @@ class PriceHistoryService:
                 FROM price_history
                 WHERE product_key = ? AND price IS NOT NULL
                   AND (
-                      (scope_type = 'store' AND region_verified = 1)
-                      OR (scope_type = 'region' AND region_verified = 1)
-                      OR (scope_type = 'nationwide' AND region_verified = 1)
+                      ({_VERIFIED_STORE_SQL})
+                      OR ({_VERIFIED_REGION_SQL})
+                      OR ({_VERIFIED_NATIONWIDE_SQL})
                   )
                 """,
                 (product_key,),
             )
             agg = cursor.fetchone()
 
-            min_price = float(agg["min_price"]) if agg and agg["min_price"] is not None else current_price
-            max_price = float(agg["max_price"]) if agg and agg["max_price"] is not None else current_price
-            avg_price = float(round(agg["avg_price"], 2)) if agg and agg["avg_price"] is not None else current_price
+            min_price = float(agg["min_price"]) if agg and agg["min_price"] is not None else None
+            max_price = float(agg["max_price"]) if agg and agg["max_price"] is not None else None
+            avg_price = float(round(agg["avg_price"], 2)) if agg and agg["avg_price"] is not None else None
             record_count = int(agg["count"]) if agg else 0
 
             regional_min = None
@@ -403,10 +687,10 @@ class PriceHistoryService:
             is_regional_atl = False
             if zip_code:
                 if store_id:
-                    store_clause = "(scope_type = 'store' AND region_verified = 1 AND store_id = ?)"
+                    store_clause = f"({_VERIFIED_STORE_SQL} AND store_id = ?)"
                     r_params = (product_key, store_id, zip_code)
                 else:
-                    store_clause = "(scope_type = 'store' AND region_verified = 1 AND zip_code = ?)"
+                    store_clause = f"({_VERIFIED_STORE_SQL} AND zip_code = ?)"
                     r_params = (product_key, zip_code, zip_code)
                 r_query = f"""
                     SELECT
@@ -416,8 +700,8 @@ class PriceHistoryService:
                     WHERE product_key = ? AND price IS NOT NULL
                       AND (
                           {store_clause}
-                          OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
-                          OR (scope_type = 'nationwide' AND region_verified = 1)
+                          OR ({_VERIFIED_REGION_SQL} AND zip_code = ?)
+                          OR ({_VERIFIED_NATIONWIDE_SQL})
                       )
                 """
                 r_cursor = conn.execute(r_query, r_params)
@@ -431,10 +715,10 @@ class PriceHistoryService:
             # Fetch recent price observation points: strictly isolate by scope / location
             if zip_code:
                 if store_id:
-                    store_p_clause = "(scope_type = 'store' AND region_verified = 1 AND store_id = ?)"
+                    store_p_clause = f"({_VERIFIED_STORE_SQL} AND store_id = ?)"
                     p_params = (product_key, store_id, zip_code)
                 else:
-                    store_p_clause = "(scope_type = 'store' AND region_verified = 1 AND zip_code = ?)"
+                    store_p_clause = f"({_VERIFIED_STORE_SQL} AND zip_code = ?)"
                     p_params = (product_key, zip_code, zip_code)
                 p_query = f"""
                     SELECT
@@ -445,15 +729,15 @@ class PriceHistoryService:
                     WHERE product_key = ? AND price IS NOT NULL
                       AND (
                           {store_p_clause}
-                          OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
-                          OR (scope_type = 'nationwide' AND region_verified = 1)
+                          OR ({_VERIFIED_REGION_SQL} AND zip_code = ?)
+                          OR ({_VERIFIED_NATIONWIDE_SQL})
                       )
                     ORDER BY recorded_at ASC
                     LIMIT 30
                 """
                 points_cursor = conn.execute(p_query, p_params)
             else:
-                p_query = """
+                p_query = f"""
                     SELECT
                         recorded_at, price, old_price, retailer_name, retailer_slug,
                         source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name,
@@ -461,9 +745,9 @@ class PriceHistoryService:
                     FROM price_history
                     WHERE product_key = ? AND price IS NOT NULL
                       AND (
-                          (scope_type = 'store' AND region_verified = 1)
-                          OR (scope_type = 'region' AND region_verified = 1)
-                          OR (scope_type = 'nationwide' AND region_verified = 1)
+                          ({_VERIFIED_STORE_SQL})
+                          OR ({_VERIFIED_REGION_SQL})
+                          OR ({_VERIFIED_NATIONWIDE_SQL})
                       )
                     ORDER BY recorded_at ASC
                     LIMIT 30
@@ -493,7 +777,7 @@ class PriceHistoryService:
 
             # Unverified and unknown-scope observations exposed separately for UI transparency
             if zip_code:
-                unv_query = """
+                unv_query = f"""
                     SELECT
                         recorded_at, price, old_price, retailer_name, retailer_slug,
                         source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name,
@@ -501,9 +785,9 @@ class PriceHistoryService:
                     FROM price_history
                     WHERE product_key = ? AND price IS NOT NULL
                       AND NOT (
-                          (scope_type = 'store' AND region_verified = 1)
-                          OR (scope_type = 'region' AND region_verified = 1)
-                          OR (scope_type = 'nationwide' AND region_verified = 1)
+                          ({_VERIFIED_STORE_SQL})
+                          OR ({_VERIFIED_REGION_SQL})
+                          OR ({_VERIFIED_NATIONWIDE_SQL})
                       )
                       AND (zip_code = ? OR zip_code IS NULL OR zip_code = '' OR scope_type = 'nationwide')
                     ORDER BY recorded_at ASC
@@ -511,7 +795,7 @@ class PriceHistoryService:
                 """
                 unv_cursor = conn.execute(unv_query, (product_key, zip_code))
             else:
-                unv_query = """
+                unv_query = f"""
                     SELECT
                         recorded_at, price, old_price, retailer_name, retailer_slug,
                         source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name,
@@ -519,9 +803,9 @@ class PriceHistoryService:
                     FROM price_history
                     WHERE product_key = ? AND price IS NOT NULL
                       AND NOT (
-                          (scope_type = 'store' AND region_verified = 1)
-                          OR (scope_type = 'region' AND region_verified = 1)
-                          OR (scope_type = 'nationwide' AND region_verified = 1)
+                          ({_VERIFIED_STORE_SQL})
+                          OR ({_VERIFIED_REGION_SQL})
+                          OR ({_VERIFIED_NATIONWIDE_SQL})
                       )
                     ORDER BY recorded_at ASC
                     LIMIT 30
@@ -544,7 +828,7 @@ class PriceHistoryService:
                     "scope_type": row["scope_type"],
                     "store_name": row["store_name"],
                     "store_id": row["store_id"],
-                    "region_verified": bool(row["region_verified"]),
+                    "region_verified": False,
                 }
                 for row in unv_cursor.fetchall()
             ]
@@ -553,9 +837,10 @@ class PriceHistoryService:
         if current_price is not None and min_price is not None:
             is_all_time_low = current_price <= (min_price + 0.001)
 
-        # For backward compatibility, all_time_low reflects regional if zip_code given and available
-        display_atl = regional_min if (zip_code and regional_min is not None) else min_price
-        display_is_atl = is_regional_atl if (zip_code and regional_min is not None) else is_all_time_low
+        # When zip_code is specified, do not leak another region's min/avg price into regional display fields
+        display_atl = regional_min if zip_code else min_price
+        display_is_atl = is_regional_atl if zip_code else is_all_time_low
+        display_avg = regional_avg if zip_code else avg_price
 
         return {
             "product_key": product_key,
@@ -565,8 +850,8 @@ class PriceHistoryService:
             "current_price": current_price,
             "all_time_low": display_atl,
             "all_time_high": max_price,
-            "average_price": regional_avg if (zip_code and regional_avg is not None) else avg_price,
-            "avg_price": regional_avg if (zip_code and regional_avg is not None) else avg_price,
+            "average_price": display_avg,
+            "avg_price": display_avg,
             "regional_all_time_low": regional_min,
             "national_all_time_low": min_price,
             "is_all_time_low": display_is_atl,

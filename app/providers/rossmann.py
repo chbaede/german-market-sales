@@ -46,13 +46,17 @@ class RossmannProvider(OfferProvider):
         if offers and match_count / len(offers) >= self.minimum_match_ratio:
             for offer in offers:
                 offer.source_url = self.catalog_url
-                offer.source_provider = "rossmann-official"
-                offer.scope_type = "region"
-                offer.store_name = "ROSSMANN (Offizieller Prospekt)"
-                offer.region_verified = True
-                offer.verification_method = "rossmann_catalog_match"
-                offer.verification_reason = f"Matched official weekly catalog {catalog.catalog_id}"
                 offer.requested_zip_code = zip_code
+                if not offer.region_verified:
+                    offer.source_provider = "rossmann-official"
+                    offer.scope_type = "nationwide"
+                    offer.store_name = "ROSSMANN (Offizieller Prospekt)"
+                    offer.region_verified = False
+                    offer.verification_method = "rossmann_catalog_match"
+                    offer.verification_reason = (
+                        f"Matched official weekly catalog {catalog.catalog_id} search index; "
+                        "regional PLZ price applicability is unverified"
+                    )
         else:
             for offer in offers:
                 offer.requested_zip_code = zip_code

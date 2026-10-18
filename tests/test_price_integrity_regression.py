@@ -314,7 +314,9 @@ def test_price_history_geographic_identities_and_isolation():
             requested_zip_code="10115",
             scope_type="store",
             store_id="edeka_berlin_10115",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
         butter_munich = Offer(
             id="butter-m",
@@ -337,7 +339,9 @@ def test_price_history_geographic_identities_and_isolation():
             requested_zip_code="80331",
             scope_type="store",
             store_id="edeka_munich_80331",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
 
         service.record_offers([butter_berlin], zip_code="10115", recorded_at="2026-06-01T10:00:00")
@@ -377,7 +381,9 @@ def test_price_history_two_stores_in_same_plz_and_repeated_fetch():
             requested_zip_code="10115",
             scope_type="store",
             store_id="STORE_A",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
         store_b_offer = Offer(
             id="edeka-store-b",
@@ -400,7 +406,9 @@ def test_price_history_two_stores_in_same_plz_and_repeated_fetch():
             requested_zip_code="10115",
             scope_type="store",
             store_id="STORE_B",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
 
         # Record both stores in the same PLZ
@@ -509,7 +517,9 @@ def test_unknown_scope_excluded_from_verified_regional_atl():
             requested_zip_code="10115",
             scope_type="store",
             store_id="DE10115",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
 
         service.record_offers([unknown_offer, verified_offer], zip_code="10115", recorded_at="2026-06-01T10:00:00")
@@ -618,22 +628,31 @@ def test_legacy_database_revalidation_demotes_unsubstantiated_records():
             """
             INSERT INTO price_history (
                 id, product_key, title, category, retailer_slug, retailer_name, price, recorded_at,
-                source_url, zip_code, scope_type, store_id, store_name, region_verified, verification_method
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_url, zip_code, scope_type, store_id, store_name, region_verified,
+                source_provider, source_region_id, verification_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 # Row 1: Claims region_verified = 1, but verification_method is 'legacy_unverified' -> demote to 0
-                (1, "kaffee", "Kaffee", "coffee", "penny", "Penny", 1.99, "2026-01-01T10:00:00", "https://penny.de", "10115", "store", "penny_1", "Penny Mitte", 1, "legacy_unverified"),
+                (1, "kaffee", "Kaffee", "coffee", "penny", "Penny", 1.99, "2026-01-01T10:00:00", "https://penny.de", "10115", "store", "penny_1", "Penny Mitte", 1, "penny", None, "legacy_unverified"),
                 # Row 2: Claims region_verified = 1, but verification_method is NULL -> demote to 0
-                (2, "kaffee", "Kaffee", "coffee", "penny", "Penny", 1.89, "2026-01-01T10:00:00", "https://penny.de", "10115", "store", "penny_1", "Penny Mitte", 1, None),
-                # Row 3: Claims region_verified = 1 for store, but lacks store_id and store_name -> demote to 0
-                (3, "kaffee", "Kaffee", "coffee", "edeka", "EDEKA", 1.79, "2026-01-01T10:00:00", "https://edeka.de", "10115", "store", None, None, 1, "store_direct_api"),
+                (2, "kaffee", "Kaffee", "coffee", "penny", "Penny", 1.89, "2026-01-01T10:00:00", "https://penny.de", "10115", "store", "penny_1", "Penny Mitte", 1, "penny", None, None),
+                # Row 3: Claims region_verified = 1 for store, but lacks store_id (even if store_name exists) -> demote to 0
+                (3, "kaffee", "Kaffee", "coffee", "edeka", "EDEKA", 1.79, "2026-01-01T10:00:00", "https://edeka.de", "10115", "store", None, "EDEKA Mitte", 1, "edeka-official", None, "store_direct_api"),
                 # Row 4: Claims nationwide with unverified online catalog method -> demote to 0
-                (4, "kaffee", "Kaffee", "coffee", "rewe", "REWE", 2.29, "2026-01-01T10:00:00", "https://rewe.de", "10115", "nationwide", None, None, 1, "national_catalog"),
-                # Row 5: Legitimate verified store offer with store_direct_api and store_id -> KEEP verified = 1
-                (5, "kaffee", "Kaffee", "coffee", "edeka", "EDEKA", 2.49, "2026-01-01T10:00:00", "https://edeka.de", "10115", "store", "edeka_berlin_1", "EDEKA Berlin", 1, "store_direct_api"),
-                # Row 6: Legitimate verified nationwide offer with marktguru_national_flyer -> KEEP verified = 1
-                (6, "kaffee", "Kaffee", "coffee", "aldi", "ALDI", 2.99, "2026-01-01T10:00:00", "https://aldi.de", "10115", "nationwide", None, None, 1, "marktguru_national_flyer"),
+                (4, "kaffee", "Kaffee", "coffee", "rewe", "REWE", 2.29, "2026-01-01T10:00:00", "https://rewe.de", "DE", "nationwide", None, None, 1, "rewe-official", "national_flyer:1", "national_catalog"),
+                # Row 5: Legitimate verified store offer with store_direct_api, store_id, and valid 5-digit PLZ -> KEEP verified = 1
+                (5, "kaffee", "Kaffee", "coffee", "edeka", "EDEKA", 2.49, "2026-01-01T10:00:00", "https://edeka.de", "10115", "store", "edeka_berlin_1", "EDEKA Berlin", 1, "edeka-official", None, "store_direct_api"),
+                # Row 6: Legitimate verified nationwide offer with marktguru_national_flyer, non-territory retailer, and national_flyer:<id> -> KEEP verified = 1
+                (6, "kaffee", "Kaffee", "coffee", "rewe", "REWE", 2.99, "2026-01-01T10:00:00", "https://www.marktguru.de/r/rewe", "DE", "nationwide", None, None, 1, "marktguru", "national_flyer:555", "marktguru_national_flyer"),
+                # Row 7: Claims nationwide for territory-split ALDI -> demote to 0
+                (7, "kaffee", "Kaffee", "coffee", "aldi-sued", "ALDI Süd", 1.59, "2026-01-01T10:00:00", "https://www.marktguru.de/r/aldi-sued", "DE", "nationwide", None, None, 1, "marktguru", "national_flyer:556", "marktguru_national_flyer"),
+                # Row 8: Claims region with unsupported 'berlin_north' mapping -> demote to 0
+                (8, "kaffee", "Kaffee", "coffee", "edeka", "EDEKA", 1.49, "2026-01-01T10:00:00", "https://www.marktguru.de/r/edeka", "10115", "region", None, None, 1, "marktguru", "berlin_north", "marktguru_authoritative_region_mapping"),
+                # Row 9: Claims region with 'rossmann_catalog_match' -> demote to 0
+                (9, "kaffee", "Kaffee", "coffee", "rossmann", "ROSSMANN", 1.39, "2026-01-01T10:00:00", "https://www.rossmann.de", "10115", "region", None, "ROSSMANN", 1, "rossmann-official", None, "rossmann_catalog_match"),
+                # Row 10: Claims region with arbitrary unrecognized verification_method -> demote to 0
+                (10, "kaffee", "Kaffee", "coffee", "lidl", "Lidl", 1.29, "2026-01-01T10:00:00", "https://lidl.de", "10115", "region", None, None, 1, "lidl", "reg_1", "invented_method_xyz"),
             ],
         )
         conn.commit()
@@ -642,17 +661,21 @@ def test_legacy_database_revalidation_demotes_unsubstantiated_records():
         # Initializing PriceHistoryService triggers migration / revalidation
         service = PriceHistoryService(Path(tmp_dir))
 
+        # Running revalidate_historical_records again must be idempotent (0 additional demotions)
+        assert service.revalidate_historical_records() == 0
+
         with service._get_connection() as c:
             rows = {
                 r["id"]: (r["region_verified"], r["verification_method"])
                 for r in c.execute("SELECT id, region_verified, verification_method FROM price_history").fetchall()
             }
 
+        # Assert all 10 rows are preserved (non-destructive)
+        assert len(rows) == 10
+
         # Assert unsubstantiated records demoted
-        assert rows[1][0] == 0  # demoted
-        assert rows[2][0] == 0  # demoted
-        assert rows[3][0] == 0  # demoted
-        assert rows[4][0] == 0  # demoted
+        for bad_id in (1, 2, 3, 4, 7, 8, 9, 10):
+            assert rows[bad_id][0] == 0, f"Row {bad_id} should have been demoted"
 
         # Assert substantiated records kept
         assert rows[5][0] == 1
@@ -803,8 +826,8 @@ def test_edeka_fail_closed_rejections_and_missing_store_identity():
     assert offer_no_store.region_verified is False
     assert offer_no_store.verification_method == "unverified_missing_store_id"
 
-    # With store identity -> scope_type="store", region_verified=True
-    offer_with_store = EdekaProvider._offer_from_dialog(
+    # 6b. With store identity ONLY (missing requested_zip / location evidence) -> scope_type="store", region_verified=False
+    offer_store_no_loc = EdekaProvider._offer_from_dialog(
         dialog,
         fallback_from="2026-06-01",
         fallback_to="2026-06-07",
@@ -812,14 +835,32 @@ def test_edeka_fail_closed_rejections_and_missing_store_identity():
         market_name="EDEKA Mitte",
         store_id="801006",
     )
+    assert offer_store_no_loc is not None
+    assert offer_store_no_loc.scope_type == "store"
+    assert offer_store_no_loc.region_verified is False
+    assert offer_store_no_loc.verification_method == "unverified_store_location"
+
+    # 6c. With store identity AND verified location evidence -> scope_type="store", region_verified=True
+    offer_with_store = EdekaProvider._offer_from_dialog(
+        dialog,
+        fallback_from="2026-06-01",
+        fallback_to="2026-06-07",
+        source_url="https://edeka.de",
+        market_name="EDEKA Mitte",
+        store_id="801006",
+        store_address="Chausseestr. 1, 10115 Berlin",
+        requested_zip="10115",
+        location_verified=True,
+    )
     assert offer_with_store is not None
     assert offer_with_store.scope_type == "store"
     assert offer_with_store.region_verified is True
     assert offer_with_store.store_id == "801006"
+    assert offer_with_store.verification_method == "store_direct_api"
 
 
 def test_marktguru_verification_logic_for_national_regional_branch_and_unknown():
-    # 1. National flyer: explicitly national
+    # 1a. National flyer: explicitly national with traceable flyerId and non-territory retailer
     item_national = {
         "id": 101,
         "product": {"name": "National Butter"},
@@ -829,15 +870,38 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     offer_nat = MarktguruProvider._offer_from_api(item_national, "edeka", zip_code="10115")
     assert offer_nat.scope_type == "nationwide"
     assert offer_nat.region_verified is True
-    assert offer_nat.source_region_id is None
+    assert offer_nat.source_region_id == "national_flyer:999"
     assert offer_nat.verification_method == "marktguru_national_flyer"
 
-    # 2. Regional flyer with matching postal code
+    # 1b. National flyer with contradictory regional restrictions -> fails closed (region_verified=False)
+    item_nat_contradictory = {
+        "id": 1011,
+        "product": {"name": "Contradictory National Butter"},
+        "price": 1.29,
+        "flyer": {"id": 999, "isNational": True, "regionId": "munich_south"},
+    }
+    offer_nat_contra = MarktguruProvider._offer_from_api(item_nat_contradictory, "edeka", zip_code="10115")
+    assert offer_nat_contra.scope_type == "nationwide"
+    assert offer_nat_contra.region_verified is False
+    assert offer_nat_contra.verification_method == "marktguru_unverified_national"
+
+    # 1c. National flyer for territory-split retailer (aldi-sued) -> fails closed (region_verified=False)
+    offer_nat_aldi = MarktguruProvider._offer_from_api(item_national, "aldi-sued", zip_code="80331")
+    assert offer_nat_aldi.scope_type == "nationwide"
+    assert offer_nat_aldi.region_verified is False
+    assert offer_nat_aldi.verification_method == "marktguru_unverified_national"
+
+    # 2a. Regional flyer with confirmed promotional campaign PLZ coverage
     item_reg_plz = {
         "id": 102,
         "product": {"name": "Regional Milk"},
         "price": 0.99,
-        "flyer": {"id": 888, "postalCodes": ["10115", "10117"], "regionId": 42},
+        "flyer": {
+            "id": 888,
+            "validZipCodes": ["10115", "10117"],
+            "coverageScope": "promotional_campaign",
+            "regionId": 42,
+        },
     }
     offer_reg = MarktguruProvider._offer_from_api(item_reg_plz, "edeka", zip_code="10115")
     assert offer_reg.scope_type == "region"
@@ -845,7 +909,20 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     assert offer_reg.source_region_id == "42"
     assert offer_reg.verification_method == "marktguru_regional_flyer_postal_match"
 
-    # 3a. Regional flyer with geographic regionId / city matching (valid mapping)
+    # 2b. Regional flyer with generic postalCodes (unconfirmed campaign applicability) -> diagnostic match only
+    item_generic_plz = {
+        "id": 1021,
+        "product": {"name": "Generic Postal Milk"},
+        "price": 0.99,
+        "flyer": {"id": 888, "postalCodes": ["10115", "10117"], "regionId": 42},
+    }
+    offer_generic_plz = MarktguruProvider._offer_from_api(item_generic_plz, "edeka", zip_code="10115")
+    assert offer_generic_plz.scope_type == "region"
+    assert offer_generic_plz.region_verified is False
+    assert offer_generic_plz.source_region_id == "42"
+    assert offer_generic_plz.verification_method == "marktguru_diagnostic_region_match"
+
+    # 3a. Regional flyer with unsubstantiated "berlin_north" regionId -> fails closed
     item_reg_id = {
         "id": 103,
         "product": {"name": "Regional Cheese"},
@@ -854,9 +931,9 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     }
     offer_reg_id = MarktguruProvider._offer_from_api(item_reg_id, "edeka", zip_code="10115")
     assert offer_reg_id.scope_type == "region"
-    assert offer_reg_id.region_verified is True
+    assert offer_reg_id.region_verified is False
     assert offer_reg_id.source_region_id == "berlin_north"
-    assert offer_reg_id.verification_method == "marktguru_authoritative_region_mapping"
+    assert offer_reg_id.verification_method == "marktguru_unverified_flyer"
 
     # 3b. Regional flyer with prefix heuristics (prefix wildcards fail closed without full 5-digit verification)
     item_reg_prefixes = {
@@ -897,12 +974,11 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     assert "mismatches requested PLZ" in offer_mismatched_reg.verification_reason
 
     # 3e. Regional flyer with regionId but missing geographic mapping metadata
-    # (arbitrary integer or opaque ID that has no postal codes, no coordinates, no mapping table entry)
     item_missing_mapping = {
         "id": 1034,
         "product": {"name": "Opaque Leaflet Butter"},
         "price": 1.99,
-        "flyer": {"id": 781, "regionId": 42},  # Arbitrary regionId lacking geographic evidence
+        "flyer": {"id": 781, "regionId": 42},
     }
     offer_missing_mapping = MarktguruProvider._offer_from_api(item_missing_mapping, "edeka", zip_code="10115")
     assert offer_missing_mapping.scope_type == "region"
@@ -917,7 +993,7 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
         "id": 104,
         "product": {"name": "Unverified Leaflet Item"},
         "price": 3.99,
-        "flyer": {"id": 555},  # Only arbitrary flyerId
+        "flyer": {"id": 555},
     }
     offer_unv_flyer = MarktguruProvider._offer_from_api(item_unverified_flyer, "edeka", zip_code="10115")
     assert offer_unv_flyer.scope_type == "region"
@@ -938,7 +1014,7 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     assert offer_branch.store_id == "1234"
     assert offer_branch.store_name == "Filiale Mitte"
 
-    # 6. Branch with mismatched postal code and no nearby distance
+    # 6a. Branch with mismatched postal code and no nearby distance
     item_branch_mismatch = {
         "id": 106,
         "product": {"name": "Munich Branch Coffee"},
@@ -949,6 +1025,18 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     assert offer_branch_mismatch.scope_type == "store"
     assert offer_branch_mismatch.region_verified is False
     assert offer_branch_mismatch.verification_method == "marktguru_unverified_branch"
+
+    # 6b. Branch with conflicting postal code (Munich 80331) but misleading small distance (5km) -> fails closed!
+    item_branch_conflict = {
+        "id": 1061,
+        "product": {"name": "Conflicting Branch Coffee"},
+        "price": 4.99,
+        "branch": {"id": 5679, "name": "Filiale Conflict", "postalCode": "80331", "distance": 5.0},
+    }
+    offer_branch_conflict = MarktguruProvider._offer_from_api(item_branch_conflict, "edeka", zip_code="10115")
+    assert offer_branch_conflict.scope_type == "store"
+    assert offer_branch_conflict.region_verified is False
+    assert offer_branch_conflict.verification_method == "marktguru_unverified_branch"
 
     # 7. Item with no branch and no flyer
     item_no_geo = {
@@ -965,12 +1053,6 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
 def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
     with tempfile.TemporaryDirectory() as tmp_dir:
         service = PriceHistoryService(Path(tmp_dir))
-
-        # Setup 4 offers for the same product "Kaffee 500g":
-        # 1. Store in Berlin 10115 (verified, price 3.49)
-        # 2. Store in Munich 80331 (verified, price 2.99)
-        # 3. Nationwide offer (verified, price 3.99)
-        # 4. Unknown/unverified offer in Berlin 10115 (unverified, fake low price 0.50)
 
         offer_berlin = Offer(
             id="berlin-kaffee",
@@ -994,7 +1076,9 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
             scope_type="store",
             store_id="store_b1",
             store_name="EDEKA Berlin Mitte",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
 
         offer_munich = Offer(
@@ -1019,7 +1103,9 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
             scope_type="store",
             store_id="store_m1",
             store_name="EDEKA Munich Altstadt",
+            source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
         )
 
         offer_nationwide = Offer(
@@ -1039,8 +1125,10 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
             valid_from=None,
             valid_to=None,
             image_url=None,
-            source_url="https://rewe.de",
+            source_url="https://www.marktguru.de/r/rewe",
             scope_type="nationwide",
+            source_provider="marktguru",
+            source_region_id="national_flyer:901",
             region_verified=True,
             verification_method="marktguru_national_flyer",
         )
@@ -1303,6 +1391,7 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
             scope_type="store",
             store_id="edeka_berlin_mitte",
             store_name="EDEKA Berlin Mitte",
+            source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
         )
@@ -1325,9 +1414,11 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
             valid_from="2026-06-01",
             valid_to="2026-06-07",
             image_url=None,
-            source_url="https://rewe.de/angebote",
+            source_url="https://www.marktguru.de/r/rewe",
             requested_zip_code="10115",
             scope_type="nationwide",
+            source_provider="marktguru",
+            source_region_id="national_flyer:700",
             region_verified=True,
             verification_method="marktguru_national_flyer",
         )
@@ -1481,5 +1572,236 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
         assert "0.75 €" in unverified_section
         assert "0.60 €" in unverified_section
         assert "3.49 €" not in unverified_section
+
+
+def test_raw_sql_malformed_verified_rows_do_not_pollute_atl_or_stats(tmp_path):
+    """
+    Even if malformed or incomplete 'verified' rows are inserted via raw SQL
+    after DB initialization, SQL provenance predicates in get_all_time_low_map()
+    and get_product_stats() must exclude them from verified stats and history.
+    """
+    service = PriceHistoryService(tmp_path)
+    pkey = normalize_product_key("Bio Milch 1l")
+
+    with service._get_connection() as conn:
+        conn.executemany(
+            """
+            INSERT INTO price_history (
+                product_key, title, category, retailer_slug, retailer_name, price, recorded_at,
+                source_url, zip_code, scope_type, store_id, store_name, region_verified,
+                source_provider, source_region_id, verification_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                # 1. Malformed store row: region_verified=1, store_direct_api, but store_id is NULL
+                (pkey, "Bio Milch 1l", "dairy", "edeka", "EDEKA", 0.30, "2026-06-01T10:00:00", "https://edeka.de", "10115", "store", None, "EDEKA", 1, "edeka-official", None, "store_direct_api"),
+                # 2. Malformed region row: region_verified=1, but source_region_id is NULL
+                (pkey, "Bio Milch 1l", "dairy", "edeka", "EDEKA", 0.40, "2026-06-01T10:00:00", "https://edeka.de", "10115", "region", None, None, 1, "marktguru", None, "marktguru_regional_flyer_postal_match"),
+                # 3. Malformed region row: retailer territory disguised as region_verified=1
+                (pkey, "Bio Milch 1l", "dairy", "aldi-sued", "ALDI Süd", 0.45, "2026-06-01T10:00:00", "https://aldi-sued.de", "10115", "region", None, None, 1, "aldi-sued-official", "aldi-sued-territory", "marktguru_regional_flyer_postal_match"),
+                # 4. Malformed nationwide row: national_catalog claiming region_verified=1
+                (pkey, "Bio Milch 1l", "dairy", "rewe", "REWE", 0.50, "2026-06-01T10:00:00", "https://rewe.de", "DE", "nationwide", None, None, 1, "rewe-official", "national_flyer:1", "national_catalog"),
+                # 5. Malformed nationwide row: marktguru_national_flyer without source_region_id
+                (pkey, "Bio Milch 1l", "dairy", "rewe", "REWE", 0.55, "2026-06-01T10:00:00", "https://rewe.de", "DE", "nationwide", None, None, 1, "marktguru", None, "marktguru_national_flyer"),
+                # 6. Malformed nationwide row: territory-split retailer (aldi) claiming nationwide
+                (pkey, "Bio Milch 1l", "dairy", "aldi", "ALDI", 0.60, "2026-06-01T10:00:00", "https://aldi.de", "DE", "nationwide", None, None, 1, "marktguru", "national_flyer:2", "marktguru_national_flyer"),
+                # 7. Valid verified store row in 10115 at 1.29 EUR
+                (pkey, "Bio Milch 1l", "dairy", "edeka", "EDEKA", 1.29, "2026-06-01T10:00:00", "https://edeka.de", "10115", "store", "store_10115", "EDEKA Mitte", 1, "edeka-official", None, "store_direct_api"),
+            ],
+        )
+        conn.commit()
+
+    assert service.get_all_time_low_map(zip_code="10115")[pkey] == 1.29
+    assert service.get_all_time_low_map(zip_code=None)[pkey] == 1.29
+
+    stats_regional = service.get_product_stats("Bio Milch 1l", current_price=1.29, zip_code="10115")
+    assert stats_regional["all_time_low"] == 1.29
+    assert stats_regional["regional_all_time_low"] == 1.29
+    assert stats_regional["national_all_time_low"] == 1.29
+    assert stats_regional["record_count"] == 1
+    assert len(stats_regional["history"]) == 1
+    assert stats_regional["history"][0]["price"] == 1.29
+    assert len(stats_regional["unverified_history"]) == 6
+
+
+def test_no_cross_plz_leakage_or_current_price_fallback_when_region_has_zero_verified_records(tmp_path):
+    """
+    1. When Munich (80331) has a verified store price (2.49) and Berlin (10115) has 0 verified records,
+       querying get_product_stats for Berlin (zip_code='10115') must NOT leak Munich's 2.49 into
+       Berlin's all_time_low or average_price.
+    2. When a product has ONLY unverified records (0 verified records anywhere), get_product_stats
+       must NOT fall back all_time_low/avg_price to current_price or claim is_all_time_low=True.
+    3. _enrich_atl_if_needed must NEVER set is_all_time_low=True on an unverified offer.
+    4. Recording an unverified offer on the same day must NOT suppress recording a subsequent verified offer.
+    """
+    from app.routes import _enrich_atl_if_needed
+
+    service = PriceHistoryService(tmp_path)
+
+    # Case A: Unverified offer recorded first, followed by verified offer for same product/price/day
+    unv_berlin = Offer(
+        id="unv-b",
+        source_offer_id=1,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Bio Butter 250g",
+        brand=None,
+        category="dairy",
+        price=2.19,
+        old_price=None,
+        unit_price=8.76,
+        unit="kg",
+        discount_percent=None,
+        description="",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_id="store_b1",
+        region_verified=False,
+        verification_method="unverified_store_location",
+    )
+    ver_berlin = Offer(
+        id="ver-b",
+        source_offer_id=1,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Bio Butter 250g",
+        brand=None,
+        category="dairy",
+        price=2.19,
+        old_price=None,
+        unit_price=8.76,
+        unit="kg",
+        discount_percent=None,
+        description="",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_id="store_b1",
+        source_provider="edeka-official",
+        region_verified=True,
+        verification_method="store_direct_api",
+    )
+    ins_unv = service.record_offers([unv_berlin], zip_code="10115", recorded_at="2026-06-01T09:00:00")
+    ins_ver = service.record_offers([ver_berlin], zip_code="10115", recorded_at="2026-06-01T10:00:00")
+    assert ins_unv == 1
+    assert ins_ver == 1  # Must NOT be suppressed by the earlier unverified row!
+    assert service.get_all_time_low_map(zip_code="10115")[normalize_product_key("Bio Butter 250g")] == 2.19
+
+    # Case B: Munich has verified record for "Alpenkäse 200g" at 2.49; Berlin has only unverified at 1.99
+    munich_cheese = Offer(
+        id="m-cheese",
+        source_offer_id=2,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Alpenkäse 200g",
+        brand=None,
+        category="dairy",
+        price=2.49,
+        old_price=None,
+        unit_price=12.45,
+        unit="kg",
+        discount_percent=None,
+        description="",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="80331",
+        scope_type="store",
+        store_id="store_m1",
+        source_provider="edeka-official",
+        region_verified=True,
+        verification_method="store_direct_api",
+    )
+    berlin_unv_cheese = Offer(
+        id="b-unv-cheese",
+        source_offer_id=3,
+        retailer="Penny",
+        retailer_slug="penny",
+        title="Alpenkäse 200g",
+        brand=None,
+        category="dairy",
+        price=1.99,
+        old_price=None,
+        unit_price=9.95,
+        unit="kg",
+        discount_percent=None,
+        description="",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://penny.de",
+        requested_zip_code="10115",
+        scope_type="unknown",
+        region_verified=False,
+    )
+    service.record_offers([munich_cheese], zip_code="80331", recorded_at="2026-06-01T10:00:00")
+    service.record_offers([berlin_unv_cheese], zip_code="10115", recorded_at="2026-06-01T10:00:00")
+
+    berlin_cheese_stats = service.get_product_stats("Alpenkäse 200g", current_price=1.99, zip_code="10115")
+    assert berlin_cheese_stats["regional_all_time_low"] is None
+    assert berlin_cheese_stats["all_time_low"] is None  # Must NOT leak Munich's 2.49!
+    assert berlin_cheese_stats["average_price"] is None
+    assert berlin_cheese_stats["avg_price"] is None
+    assert berlin_cheese_stats["is_all_time_low"] is False
+    assert berlin_cheese_stats["is_regional_all_time_low"] is False
+    assert berlin_cheese_stats["history"] == []
+    assert len(berlin_cheese_stats["unverified_history"]) == 1
+
+    # Case C: Product with ONLY unverified records anywhere
+    only_unv = Offer(
+        id="only-unv",
+        source_offer_id=4,
+        retailer="REWE",
+        retailer_slug="rewe",
+        title="Nationale Schokolade 100g",
+        brand=None,
+        category="sweets",
+        price=0.99,
+        old_price=None,
+        unit_price=9.90,
+        unit="kg",
+        discount_percent=None,
+        description="",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://rewe.de",
+        scope_type="nationwide",
+        region_verified=False,
+        verification_method="national_catalog",
+    )
+    service.record_offers([only_unv], zip_code="10115", recorded_at="2026-06-01T10:00:00")
+    unv_stats = service.get_product_stats("Nationale Schokolade 100g", current_price=0.99, zip_code="10115")
+    assert unv_stats["all_time_low"] is None
+    assert unv_stats["national_all_time_low"] is None
+    assert unv_stats["is_all_time_low"] is False
+    assert unv_stats["is_national_all_time_low"] is False
+    assert unv_stats["record_count"] == 0
+    assert unv_stats["history"] == []
+    assert len(unv_stats["unverified_history"]) == 1
+
+    # Case D: _enrich_atl_if_needed never flags an unverified offer as is_all_time_low=True
+    class DummyService:
+        def get_all_time_low_map(self, zip_code=None):
+            return {normalize_product_key("Bio Butter 250g"): 2.19}
+
+    unv_copy = Offer.from_dict(unv_berlin.to_dict())
+    ver_copy = Offer.from_dict(ver_berlin.to_dict())
+    _enrich_atl_if_needed([unv_copy, ver_copy], DummyService(), "2026-06-01T10:00:00", zip_code="10115")
+    assert unv_copy.is_all_time_low is False
+    assert unv_copy.is_regional_all_time_low is False
+    assert unv_copy.is_national_all_time_low is False
+    assert ver_copy.is_all_time_low is True
+    assert ver_copy.is_regional_all_time_low is True
+    assert ver_copy.is_national_all_time_low is True
+
 
 

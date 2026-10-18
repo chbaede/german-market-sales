@@ -19,9 +19,13 @@ from app.providers.rewe import ReweProvider
 from app.providers.rossmann import RossmannProvider
 from app.services.categories import categorize_offer
 from app.services.formatting import parse_offer_date
-from app.services.price_history import PriceHistoryService, normalize_product_key
+from app.services.price_history import (
+    PriceHistoryService,
+    normalize_product_key,
+    validate_observation_provenance,
+)
 
-CACHE_SCHEMA_VERSION = 14
+CACHE_SCHEMA_VERSION = 15
 UPSTREAM_FETCH_MULTIPLIER = 10
 MIN_UPSTREAM_FETCH_LIMIT = 500
 DEFAULT_CACHE_ZIP = "14195"
@@ -111,7 +115,7 @@ class OfferService:
             raise RuntimeError("No offers could be fetched from any provider.")
 
         fetched_at = datetime.now(UTC).isoformat(timespec="seconds")
-        offers = self._normalize_categories(offers)
+        offers = self._normalize_categories(offers, zip_code=zip_code)
         offers = self._non_expired_offers(offers)
         offers = sorted(offers, key=lambda offer: (offer.retailer, offer.title.casefold()))
         self._write_cache(zip_code, fetched_at, offers, warnings)
@@ -257,7 +261,7 @@ class OfferService:
 
     def _cached_offers(self, cached: dict) -> list[Offer]:
         offers = [Offer.from_dict(item) for item in cached["offers"]]
-        return self._non_expired_offers(self._normalize_categories(offers))
+        return self._non_expired_offers(self._normalize_categories(offers, zip_code=cached.get("zip_code")))
 
     def _is_stale(self, fetched_at: str | None) -> bool:
         if not fetched_at:
@@ -280,13 +284,36 @@ class OfferService:
                 current.append(offer)
         return current
 
-    def _normalize_categories(self, offers: list[Offer]) -> list[Offer]:
+    def _normalize_categories(self, offers: list[Offer], zip_code: str | None = None) -> list[Offer]:
         for offer in offers:
             if offer.retailer_slug in self.retailers:
                 offer.retailer = self.retailers[offer.retailer_slug]
             offer.category = categorize_offer(offer.title, offer.brand, offer.description)
             if not offer.product_key:
                 offer.product_key = normalize_product_key(offer.title, offer.brand)
+            if offer.region_verified:
+                eff_zip = (
+                    "DE"
+                    if offer.scope_type == "nationwide"
+                    else (offer.requested_zip_code or zip_code or DEFAULT_CACHE_ZIP)
+                )
+                is_valid, norm_method, reason = validate_observation_provenance(
+                    scope_type=offer.scope_type,
+                    region_verified=offer.region_verified,
+                    verification_method=offer.verification_method,
+                    store_id=offer.store_id,
+                    store_name=offer.store_name,
+                    store_address=offer.store_address,
+                    source_region_id=offer.source_region_id,
+                    source_provider=offer.source_provider,
+                    source_url=offer.source_url,
+                    zip_code=eff_zip,
+                    retailer_slug=offer.retailer_slug,
+                )
+                if not is_valid:
+                    offer.region_verified = False
+                    offer.verification_method = norm_method
+                    offer.verification_reason = reason
         return offers
 
     def _try_marketguru_fallback(self, retailer_slug: str, zip_code: str) -> tuple[list[Offer], list[str]]:

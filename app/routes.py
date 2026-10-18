@@ -220,8 +220,18 @@ def _enrich_atl_if_needed(
             offer.product_key = normalize_product_key(offer.title, offer.brand)
         min_p = all_time_low_map.get(offer.product_key)
         nat_min_p = national_atl_map.get(offer.product_key)
-        is_atl = bool(offer.price is not None and min_p is not None and offer.price <= (min_p + 0.001))
-        is_nat_atl = bool(offer.price is not None and nat_min_p is not None and offer.price <= (nat_min_p + 0.001))
+        is_atl = bool(
+            offer.region_verified
+            and offer.price is not None
+            and min_p is not None
+            and offer.price <= (min_p + 0.001)
+        )
+        is_nat_atl = bool(
+            offer.region_verified
+            and offer.price is not None
+            and nat_min_p is not None
+            and offer.price <= (nat_min_p + 0.001)
+        )
         offer.all_time_low = min_p
         offer.is_all_time_low = is_atl
         offer.regional_all_time_low = min_p

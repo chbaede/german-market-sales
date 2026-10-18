@@ -68,6 +68,18 @@ def test_aldi_sued_parses_nuxt_data_without_boolean_index_collision() -> None:
     assert offer.source_url == "https://www.aldi-sued.de/de/p.bio-alpenmilch.00012345.html"
 
 
+def test_aldi_sued_extract_date_urls_includes_wochenangebote() -> None:
+    sample_html = (
+        '<a href="/angebote/2026-10-19">Mo</a>'
+        '<a href="/produkte/wochenangebote/k/1588161426582123">Wochenangebote</a>'
+        '<a href="/produkte/wochenangebote/frischeprodukte-im-angebot/k/1588161427299187">Frische</a>'
+    )
+    urls = AldiSuedProvider._extract_date_urls(sample_html)
+    assert "https://www.aldi-sued.de/angebote/2026-10-19" in urls
+    assert "https://www.aldi-sued.de/produkte/wochenangebote/k/1588161426582123" in urls
+    assert "https://www.aldi-sued.de/produkte/wochenangebote/frischeprodukte-im-angebot/k/1588161427299187" in urls
+
+
 def test_normalize_postfach_plz_and_location_info() -> None:
     assert normalize_german_plz("80313") == "80331"
     assert normalize_german_plz(None, city_hint="München") == "80331"

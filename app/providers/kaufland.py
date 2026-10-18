@@ -59,6 +59,7 @@ class KauflandProvider(OfferProvider):
             store_name=store_name,
             store_address=store_address,
             requested_zip=zip_code,
+            location_verified=bool(store_id),
         )
         if not offers:
             raise ValueError("Kaufland official offers were empty.")
@@ -146,6 +147,7 @@ class KauflandProvider(OfferProvider):
         store_name: str | None = None,
         store_address: str | None = None,
         requested_zip: str | None = None,
+        location_verified: bool = False,
     ) -> list[Offer]:
         today = today or datetime.now(BERLIN_TZ).date()
         cycles = payload.get("props", {}).get("offerData", {}).get("cycles") or []
@@ -164,6 +166,7 @@ class KauflandProvider(OfferProvider):
                         store_name=store_name,
                         store_address=store_address,
                         requested_zip=requested_zip,
+                        location_verified=location_verified,
                     )
                     if offer is None or offer.id in seen:
                         continue
@@ -191,7 +194,10 @@ class KauflandProvider(OfferProvider):
         store_name: str | None = None,
         store_address: str | None = None,
         requested_zip: str | None = None,
+        location_verified: bool = False,
     ) -> Offer | None:
+        from app.services.location import get_coordinates_for_plz, haversine_distance_km
+
         source_key = clean_text(item.get("offerId") or item.get("klNr"))
         title = clean_text(item.get("detailTitle") or item.get("title"))
         if not source_key or not title:
@@ -202,6 +208,42 @@ class KauflandProvider(OfferProvider):
         discount_percent = _number_or_none(item.get("discount")) or compute_discount_percent(price, old_price)
         unit_price, unit = _base_price(item)
         description = _description(item, category_name)
+
+        clean_store_id = str(store_id).strip() if store_id is not None else ""
+        clean_zip = (requested_zip or "").strip()
+        user_coords = get_coordinates_for_plz(clean_zip) if len(clean_zip) == 5 and clean_zip.isdigit() else None
+        address_verified = False
+        address_conflict = False
+        if user_coords and store_address:
+            m_plz = re.search(r"\b(\d{5})\b", store_address)
+            if m_plz:
+                addr_plz = m_plz.group(1)
+                if addr_plz == clean_zip:
+                    address_verified = True
+                else:
+                    addr_coords = get_coordinates_for_plz(addr_plz)
+                    if addr_coords and haversine_distance_km(user_coords[0], user_coords[1], addr_coords[0], addr_coords[1]) <= MAX_STORE_DISTANCE_KM:
+                        address_verified = True
+                    else:
+                        address_conflict = True
+
+        has_location_evidence = bool(user_coords and not address_conflict and (location_verified or address_verified))
+
+        if clean_store_id and has_location_evidence:
+            scope_type = "store"
+            region_verified = True
+            verification_method = "store_cookie_session"
+            verification_reason = f"Kaufland store session for store {clean_store_id} verified for PLZ {clean_zip}"
+        elif clean_store_id:
+            scope_type = "store"
+            region_verified = False
+            verification_method = "unverified_store_location"
+            verification_reason = f"Kaufland store {clean_store_id} lacks verified geographic location evidence for requested PLZ"
+        else:
+            scope_type = "nationwide"
+            region_verified = False
+            verification_method = "national_catalog_fallback"
+            verification_reason = "No verified Kaufland store within 60km; fallback to national offers"
 
         return Offer(
             id=f"kaufland-{source_key}",
@@ -222,14 +264,14 @@ class KauflandProvider(OfferProvider):
             image_url=_image_url(item),
             source_url=cls.offers_url,
             requested_zip_code=requested_zip,
-            scope_type="store" if store_id else "nationwide",
-            store_id=store_id,
-            store_name=store_name or ("Kaufland (Nationale Angebote)" if not store_id else None),
+            scope_type=scope_type,
+            store_id=clean_store_id or None,
+            store_name=store_name or ("Kaufland (Nationale Angebote)" if not clean_store_id else None),
             store_address=store_address,
             source_provider="kaufland-official",
-            region_verified=True if store_id else False,
-            verification_method="store_cookie_session" if store_id else "national_catalog_fallback",
-            verification_reason=f"Kaufland store session for store {store_id}" if store_id else "No verified Kaufland store within 60km; fallback to national offers",
+            region_verified=region_verified,
+            verification_method=verification_method,
+            verification_reason=verification_reason,
         )
 
 
