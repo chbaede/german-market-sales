@@ -39,9 +39,8 @@ class EdekaProvider(OfferProvider):
         if used_insecure:
             warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
+        candidate_markets = _sort_candidate_markets(candidate_markets, zip_code)
         last_error: Exception | None = None
-        best_offers: list[Offer] = []
-        best_warnings: list[str] = list(warnings)
 
         for market in candidate_markets:
             raw_url = (market.get("url") or "").strip()
@@ -58,23 +57,24 @@ class EdekaProvider(OfferProvider):
                     market_warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
                 market_name = clean_text(market.get("name"))
+                store_id = str(market.get("id") or market.get("marketId") or "").strip() or None
+                store_address = _market_address(market)
+
                 offers = self.offers_from_html(
                     html,
                     limit=limit,
                     source_url=offers_url,
                     market_name=market_name,
+                    store_id=store_id,
+                    store_address=store_address,
+                    requested_zip=zip_code,
                 )
-                if len(offers) > len(best_offers):
-                    best_offers = offers
-                    best_warnings = market_warnings
-                if len(best_offers) >= min(limit, 30):
-                    break
+                if offers:
+                    # Select the closest geographical market with valid offers
+                    return offers, list(dict.fromkeys(market_warnings))
             except Exception as exc:
                 last_error = exc
                 continue
-
-        if best_offers:
-            return best_offers, list(dict.fromkeys(best_warnings))
 
         if last_error:
             raise ValueError(f"No EDEKA offers found for PLZ {zip_code}: {last_error}") from last_error
@@ -87,13 +87,25 @@ class EdekaProvider(OfferProvider):
         limit: int,
         source_url: str,
         market_name: str | None = None,
+        store_id: str | None = None,
+        store_address: str | None = None,
+        requested_zip: str | None = None,
     ) -> list[Offer]:
         soup = BeautifulSoup(html, "html.parser")
         valid_from, valid_to = _page_validity(soup)
         offers: list[Offer] = []
 
         for dialog in soup.find_all("dialog", id=re.compile(r"^dialog-angebot-")):
-            offer = cls._offer_from_dialog(dialog, valid_from, valid_to, source_url, market_name)
+            offer = cls._offer_from_dialog(
+                dialog,
+                valid_from,
+                valid_to,
+                source_url,
+                market_name,
+                store_id=store_id,
+                store_address=store_address,
+                requested_zip=requested_zip,
+            )
             if offer is None:
                 continue
             offers.append(offer)
@@ -109,6 +121,9 @@ class EdekaProvider(OfferProvider):
         fallback_to: str | None,
         source_url: str,
         market_name: str | None,
+        store_id: str | None = None,
+        store_address: str | None = None,
+        requested_zip: str | None = None,
     ) -> Offer | None:
         dialog_id = dialog.get("id", "")
         source_key = dialog_id.removeprefix("dialog-angebot-")
@@ -143,6 +158,13 @@ class EdekaProvider(OfferProvider):
             valid_to=fallback_to,
             image_url=_image_url(dialog),
             source_url=source_url,
+            requested_zip_code=requested_zip,
+            scope_type="store",
+            store_id=store_id,
+            store_name=market_name,
+            store_address=store_address,
+            source_provider="edeka-official",
+            region_verified=True,
         )
 
     def _candidate_markets(self, zip_code: str) -> tuple[list[dict], bool]:
@@ -292,3 +314,48 @@ def _image_url(dialog: Tag) -> str | None:
 
 def _decimal(value: str) -> float:
     return float(value.replace(",", "."))
+
+
+def _sort_candidate_markets(markets: list[dict], zip_code: str) -> list[dict]:
+    from app.services.location import get_coordinates_for_plz, haversine_distance_km
+
+    user_coords = get_coordinates_for_plz(zip_code)
+
+    def sort_key(m: dict) -> tuple[int, float]:
+        contact = m.get("contact") if isinstance(m.get("contact"), dict) else {}
+        address = contact.get("address") if isinstance(contact.get("address"), dict) else (m.get("address") if isinstance(m.get("address"), dict) else {})
+        market_pc = str(address.get("postalCode") or m.get("postalCode") or "").strip()
+        exact_match = 0 if market_pc == zip_code else (1 if market_pc.startswith(zip_code[:3]) else 2)
+
+        raw_dist = m.get("distance")
+        if isinstance(raw_dist, (int, float)):
+            return (exact_match, float(raw_dist))
+
+        coords = m.get("coordinates") or {}
+        if isinstance(coords, dict) and coords.get("lat") and coords.get("lon") and user_coords:
+            try:
+                dist = haversine_distance_km(
+                    user_coords[0],
+                    user_coords[1],
+                    float(coords["lat"]),
+                    float(coords["lon"]),
+                )
+                return (exact_match, dist)
+            except Exception:
+                pass
+
+        return (exact_match, 9999.0)
+
+    return sorted(markets, key=sort_key)
+
+
+def _market_address(market: dict) -> str | None:
+    contact = market.get("contact") if isinstance(market.get("contact"), dict) else {}
+    address = contact.get("address") if isinstance(contact.get("address"), dict) else (market.get("address") if isinstance(market.get("address"), dict) else {})
+    if not isinstance(address, dict) or not address:
+        return None
+    street = clean_text(address.get("street") or address.get("streetAddress"))
+    postal_code = clean_text(address.get("postalCode") or address.get("zipCode"))
+    city = clean_text(address.get("city") or address.get("location"))
+    parts = [p for p in (street, f"{postal_code} {city}".strip()) if p]
+    return ", ".join(parts) if parts else None

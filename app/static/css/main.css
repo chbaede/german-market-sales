@@ -991,6 +991,47 @@ select:focus {
   white-space: nowrap;
 }
 
+.scope-badge {
+  align-items: center;
+  border-radius: 4px;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.1;
+  max-width: 130px;
+  overflow: hidden;
+  padding: 2px 5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-store {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.scope-region {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e40af;
+}
+
+.scope-nationwide {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+}
+
+.scope-fallback {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
 .card-title-group {
   display: flex;
   flex-direction: column;

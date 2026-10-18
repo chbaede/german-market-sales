@@ -50,7 +50,7 @@ def test_category_detection_for_household_items():
     assert categorize_offer("Eis-Box") == "pantry"
 
 
-def test_aldi_sued_uses_southern_zip_when_northern_zip_passed(monkeypatch):
+def test_aldi_sued_preserves_requested_zip_without_rewriting_to_80331(monkeypatch):
     from app.providers.marktguru import MarktguruConfig
 
     provider = MarktguruProvider()
@@ -64,4 +64,5 @@ def test_aldi_sued_uses_southern_zip_when_northern_zip_passed(monkeypatch):
     monkeypatch.setattr(provider, "_request_json", fake_request_json)
     provider.fetch_offers("aldi-sued", zip_code="14195", limit=50)
 
-    assert captured_params["zipCode"] == "80331"
+    # Requested PLZ must be strictly preserved without silent replacement
+    assert captured_params["zipCode"] == "14195"

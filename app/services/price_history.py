@@ -26,6 +26,12 @@ STOP_WORDS = frozenset(
         "dose",
         "becher",
         "tafel",
+        "glas",
+        "beutel",
+        "karton",
+        "schale",
+        "stuck",
+        "stueck",
         "aktion",
         "knaller",
         "superpreis",
@@ -42,16 +48,44 @@ STOP_WORDS = frozenset(
 )
 
 QUANTITY_REGEX = re.compile(
-    r"\b\d+(?:[,.]\d+)?\s*(?:kg|g|ml|l|liter|stk|stuck|er|teilig|tl|x\s*\d+)?\b",
+    r"\b\d+(?:[,.]\d+)?\s*(?:kg|g|ml|l|liter|stk|stuck|stueck|er|teilig|tl|x\s*\d+)?\b",
+    re.IGNORECASE,
+)
+QUANTITY_NORM_REGEX = re.compile(
+    r"\b(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l|liter|stk|stueck|stuck)\b",
     re.IGNORECASE,
 )
 NON_ALNUM_REGEX = re.compile(r"[^a-z0-9\s]")
 WHITESPACE_REGEX = re.compile(r"\s+")
 
 
+def _extract_normalized_quantity(text: str) -> str | None:
+    match = QUANTITY_NORM_REGEX.search(text)
+    if not match:
+        return None
+    val_str, unit_str = match.groups()
+    try:
+        val = float(val_str.replace(",", "."))
+    except ValueError:
+        return None
+    unit = unit_str.lower()
+    if unit == "kg":
+        return f"{int(round(val * 1000))}g"
+    elif unit == "g":
+        return f"{int(round(val))}g"
+    elif unit in ("l", "liter"):
+        return f"{int(round(val * 1000))}ml"
+    elif unit == "ml":
+        return f"{int(round(val))}ml"
+    elif unit in ("stk", "stuck", "stueck"):
+        return f"{int(round(val))}stk"
+    return None
+
+
 @lru_cache(maxsize=4096)
 def normalize_product_key(title: str, brand: str | None = None) -> str:
     combined = f"{brand or ''} {title}".strip()
+    norm_qty = _extract_normalized_quantity(combined)
     text = unicodedata.normalize("NFKD", combined)
     text = "".join(char for char in text if not unicodedata.combining(char))
     text = text.replace("ß", "ss").casefold()
@@ -60,8 +94,12 @@ def normalize_product_key(title: str, brand: str | None = None) -> str:
     text = NON_ALNUM_REGEX.sub(" ", text)
     words = [word for word in text.split() if len(word) >= 2 and word not in STOP_WORDS]
     if not words:
-        return WHITESPACE_REGEX.sub("-", text.strip()) or "item"
-    return "-".join(sorted(set(words[:5])))
+        base = WHITESPACE_REGEX.sub("-", text.strip()) or "item"
+    else:
+        base = "-".join(sorted(set(words[:5])))
+    if norm_qty:
+        return f"{base}_{norm_qty}"
+    return base
 
 
 class PriceHistoryService:
@@ -107,9 +145,24 @@ class PriceHistoryService:
                 )
                 """
             )
+            # Safe migration for existing tables:
+            cursor = conn.execute("PRAGMA table_info(price_history)")
+            existing_cols = {row["name"] for row in cursor.fetchall()}
+            new_cols = {
+                "scope_type": "TEXT DEFAULT 'unknown'",
+                "store_id": "TEXT",
+                "store_name": "TEXT",
+                "region_verified": "INTEGER DEFAULT 0",
+                "source_provider": "TEXT",
+            }
+            for col_name, col_type in new_cols.items():
+                if col_name not in existing_cols:
+                    conn.execute(f"ALTER TABLE price_history ADD COLUMN {col_name} {col_type}")
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_key ON price_history(product_key)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_date ON price_history(recorded_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_retailer ON price_history(retailer_slug)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_zip ON price_history(zip_code)")
             conn.commit()
 
     def record_offers(
@@ -127,14 +180,20 @@ class PriceHistoryService:
         with self._get_connection() as conn:
             existing_rows = conn.execute(
                 """
-                SELECT product_key, retailer_slug, price
+                SELECT product_key, retailer_slug, zip_code, COALESCE(store_id, '') as store_id, price
                 FROM price_history
                 WHERE recorded_at LIKE ? AND price IS NOT NULL
                 """,
                 (f"{date_prefix}%",),
             ).fetchall()
-            seen_today: set[tuple[str, str, float]] = {
-                (row["product_key"], row["retailer_slug"], round(float(row["price"]), 4))
+            seen_today: set[tuple[str, str, str, str, float]] = {
+                (
+                    row["product_key"],
+                    row["retailer_slug"],
+                    row["zip_code"] or "",
+                    row["store_id"] or "",
+                    round(float(row["price"]), 4),
+                )
                 for row in existing_rows
             }
 
@@ -144,7 +203,15 @@ class PriceHistoryService:
                     continue
 
                 product_key = offer.product_key or normalize_product_key(offer.title, offer.brand)
-                dedup_key = (product_key, offer.retailer_slug, round(float(offer.price), 4))
+                effective_zip = offer.requested_zip_code or zip_code
+                store_id = offer.store_id or ""
+                dedup_key = (
+                    product_key,
+                    offer.retailer_slug,
+                    effective_zip,
+                    store_id,
+                    round(float(offer.price), 4),
+                )
                 if dedup_key in seen_today:
                     continue
                 seen_today.add(dedup_key)
@@ -166,7 +233,12 @@ class PriceHistoryService:
                         offer.valid_from,
                         offer.valid_to,
                         offer.source_url,
-                        zip_code,
+                        effective_zip,
+                        offer.scope_type,
+                        offer.store_id,
+                        offer.store_name,
+                        1 if offer.region_verified else 0,
+                        offer.source_provider,
                     )
                 )
 
@@ -176,8 +248,9 @@ class PriceHistoryService:
                     INSERT INTO price_history (
                         product_key, title, brand, category, retailer_slug, retailer_name,
                         price, old_price, unit_price, unit, discount_percent, recorded_at,
-                        valid_from, valid_to, source_url, zip_code
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        valid_from, valid_to, source_url, zip_code,
+                        scope_type, store_id, store_name, region_verified, source_provider
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows_to_insert,
                 )
@@ -186,30 +259,35 @@ class PriceHistoryService:
 
         return len(rows_to_insert)
 
-    def get_all_time_low_map(self) -> dict[str, float]:
-        mtime_ns = self.db_path.stat().st_mtime_ns if self.db_path.exists() else 0
-        if self._atl_cache is not None and self._atl_cache[0] == mtime_ns:
-            return self._atl_cache[1]
-
+    def get_all_time_low_map(self, zip_code: str | None = None) -> dict[str, float]:
         with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT product_key, MIN(price) as min_price
-                FROM price_history
-                WHERE price IS NOT NULL AND price > 0
-                GROUP BY product_key
-                """
-            )
-            atl_map = {row["product_key"]: float(row["min_price"]) for row in cursor.fetchall()}
-
-        self._atl_cache = (mtime_ns, atl_map)
-        return atl_map
+            if zip_code:
+                cursor = conn.execute(
+                    """
+                    SELECT product_key, MIN(price) as min_price
+                    FROM price_history
+                    WHERE price IS NOT NULL AND price > 0 AND (zip_code = ? OR scope_type = 'nationwide')
+                    GROUP BY product_key
+                    """,
+                    (zip_code,),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT product_key, MIN(price) as min_price
+                    FROM price_history
+                    WHERE price IS NOT NULL AND price > 0
+                    GROUP BY product_key
+                    """
+                )
+            return {row["product_key"]: float(row["min_price"]) for row in cursor.fetchall()}
 
     def get_product_stats(
         self,
         title: str,
         brand: str | None = None,
         current_price: float | None = None,
+        zip_code: str | None = None,
     ) -> dict:
         product_key = normalize_product_key(title, brand)
         with self._get_connection() as conn:
@@ -232,12 +310,33 @@ class PriceHistoryService:
             avg_price = float(round(agg["avg_price"], 2)) if agg and agg["avg_price"] is not None else current_price
             record_count = int(agg["count"]) if agg else 0
 
+            regional_min = None
+            regional_avg = None
+            is_regional_atl = False
+            if zip_code:
+                r_cursor = conn.execute(
+                    """
+                    SELECT
+                        MIN(price) as min_price,
+                        AVG(price) as avg_price
+                    FROM price_history
+                    WHERE product_key = ? AND price IS NOT NULL AND (zip_code = ? OR scope_type = 'nationwide')
+                    """,
+                    (product_key, zip_code),
+                )
+                r_agg = r_cursor.fetchone()
+                if r_agg and r_agg["min_price"] is not None:
+                    regional_min = float(r_agg["min_price"])
+                    regional_avg = float(round(r_agg["avg_price"], 2))
+                    if current_price is not None:
+                        is_regional_atl = current_price <= (regional_min + 0.001)
+
             # Fetch recent price observation points
             points_cursor = conn.execute(
                 """
                 SELECT
                     recorded_at, price, old_price, retailer_name, retailer_slug,
-                    source_url, unit_price, unit, discount_percent
+                    source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name
                 FROM price_history
                 WHERE product_key = ? AND price IS NOT NULL
                 ORDER BY recorded_at ASC
@@ -257,6 +356,9 @@ class PriceHistoryService:
                     "unit_price": row["unit_price"],
                     "unit": row["unit"],
                     "discount_percent": row["discount_percent"],
+                    "zip_code": row["zip_code"],
+                    "scope_type": row["scope_type"],
+                    "store_name": row["store_name"],
                 }
                 for row in points_cursor.fetchall()
             ]
@@ -265,19 +367,27 @@ class PriceHistoryService:
         if current_price is not None and min_price is not None:
             is_all_time_low = current_price <= (min_price + 0.001)
 
+        # For backward compatibility, all_time_low reflects regional if zip_code given and available
+        display_atl = regional_min if (zip_code and regional_min is not None) else min_price
+        display_is_atl = is_regional_atl if (zip_code and regional_min is not None) else is_all_time_low
+
         return {
             "product_key": product_key,
             "title": title,
             "product_name": title,
             "brand": brand,
             "current_price": current_price,
-            "all_time_low": min_price,
+            "all_time_low": display_atl,
             "all_time_high": max_price,
-            "average_price": avg_price,
-            "avg_price": avg_price,
+            "average_price": regional_avg if (zip_code and regional_avg is not None) else avg_price,
+            "avg_price": regional_avg if (zip_code and regional_avg is not None) else avg_price,
+            "regional_all_time_low": regional_min,
+            "national_all_time_low": min_price,
+            "is_all_time_low": display_is_atl,
+            "is_regional_all_time_low": is_regional_atl,
+            "is_national_all_time_low": is_all_time_low,
             "record_count": record_count,
             "records_count": record_count,
-            "is_all_time_low": is_all_time_low,
             "history": history,
         }
 

@@ -19,6 +19,7 @@ from app.providers.base import (
     source_offer_id_from_key,
 )
 from app.services.categories import categorize_offer
+from app.services.location import is_aldi_nord_territory
 
 
 class AldiNordProvider(OfferProvider):
@@ -29,23 +30,26 @@ class AldiNordProvider(OfferProvider):
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
         self._validate_retailer_slug(retailer_slug)
 
+        if not is_aldi_nord_territory(zip_code):
+            return [], [f"ALDI Nord 매장은 해당 지역(PLZ {zip_code})에 존재하지 않습니다 (ALDI Süd 관할 지역)."]
+
         html, used_insecure = self._request_text(self.offers_url)
         warnings: list[str] = []
         if used_insecure:
             warnings.append("ALDI Nord 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
-        return self.offers_from_html(html, limit=limit), warnings
+        return self.offers_from_html(html, limit=limit, requested_zip_code=zip_code), warnings
 
     @classmethod
-    def offers_from_html(cls, html: str, limit: int) -> list[Offer]:
+    def offers_from_html(cls, html: str, limit: int, requested_zip_code: str | None = None) -> list[Offer]:
         soup = BeautifulSoup(html, "html.parser")
         script = soup.find("script", id="__NEXT_DATA__")
         if not script:
             raise ValueError("ALDI Nord page data was not found.")
         next_data = json.loads(script.string or script.get_text())
-        return cls.offers_from_next_data(next_data, limit=limit)
+        return cls.offers_from_next_data(next_data, limit=limit, requested_zip_code=requested_zip_code)
 
     @classmethod
-    def offers_from_next_data(cls, next_data: dict, limit: int) -> list[Offer]:
+    def offers_from_next_data(cls, next_data: dict, limit: int, requested_zip_code: str | None = None) -> list[Offer]:
         offer_data = cls._offer_data(next_data)
         products = offer_data.get("algoliaDataMap") or {}
         categories = offer_data.get("categories") or []
@@ -64,7 +68,14 @@ class AldiNordProvider(OfferProvider):
                     product = products.get(object_id)
                     if not product or product.get("isRecall") or not product.get("isAvailable", True):
                         continue
-                    offer = cls._offer_from_product(product, object_id, section_title, fallback_from, fallback_to)
+                    offer = cls._offer_from_product(
+                        product,
+                        object_id,
+                        section_title,
+                        fallback_from,
+                        fallback_to,
+                        requested_zip_code=requested_zip_code,
+                    )
                     if offer is None:
                         continue
                     offers.append(offer)
@@ -97,6 +108,7 @@ class AldiNordProvider(OfferProvider):
         section_title: str,
         fallback_from: str | None,
         fallback_to: str | None,
+        requested_zip_code: str | None = None,
     ) -> Offer | None:
         title = clean_text(product.get("name"))
         if not title:
@@ -130,6 +142,11 @@ class AldiNordProvider(OfferProvider):
             valid_to=_price_date(price_data, "validUntil") or fallback_to,
             image_url=_primary_image(product.get("assets") or []),
             source_url=cls.offers_url,
+            requested_zip_code=requested_zip_code,
+            scope_type="region",
+            store_name="ALDI Nord (Norddeutschland)",
+            source_provider="aldi-nord-official",
+            region_verified=True,
         )
 
 

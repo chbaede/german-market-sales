@@ -46,7 +46,16 @@ class RossmannProvider(OfferProvider):
         if offers and match_count / len(offers) >= self.minimum_match_ratio:
             for offer in offers:
                 offer.source_url = self.catalog_url
+                offer.source_provider = "rossmann-official"
+                offer.scope_type = "region"
+                offer.store_name = "ROSSMANN (Offizieller Prospekt)"
+                offer.region_verified = True
+                offer.requested_zip_code = zip_code
         else:
+            for offer in offers:
+                offer.requested_zip_code = zip_code
+                offer.store_name = offer.store_name or "ROSSMANN"
+                offer.region_verified = True
             warnings.append(
                 "ROSSMANN 공식 전단지 색인과 Marktguru 항목의 일치율이 낮아 Marktguru 출처 링크를 유지했습니다."
             )

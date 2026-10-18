@@ -123,7 +123,9 @@ class OfferService:
 
     def _read_cache(self, zip_code: str) -> dict | None:
         target_file = self._cache_file_for_zip(zip_code)
-        candidates = [target_file] if target_file == self.cache_file else [target_file, self.cache_file]
+        candidates = [target_file]
+        if zip_code == DEFAULT_CACHE_ZIP and target_file != self.cache_file:
+            candidates.append(self.cache_file)
         for candidate in candidates:
             if not candidate.exists():
                 continue
@@ -174,8 +176,11 @@ class OfferService:
 
     def get_cached_offers(self, zip_code: str) -> OfferResult | None:
         target_file = self._cache_file_for_zip(zip_code)
-        active_file = target_file if target_file.exists() else (self.cache_file if self.cache_file.exists() else None)
-        if active_file is None:
+        if target_file.exists():
+            active_file = target_file
+        elif zip_code == DEFAULT_CACHE_ZIP and self.cache_file.exists():
+            active_file = self.cache_file
+        else:
             return None
         try:
             mtime_ns = active_file.stat().st_mtime_ns
@@ -208,9 +213,9 @@ class OfferService:
             from_cache=True,
         )
 
-    def get_all_time_low_map(self) -> dict[str, float]:
+    def get_all_time_low_map(self, zip_code: str | None = None) -> dict[str, float]:
         try:
-            return self.price_history.get_all_time_low_map()
+            return self.price_history.get_all_time_low_map(zip_code=zip_code)
         except Exception:
             return {}
 
@@ -267,6 +272,8 @@ class OfferService:
                 limit=self.upstream_fetch_limit,
             )
             if retailer_slug in self.specialized_providers and not offers:
+                if any("해당 지역" in w for w in warnings):
+                    return [], warnings
                 retailer_name = self.retailers.get(retailer_slug, retailer_slug)
                 fallback_offers, fallback_warnings = self._try_marketguru_fallback(retailer_slug, zip_code)
                 if fallback_offers:
@@ -316,3 +323,61 @@ class OfferService:
             merged.append(offer)
             seen.add(offer.id)
         return merged
+
+    def get_regional_diagnostics(self, zip_code: str, retailer_slug: str | None = None) -> dict[str, Any]:
+        """
+        Diagnose how a given PLZ resolves for each retailer:
+        - requested PLZ
+        - resolved store ID, name, address
+        - provider used (official vs fallback)
+        - scope type (store, region, nationwide, unknown)
+        - offer count
+        - sample titles
+        - validity dates
+        - regional verification status
+        - warnings
+        """
+        target_retailers = [retailer_slug] if retailer_slug and retailer_slug in self.retailers else list(self.retailers.keys())
+        diagnostics: dict[str, Any] = {}
+        for slug in target_retailers:
+            retailer_name = self.retailers.get(slug, slug)
+            try:
+                offers, warnings = self._fetch_retailer_offers(slug, zip_code)
+                store_id = next((o.store_id for o in offers if o.store_id), None)
+                store_name = next((o.store_name for o in offers if o.store_name), None)
+                store_address = next((o.store_address for o in offers if o.store_address), None)
+                source_provider = next((o.source_provider for o in offers if o.source_provider), "unknown")
+                scope_type = next((o.scope_type for o in offers if o.scope_type), "unknown")
+                region_verified = any(o.region_verified for o in offers)
+                valid_from = next((o.valid_from for o in offers if o.valid_from), None)
+                valid_to = next((o.valid_to for o in offers if o.valid_to), None)
+                diagnostics[slug] = {
+                    "retailer": retailer_name,
+                    "retailer_slug": slug,
+                    "requested_zip_code": zip_code,
+                    "store_id": store_id,
+                    "store_name": store_name,
+                    "store_address": store_address,
+                    "source_provider": source_provider,
+                    "scope_type": scope_type,
+                    "region_verified": region_verified,
+                    "offer_count": len(offers),
+                    "valid_from": valid_from,
+                    "valid_to": valid_to,
+                    "sample_titles": [o.title for o in offers[:3]],
+                    "warnings": warnings,
+                    "status": "ok" if offers else ("unsupported_territory" if any("해당 지역" in w for w in warnings) else "no_offers"),
+                }
+            except Exception as exc:
+                diagnostics[slug] = {
+                    "retailer": retailer_name,
+                    "retailer_slug": slug,
+                    "requested_zip_code": zip_code,
+                    "error": str(exc),
+                    "status": "error",
+                }
+        return {
+            "zip_code": zip_code,
+            "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+            "retailers": diagnostics,
+        }

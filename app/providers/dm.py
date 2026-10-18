@@ -20,7 +20,7 @@ class DmProvider(OfferProvider):
             warnings.append("TLS 인증서 검증 실패로 dm 요청을 한 번 비검증 모드로 재시도했습니다.")
         products = payload.get("products") or []
         offers = [
-            self._offer_from_product(product, retailer_slug)
+            self._offer_from_product(product, retailer_slug, zip_code)
             for product in products
             if product.get("tileData", {}).get("title", {}).get("tileHeadline") or product.get("title")
         ]
@@ -41,7 +41,7 @@ class DmProvider(OfferProvider):
         return self._request_json(self.search_url, params=params, headers=headers)
 
     @classmethod
-    def _offer_from_product(cls, product: dict[str, Any], retailer_slug: str) -> Offer:
+    def _offer_from_product(cls, product: dict[str, Any], retailer_slug: str, zip_code: str | None = None) -> Offer:
         tile = product.get("tileData") or {}
         title_data = tile.get("title") or {}
         brand_data = tile.get("brand") or {}
@@ -82,6 +82,11 @@ class DmProvider(OfferProvider):
             valid_to=None,
             image_url=image_url,
             source_url=source_url,
+            requested_zip_code=zip_code,
+            scope_type="nationwide",
+            store_name="dm-drogerie markt (Online/Nationale Angebote)",
+            source_provider="dm-official",
+            region_verified=False,
         )
 
 

@@ -61,6 +61,7 @@ class ReweProvider(OfferProvider):
                     valid_to=valid_to,
                     source_url=self.offers_url,
                     limit=limit,
+                    requested_zip_code=zip_code,
                 )
             )
         if not offers:
@@ -102,6 +103,7 @@ class ReweProvider(OfferProvider):
         valid_to: str | None,
         source_url: str,
         limit: int,
+        requested_zip_code: str | None = None,
     ) -> list[Offer]:
         offers: list[Offer] = []
         seen: set[str] = set()
@@ -110,7 +112,13 @@ class ReweProvider(OfferProvider):
             article = soup.find("article")
             if not isinstance(article, Tag):
                 continue
-            offer = cls._offer_from_article(article, valid_from, valid_to, source_url)
+            offer = cls._offer_from_article(
+                article,
+                valid_from,
+                valid_to,
+                source_url,
+                requested_zip_code=requested_zip_code,
+            )
             if offer is None or offer.id in seen:
                 continue
             offers.append(offer)
@@ -126,6 +134,7 @@ class ReweProvider(OfferProvider):
         valid_from: str | None,
         valid_to: str | None,
         source_url: str,
+        requested_zip_code: str | None = None,
     ) -> Offer | None:
         title_link = article.select_one("[data-offer-title]")
         title = clean_text(title_link.get("data-offer-title") if title_link else "")
@@ -163,6 +172,11 @@ class ReweProvider(OfferProvider):
             valid_to=valid_to,
             image_url=_image_url(article),
             source_url=source_url,
+            requested_zip_code=requested_zip_code,
+            scope_type="nationwide",
+            store_name="REWE (Nationale Angebote)",
+            source_provider="rewe-official",
+            region_verified=False,
         )
 
     def _frontend_include_contents(self, offer_requests: list[dict[str, str]]) -> tuple[list[str], bool]:

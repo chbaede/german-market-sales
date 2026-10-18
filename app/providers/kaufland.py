@@ -19,6 +19,7 @@ from app.services.categories import categorize_offer
 
 KAUFLAND_OFFERS_URL = "https://filiale.kaufland.de/angebote/uebersicht.html?kloffer-week=current"
 KAUFLAND_STOREFINDER_URL = "https://filiale.kaufland.de/.klstorefinder.json"
+MAX_STORE_DISTANCE_KM = 60.0
 
 
 class KauflandProvider(OfferProvider):
@@ -33,7 +34,11 @@ class KauflandProvider(OfferProvider):
         self._validate_retailer_slug(retailer_slug)
 
         headers: dict[str, str] | None = None
-        store_id = self._resolve_store_id(zip_code)
+        store = self._resolve_store(zip_code)
+        store_id = store.get("n") if store else None
+        store_name = store.get("cn") if store else None
+        store_address = _format_kaufland_address(store) if store else None
+
         if store_id:
             headers = {"Cookie": f"x-aem-variant={store_id}; kl_store={store_id}"}
 
@@ -47,38 +52,60 @@ class KauflandProvider(OfferProvider):
             warnings.append("Kaufland 공식 페이지 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
         payload = self.extract_offer_template_payload(html)
-        offers = self.offers_from_payload(payload, limit=limit)
+        offers = self.offers_from_payload(
+            payload,
+            limit=limit,
+            store_id=store_id,
+            store_name=store_name,
+            store_address=store_address,
+            requested_zip=zip_code,
+        )
         if not offers:
             raise ValueError("Kaufland official offers were empty.")
         return offers, warnings
 
-    def _resolve_store_id(self, zip_code: str) -> str | None:
+    def _resolve_store(self, zip_code: str, stores: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+        from app.services.location import get_coordinates_for_plz, haversine_distance_km
+
         cleaned = (zip_code or "").strip()
         if not cleaned or not cleaned.isdigit():
             return None
-        stores = self._load_stores()
+        if stores is None:
+            stores = self._load_stores()
         if not stores:
             return None
-        for prefix_len in (5, 4, 3, 2):
+
+        # 1. Exact 5-digit PLZ match
+        exact_matches = [s for s in stores if str(s.get("pc") or "").strip() == cleaned and s.get("n")]
+        if exact_matches:
+            return exact_matches[0]
+
+        user_coords = get_coordinates_for_plz(cleaned)
+        if not user_coords:
+            # Without verified geographic coordinates, do not guess
+            return None
+
+        # 2. Postcode prefix match (4, 3, 2 digits) within reasonable distance
+        for prefix_len in (4, 3, 2):
             prefix = cleaned[:prefix_len]
-            for store in stores:
-                pc = str(store.get("pc") or "").strip()
-                store_id = str(store.get("n") or "").strip()
-                if store_id and pc.startswith(prefix):
-                    return store_id
-        # Closest numeric PLZ fallback
-        target_num = int(cleaned)
-        best_store_id: str | None = None
-        best_diff: int | None = None
-        for store in stores:
-            pc = str(store.get("pc") or "").strip()
-            store_id = str(store.get("n") or "").strip()
-            if store_id and pc.isdigit():
-                diff = abs(int(pc) - target_num)
-                if best_diff is None or diff < best_diff:
-                    best_diff = diff
-                    best_store_id = store_id
-        return best_store_id
+            matches = [s for s in stores if str(s.get("pc") or "").strip().startswith(prefix) and s.get("n")]
+            if matches:
+                closest = min(matches, key=lambda s: _store_distance(s, user_coords))
+                if _store_distance(closest, user_coords) <= MAX_STORE_DISTANCE_KM:
+                    return closest
+
+        # 3. True geographic distance fallback (haversine) within MAX_STORE_DISTANCE_KM
+        valid_stores = [s for s in stores if s.get("n") and s.get("lat") and s.get("lng")]
+        if valid_stores:
+            closest = min(valid_stores, key=lambda s: _store_distance(s, user_coords))
+            if _store_distance(closest, user_coords) <= MAX_STORE_DISTANCE_KM:
+                return closest
+
+        return None
+
+    def _resolve_store_id(self, zip_code: str) -> str | None:
+        store = self._resolve_store(zip_code)
+        return str(store.get("n")).strip() if store and store.get("n") else None
 
     def _load_stores(self) -> list[dict[str, Any]]:
         if KauflandProvider._stores_cache is not None:
@@ -114,7 +141,16 @@ class KauflandProvider(OfferProvider):
         raise ValueError("Kaufland OfferTemplate payload was not found.")
 
     @classmethod
-    def offers_from_payload(cls, payload: dict, limit: int, today: date | None = None) -> list[Offer]:
+    def offers_from_payload(
+        cls,
+        payload: dict,
+        limit: int,
+        today: date | None = None,
+        store_id: str | None = None,
+        store_name: str | None = None,
+        store_address: str | None = None,
+        requested_zip: str | None = None,
+    ) -> list[Offer]:
         today = today or datetime.now(BERLIN_TZ).date()
         cycles = payload.get("props", {}).get("offerData", {}).get("cycles") or []
         current_offers: list[Offer] = []
@@ -125,7 +161,14 @@ class KauflandProvider(OfferProvider):
             for category in cycle.get("categories") or []:
                 category_name = clean_text(category.get("displayName") or category.get("name"))
                 for item in category.get("offers") or []:
-                    offer = cls._offer_from_item(item, category_name)
+                    offer = cls._offer_from_item(
+                        item,
+                        category_name,
+                        store_id=store_id,
+                        store_name=store_name,
+                        store_address=store_address,
+                        requested_zip=requested_zip,
+                    )
                     if offer is None or offer.id in seen:
                         continue
                     seen.add(offer.id)
@@ -144,7 +187,15 @@ class KauflandProvider(OfferProvider):
         return current_offers + future_offers
 
     @classmethod
-    def _offer_from_item(cls, item: dict, category_name: str) -> Offer | None:
+    def _offer_from_item(
+        cls,
+        item: dict,
+        category_name: str,
+        store_id: str | None = None,
+        store_name: str | None = None,
+        store_address: str | None = None,
+        requested_zip: str | None = None,
+    ) -> Offer | None:
         source_key = clean_text(item.get("offerId") or item.get("klNr"))
         title = clean_text(item.get("detailTitle") or item.get("title"))
         if not source_key or not title:
@@ -174,6 +225,13 @@ class KauflandProvider(OfferProvider):
             valid_to=date_to_berlin_iso(item.get("dateTo"), end_of_day=True),
             image_url=_image_url(item),
             source_url=cls.offers_url,
+            requested_zip_code=requested_zip,
+            scope_type="store" if store_id else "nationwide",
+            store_id=store_id,
+            store_name=store_name or ("Kaufland (Nationale Angebote)" if not store_id else None),
+            store_address=store_address,
+            source_provider="kaufland-official",
+            region_verified=True if store_id else False,
         )
 
 
@@ -249,3 +307,32 @@ def _image_url(item: dict) -> str | None:
     if detail_images:
         return detail_images[0]
     return clean_text(item.get("listImage")) or None
+
+
+def _format_kaufland_address(store: dict) -> str | None:
+    street = clean_text(store.get("sn"))
+    pc = clean_text(store.get("pc"))
+    city = clean_text(store.get("t"))
+    parts = [p for p in (street, f"{pc} {city}".strip()) if p]
+    return ", ".join(parts) if parts else None
+
+
+def _store_distance(store: dict, user_coords: tuple[float, float]) -> float:
+    from app.services.location import get_coordinates_for_plz, haversine_distance_km
+
+    lat = store.get("lat")
+    lng = store.get("lng")
+    if lat is not None and lng is not None:
+        try:
+            return haversine_distance_km(user_coords[0], user_coords[1], float(lat), float(lng))
+        except (ValueError, TypeError):
+            pass
+
+    store_pc = str(store.get("pc") or "").strip()
+    if store_pc:
+        store_coords = get_coordinates_for_plz(store_pc)
+        if store_coords:
+            return haversine_distance_km(user_coords[0], user_coords[1], store_coords[0], store_coords[1])
+
+    return 99999.0
+

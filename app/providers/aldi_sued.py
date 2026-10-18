@@ -21,6 +21,7 @@ from app.providers.base import (
     source_offer_id_from_key,
 )
 from app.services.categories import categorize_offer
+from app.services.location import is_aldi_sued_territory
 
 ALDI_SUED_BASE_URL = "https://www.aldi-sued.de"
 ALDI_SUED_OFFERS_URL = f"{ALDI_SUED_BASE_URL}/de/angebote.html"
@@ -36,20 +37,23 @@ class AldiSuedProvider(OfferProvider):
     def fetch_offers(self, retailer_slug: str, zip_code: str, limit: int) -> tuple[list[Offer], list[str]]:
         self._validate_retailer_slug(retailer_slug)
 
+        if not is_aldi_sued_territory(zip_code):
+            return [], [f"ALDI Süd 매장은 해당 지역(PLZ {zip_code})에 존재하지 않습니다 (ALDI Nord 관할 지역)."]
+
         html, used_insecure = self._request_text(self.offers_url)
         warnings: list[str] = []
         if used_insecure:
             warnings.append("ALDI Süd 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
         offers_by_id: dict[str, Offer] = {}
-        for offer in self.offers_from_html(html, limit=limit, source_url=self.offers_url):
+        for offer in self.offers_from_html(html, limit=limit, source_url=self.offers_url, requested_zip_code=zip_code):
             offers_by_id[offer.id] = offer
 
         date_urls = self._extract_date_urls(html)
         if date_urls and len(offers_by_id) < limit:
             workers = max(1, min(len(date_urls), 4))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="aldi-sued-day") as executor:
-                futures = {executor.submit(self._fetch_day_page, url, limit): url for url in date_urls}
+                futures = {executor.submit(self._fetch_day_page, url, limit, zip_code): url for url in date_urls}
                 for future in as_completed(futures):
                     try:
                         day_offers, day_insecure = future.result()
@@ -66,12 +70,18 @@ class AldiSuedProvider(OfferProvider):
             raise ValueError("ALDI Süd official offers were empty.")
         return offers, list(dict.fromkeys(warnings))
 
-    def _fetch_day_page(self, url: str, limit: int) -> tuple[list[Offer], bool]:
+    def _fetch_day_page(self, url: str, limit: int, requested_zip_code: str | None = None) -> tuple[list[Offer], bool]:
         html, used_insecure = self._request_text(url)
         date_match = re.search(r"/angebote/(\d{4}-\d{2}-\d{2})", url)
         fallback_date = date_match.group(1) if date_match else None
         return (
-            self.offers_from_html(html, limit=limit, source_url=url, fallback_date=fallback_date),
+            self.offers_from_html(
+                html,
+                limit=limit,
+                source_url=url,
+                fallback_date=fallback_date,
+                requested_zip_code=requested_zip_code,
+            ),
             used_insecure,
         )
 
@@ -92,6 +102,7 @@ class AldiSuedProvider(OfferProvider):
         limit: int,
         source_url: str | None = None,
         fallback_date: str | None = None,
+        requested_zip_code: str | None = None,
     ) -> list[Offer]:
         soup = BeautifulSoup(html, "html.parser")
         script = soup.find("script", id="__NUXT_DATA__")
@@ -105,6 +116,7 @@ class AldiSuedProvider(OfferProvider):
             limit=limit,
             source_url=source_url or cls.offers_url,
             fallback_date=fallback_date,
+            requested_zip_code=requested_zip_code,
         )
 
     @classmethod
@@ -114,6 +126,7 @@ class AldiSuedProvider(OfferProvider):
         limit: int,
         source_url: str | None = None,
         fallback_date: str | None = None,
+        requested_zip_code: str | None = None,
     ) -> list[Offer]:
         offers: list[Offer] = []
         seen: set[str] = set()
@@ -130,6 +143,7 @@ class AldiSuedProvider(OfferProvider):
                 resolved,
                 source_url=source_url or cls.offers_url,
                 fallback_date=fallback_date,
+                requested_zip_code=requested_zip_code,
             )
             if offer is None or offer.id in seen:
                 continue
@@ -145,6 +159,7 @@ class AldiSuedProvider(OfferProvider):
         product: dict[str, Any],
         source_url: str,
         fallback_date: str | None = None,
+        requested_zip_code: str | None = None,
     ) -> Offer | None:
         sku = clean_text(product.get("sku") or product.get("objectID"))
         title = clean_text(product.get("name"))
@@ -223,6 +238,11 @@ class AldiSuedProvider(OfferProvider):
             valid_to=valid_to,
             image_url=_primary_image(product.get("assets") or []),
             source_url=item_url,
+            requested_zip_code=requested_zip_code,
+            scope_type="region",
+            store_name="ALDI Süd (Süddeutschland)",
+            source_provider="aldi-sued-official",
+            region_verified=True,
         )
 
 

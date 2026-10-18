@@ -41,16 +41,12 @@ class MarktguruProvider(OfferProvider):
         if config.used_insecure_tls:
             warnings.append("TLS 인증서 검증 실패로 Marktguru 요청을 한 번 비검증 모드로 재시도했습니다.")
 
-        effective_zip = zip_code
-        if retailer_slug == "aldi-sued" and zip_code.startswith(("0", "1", "2", "3", "49")):
-            effective_zip = "80331"
-
         endpoint = f"https://{config.api_host}/api/v1/publishers/retailer/{retailer_slug}/offers"
-        payload = self._request_json(
+        res = self._request_json(
             endpoint,
             params={
                 "as": "mobile",
-                "zipCode": effective_zip,
+                "zipCode": zip_code,
                 "limit": limit,
                 "offset": 0,
             },
@@ -61,8 +57,16 @@ class MarktguruProvider(OfferProvider):
                 "Content-type": "application/json",
             },
         )
+        if isinstance(res, tuple) and len(res) == 2:
+            payload, used_insecure = res
+        else:
+            payload = res
+            used_insecure = False
+
+        if used_insecure:
+            warnings.append("TLS 인증서 검증 실패로 Marktguru 요청을 한 번 비검증 모드로 재시도했습니다.")
         offers = [
-            self._offer_from_api(item, retailer_slug)
+            self._offer_from_api(item, retailer_slug, zip_code)
             for item in payload.get("results", [])
             if item.get("product", {}).get("name")
         ]
@@ -109,7 +113,7 @@ class MarktguruProvider(OfferProvider):
         raise ValueError("No Marktguru JSON bootstrap script found.")
 
     @staticmethod
-    def _offer_from_api(item: dict, retailer_slug: str) -> Offer:
+    def _offer_from_api(item: dict, retailer_slug: str, zip_code: str | None = None) -> Offer:
         product = item.get("product") or {}
         retailer = item.get("retailer") or {}
         brand_data = item.get("brand") or {}
@@ -143,6 +147,10 @@ class MarktguruProvider(OfferProvider):
             valid_to=item.get("validTo"),
             image_url=_image_url(source_offer_id, item),
             source_url=f"https://www.marktguru.de/r/{retailer_slug}",
+            requested_zip_code=zip_code,
+            scope_type="region",
+            source_provider="marktguru",
+            region_verified=True,
         )
 
 

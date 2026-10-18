@@ -154,7 +154,7 @@ def render_offer_page(
     filtered = sort_offers(filtered, sort)
     filtered = limit_offers_per_retailer(filtered, current_app.config["MAX_OFFERS_PER_RETAILER"])
 
-    _enrich_atl_if_needed(filtered, service, result.fetched_at)
+    _enrich_atl_if_needed(filtered, service, result.fetched_at, zip_code=zip_code)
 
     rendered = render_template(
         "offers.html",
@@ -205,17 +205,29 @@ def render_offer_page(
     return response
 
 
-def _enrich_atl_if_needed(offers: list[Offer], service: OfferService, fetched_at: str | None) -> None:
+def _enrich_atl_if_needed(
+    offers: list[Offer],
+    service: OfferService,
+    fetched_at: str | None,
+    zip_code: str | None = None,
+) -> None:
     if not offers:
         return
-    all_time_low_map = service.get_all_time_low_map() if hasattr(service, "get_all_time_low_map") else {}
+    all_time_low_map = service.get_all_time_low_map(zip_code=zip_code) if hasattr(service, "get_all_time_low_map") else {}
+    national_atl_map = service.get_all_time_low_map(zip_code=None) if hasattr(service, "get_all_time_low_map") else {}
     for offer in offers:
         if not offer.product_key:
             offer.product_key = normalize_product_key(offer.title, offer.brand)
         min_p = all_time_low_map.get(offer.product_key)
+        nat_min_p = national_atl_map.get(offer.product_key)
         is_atl = bool(offer.price is not None and min_p is not None and offer.price <= (min_p + 0.001))
+        is_nat_atl = bool(offer.price is not None and nat_min_p is not None and offer.price <= (nat_min_p + 0.001))
         offer.all_time_low = min_p
         offer.is_all_time_low = is_atl
+        offer.regional_all_time_low = min_p
+        offer.is_regional_all_time_low = is_atl
+        offer.national_all_time_low = nat_min_p
+        offer.is_national_all_time_low = is_nat_atl
         offer.recorded_at = fetched_at
 
 
@@ -248,6 +260,7 @@ def api_offers_for(service: OfferService, week_labels: dict[str, dict[str, str]]
     selected_week = _clean_week(request.args.get("week"), week_labels, default_week)
     result = load_offers_for_request(service, zip_code)
     offers = filter_offers_by_week(result.offers, selected_week)
+    _enrich_atl_if_needed(offers, service, result.fetched_at, zip_code=zip_code)
     return jsonify(
         {
             "zip_code": zip_code,
@@ -365,9 +378,22 @@ def api_price_history():
         except ValueError:
             current_price = None
 
+    zip_code = _resolve_request_zip_code()[0]
     service = offer_service()
-    stats = service.price_history.get_product_stats(q, brand, current_price)
+    stats = service.price_history.get_product_stats(q, brand, current_price, zip_code=zip_code)
     return jsonify(stats)
+
+
+@bp.get("/api/diagnostics")
+def api_diagnostics():
+    zip_code = _clean_zip(request.args.get("zip_code") or request.args.get("zip"))
+    if not zip_code:
+        zip_code = _resolve_request_zip_code()[0]
+    retailer = request.args.get("retailer")
+    service_type = request.args.get("type", "supermarket")
+    service = drugstore_offer_service() if service_type == "drugstore" else offer_service()
+    diag = service.get_regional_diagnostics(zip_code, retailer_slug=retailer)
+    return jsonify(diag)
 
 
 def _load_combined_week_offers(zip_code: str, selected_week: str) -> list[Offer]:
