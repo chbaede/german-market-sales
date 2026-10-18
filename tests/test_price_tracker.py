@@ -19,6 +19,8 @@ def _sample_offer(
     unit: str = "kg",
     discount: float | None = None,
     brand: str | None = None,
+    scope_type: str = "nationwide",
+    region_verified: bool = True,
 ) -> Offer:
     slug = retailer.lower().replace(" ", "-")
     return Offer(
@@ -39,6 +41,8 @@ def _sample_offer(
         valid_to="2026-05-31",
         image_url=None,
         source_url=f"https://example.com/{slug}/{id}",
+        scope_type=scope_type,
+        region_verified=region_verified,
     )
 
 

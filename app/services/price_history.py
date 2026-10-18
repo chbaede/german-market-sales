@@ -428,6 +428,11 @@ class PriceHistoryService:
                         store_id, region_verified
                     FROM price_history
                     WHERE product_key = ? AND price IS NOT NULL
+                      AND (
+                          (scope_type = 'store' AND region_verified = 1)
+                          OR (scope_type = 'region' AND region_verified = 1)
+                          OR scope_type = 'nationwide'
+                      )
                     ORDER BY recorded_at ASC
                     LIMIT 30
                 """
@@ -452,6 +457,64 @@ class PriceHistoryService:
                     "region_verified": bool(row["region_verified"]),
                 }
                 for row in points_cursor.fetchall()
+            ]
+
+            # Unverified and unknown-scope observations exposed separately for UI transparency
+            if zip_code:
+                unv_query = """
+                    SELECT
+                        recorded_at, price, old_price, retailer_name, retailer_slug,
+                        source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name,
+                        store_id, region_verified
+                    FROM price_history
+                    WHERE product_key = ? AND price IS NOT NULL
+                      AND NOT (
+                          (scope_type = 'store' AND region_verified = 1)
+                          OR (scope_type = 'region' AND region_verified = 1)
+                          OR scope_type = 'nationwide'
+                      )
+                      AND (zip_code = ? OR zip_code IS NULL)
+                    ORDER BY recorded_at ASC
+                    LIMIT 30
+                """
+                unv_cursor = conn.execute(unv_query, (product_key, zip_code))
+            else:
+                unv_query = """
+                    SELECT
+                        recorded_at, price, old_price, retailer_name, retailer_slug,
+                        source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name,
+                        store_id, region_verified
+                    FROM price_history
+                    WHERE product_key = ? AND price IS NOT NULL
+                      AND NOT (
+                          (scope_type = 'store' AND region_verified = 1)
+                          OR (scope_type = 'region' AND region_verified = 1)
+                          OR scope_type = 'nationwide'
+                      )
+                    ORDER BY recorded_at ASC
+                    LIMIT 30
+                """
+                unv_cursor = conn.execute(unv_query, (product_key,))
+
+            unverified_history = [
+                {
+                    "date": row["recorded_at"].split("T", 1)[0],
+                    "recorded_at": row["recorded_at"],
+                    "price": float(row["price"]),
+                    "old_price": float(row["old_price"]) if row["old_price"] is not None else None,
+                    "retailer": row["retailer_name"],
+                    "retailer_slug": row["retailer_slug"],
+                    "source_url": row["source_url"],
+                    "unit_price": row["unit_price"],
+                    "unit": row["unit"],
+                    "discount_percent": row["discount_percent"],
+                    "zip_code": row["zip_code"],
+                    "scope_type": row["scope_type"],
+                    "store_name": row["store_name"],
+                    "store_id": row["store_id"],
+                    "region_verified": bool(row["region_verified"]),
+                }
+                for row in unv_cursor.fetchall()
             ]
 
         is_all_time_low = False
@@ -480,6 +543,7 @@ class PriceHistoryService:
             "record_count": record_count,
             "records_count": record_count,
             "history": history,
+            "unverified_history": unverified_history,
         }
 
     def compare_across_stores(self, query: str, offers: list[Offer]) -> dict:
@@ -510,6 +574,9 @@ class PriceHistoryService:
                     "source_url": offer.source_url,
                     "valid_from": offer.valid_from,
                     "valid_to": offer.valid_to,
+                    "scope_type": offer.scope_type,
+                    "store_name": offer.store_name,
+                    "region_verified": offer.region_verified,
                 }
             )
 
@@ -718,6 +785,9 @@ def build_weekly_competitor_map(offers: list[Offer]) -> dict[str, list[dict]]:
                         "discount_percent": other.discount_percent,
                         "source_url": other.source_url,
                         "price_diff": diff,
+                        "scope_type": other.scope_type,
+                        "store_name": other.store_name,
+                        "region_verified": other.region_verified,
                     }
                 )
             comp_list.sort(key=lambda c: (c["price"] is None, c["price"] or 999999))

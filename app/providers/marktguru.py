@@ -15,6 +15,159 @@ from app.services.categories import categorize_offer
 NO_BRAND_NAME = "thisisnobrand123"
 
 
+MARKTGURU_REGION_MAPPING: dict[str, list[str]] = {
+    "berlin": ["10", "12", "13", "14"],
+    "berlin_north": ["10", "13"],
+    "berlin_south": ["12", "14"],
+    "hamburg": ["20", "21", "22"],
+    "koeln": ["50", "51"],
+    "cologne": ["50", "51"],
+    "muenchen": ["80", "81"],
+    "munich": ["80", "81"],
+    "munich_south": ["81", "82"],
+    "frankfurt": ["60", "63"],
+    "stuttgart": ["70", "71"],
+    "duesseldorf": ["40"],
+    "dortmund": ["44"],
+    "essen": ["45"],
+    "leipzig": ["04"],
+    "dresden": ["01"],
+    "nuernberg": ["90", "91"],
+    "nuremberg": ["90", "91"],
+    "hannover": ["30"],
+    "bremen": ["28"],
+}
+
+
+def verify_marktguru_regional_applicability(
+    zip_code: str | None,
+    flyer_data: dict,
+    item: dict,
+) -> tuple[bool, str, str, str | None]:
+    """
+    Verifies whether a Marktguru regional leaflet actually covers the requested PLZ.
+    Returns: (region_verified, verification_method, verification_reason, source_region_id)
+    """
+    from app.services.location import (
+        get_coordinates_for_plz,
+        haversine_distance_km,
+        is_valid_coordinates,
+        resolve_plz_city,
+    )
+
+    region_data = (
+        flyer_data.get("region")
+        if isinstance(flyer_data.get("region"), dict)
+        else (item.get("region") if isinstance(item.get("region"), dict) else {})
+    )
+    raw_region_id = (
+        flyer_data.get("regionId")
+        or flyer_data.get("geographicRegionId")
+        or region_data.get("id")
+        or region_data.get("regionId")
+        or item.get("regionId")
+    )
+    source_region_id = str(raw_region_id) if raw_region_id is not None else None
+
+    # 1. Authoritative postal code list check
+    flyer_pcs = (
+        flyer_data.get("postalCodes")
+        or flyer_data.get("zipCodes")
+        or region_data.get("postalCodes")
+        or region_data.get("zipCodes")
+        or item.get("postalCodes")
+    )
+    if isinstance(flyer_pcs, (list, tuple, set)) and flyer_pcs:
+        pcs = {str(p).strip() for p in flyer_pcs if p}
+        if not zip_code:
+            return False, "marktguru_unverified_flyer", "No PLZ provided to verify leaflet postal coverage", source_region_id
+        if zip_code in pcs:
+            return True, "marktguru_regional_flyer_postal_match", f"Marktguru leaflet covers PLZ {zip_code}", source_region_id
+        else:
+            return False, "marktguru_unverified_flyer", f"Marktguru leaflet postal codes do not cover requested PLZ {zip_code}", source_region_id
+
+    # 2. Geographic coordinates check
+    coords = (
+        region_data.get("coordinates")
+        if isinstance(region_data.get("coordinates"), dict)
+        else (flyer_data.get("coordinates") if isinstance(flyer_data.get("coordinates"), dict) else {})
+    )
+    lat = coords.get("lat") or region_data.get("latitude") or flyer_data.get("latitude")
+    lon = coords.get("lon") or region_data.get("longitude") or flyer_data.get("longitude")
+    if is_valid_coordinates(lat, lon) and zip_code:
+        u_coords = get_coordinates_for_plz(zip_code)
+        if u_coords:
+            dist = haversine_distance_km(u_coords[0], u_coords[1], lat, lon)
+            if dist <= 60.0:
+                return True, "marktguru_regional_flyer_geo_match", f"Marktguru leaflet coordinates within {dist:.1f}km of PLZ {zip_code}", source_region_id
+            else:
+                return False, "marktguru_unverified_flyer", f"Marktguru leaflet region coordinates {dist:.1f}km away from PLZ {zip_code} (max 60km)", source_region_id
+
+    # 3. Documented regional mapping & geographic relationship
+    explicit_prefixes = (
+        region_data.get("plzPrefixes")
+        or region_data.get("postalCodePrefixes")
+        or flyer_data.get("plzPrefixes")
+    )
+    if isinstance(explicit_prefixes, (list, tuple, set)) and explicit_prefixes:
+        norm_prefixes = {str(p).strip() for p in explicit_prefixes if p}
+        if zip_code and zip_code[:2] in norm_prefixes:
+            return True, "marktguru_regional_flyer_prefix_match", f"Marktguru region prefixes cover PLZ {zip_code}", source_region_id
+        else:
+            return False, "marktguru_unverified_flyer", f"Marktguru region prefixes do not cover PLZ {zip_code}", source_region_id
+
+    region_name = (
+        flyer_data.get("regionName")
+        or flyer_data.get("geographicRegionName")
+        or region_data.get("name")
+        or region_data.get("title")
+        or (str(raw_region_id) if isinstance(raw_region_id, str) and not raw_region_id.isdigit() else None)
+    )
+
+    if region_name and zip_code:
+        city_name = resolve_plz_city(zip_code)
+        norm_r = (
+            str(region_name)
+            .strip()
+            .casefold()
+            .replace("ü", "ue")
+            .replace("ö", "oe")
+            .replace("ä", "ae")
+            .replace("ß", "ss")
+        )
+        norm_city = (
+            city_name.strip()
+            .casefold()
+            .replace("ü", "ue")
+            .replace("ö", "oe")
+            .replace("ä", "ae")
+            .replace("ß", "ss")
+        )
+
+        if norm_r in MARKTGURU_REGION_MAPPING:
+            if zip_code[:2] in MARKTGURU_REGION_MAPPING[norm_r]:
+                return True, "marktguru_regional_flyer_region_match", f"Marktguru region '{region_name}' covers PLZ {zip_code}", source_region_id
+            else:
+                return False, "marktguru_unverified_flyer", f"Marktguru region '{region_name}' does not cover PLZ {zip_code}", source_region_id
+
+        if norm_city and (norm_city in norm_r or norm_r in norm_city):
+            return True, "marktguru_regional_flyer_region_match", f"Marktguru region '{region_name}' matches city {city_name}", source_region_id
+
+        # Mismatch check against other known cities
+        known_cities = (
+            "berlin", "hamburg", "koeln", "cologne", "muenchen", "munich",
+            "frankfurt", "stuttgart", "duesseldorf", "dortmund", "essen", "leipzig", "dresden"
+        )
+        if any(k in norm_r for k in known_cities) and (not norm_city or norm_city not in norm_r):
+            return False, "marktguru_unverified_flyer", f"Marktguru region '{region_name}' mismatches requested PLZ {zip_code} ({city_name})", source_region_id
+
+    # 4. If raw_region_id exists but lacks geographic metadata/mapping -> fail unverified
+    if raw_region_id is not None:
+        return False, "marktguru_unverified_flyer", f"Marktguru regional leaflet '{raw_region_id}' lacks geographic mapping metadata for PLZ {zip_code}", source_region_id
+
+    return False, "marktguru_unverified_flyer", "Marktguru leaflet lacks geographic verification for requested PLZ", None
+
+
 @dataclass(slots=True)
 class MarktguruConfig:
     api_host: str
@@ -195,25 +348,9 @@ class MarktguruProvider(OfferProvider):
 
         elif flyer_id or flyer_data:
             scope_type = "region"
-            flyer_pcs = flyer_data.get("postalCodes") or flyer_data.get("zipCodes") or item.get("postalCodes")
-            region_id = flyer_data.get("regionId") or flyer_data.get("geographicRegionId") or item.get("regionId")
-
-            if zip_code and isinstance(flyer_pcs, (list, tuple, set)) and zip_code in flyer_pcs:
-                source_region_id = str(region_id) if region_id else None
-                region_verified = True
-                verification_method = "marktguru_regional_flyer_postal_match"
-                verification_reason = f"Marktguru leaflet covers PLZ {zip_code}"
-            elif zip_code and region_id:
-                source_region_id = str(region_id)
-                region_verified = True
-                verification_method = "marktguru_regional_flyer_region_id"
-                verification_reason = f"Marktguru regional leaflet for region {region_id}"
-            else:
-                # Do NOT invent region_id from flyer_id unless it represents geographic identity
-                source_region_id = None
-                region_verified = False
-                verification_method = "marktguru_unverified_flyer"
-                verification_reason = "Marktguru leaflet lacks geographic verification for requested PLZ"
+            region_verified, verification_method, verification_reason, source_region_id = verify_marktguru_regional_applicability(
+                zip_code, flyer_data, item
+            )
 
         elif zip_code:
             scope_type = "unknown"

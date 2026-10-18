@@ -66,3 +66,88 @@ def test_aldi_sued_preserves_requested_zip_without_rewriting_to_80331(monkeypatc
 
     # Requested PLZ must be strictly preserved without silent replacement
     assert captured_params["zipCode"] == "14195"
+
+
+def test_marktguru_regional_verification_mappings():
+    from app.providers.marktguru import verify_marktguru_regional_applicability
+
+    # 1. Valid region-to-PLZ mappings:
+    # A. Direct postalCodes match
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"postalCodes": ["10115", "10117"], "regionId": 10},
+        {},
+    )
+    assert v is True
+    assert method == "marktguru_regional_flyer_postal_match"
+    assert reg_id == "10"
+
+    # B. Documented regionId mapping ("berlin_north" covers "10")
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"regionId": "berlin_north"},
+        {},
+    )
+    assert v is True
+    assert method == "marktguru_regional_flyer_region_match"
+
+    # C. City name in region metadata ("Berlin Mitte")
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"regionName": "Berlin Mitte"},
+        {},
+    )
+    assert v is True
+    assert method == "marktguru_regional_flyer_region_match"
+
+    # D. Explicit plzPrefixes list
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "80331",
+        {"region": {"plzPrefixes": ["80", "81"]}},
+        {},
+    )
+    assert v is True
+    assert method == "marktguru_regional_flyer_prefix_match"
+
+    # 2. Mismatched regions:
+    # A. Leaflet postalCodes do not cover requested PLZ
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"postalCodes": ["80331", "80333"], "regionId": "munich_central"},
+        {},
+    )
+    assert v is False
+    assert method == "marktguru_unverified_flyer"
+    assert "postal codes do not cover" in reason
+
+    # B. Leaflet region name/id explicitly for another city (Munich region for Berlin user)
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"regionId": "munich_south", "regionName": "München Süd"},
+        {},
+    )
+    assert v is False
+    assert method == "marktguru_unverified_flyer"
+    assert "mismatches requested PLZ" in reason
+
+    # 3. Missing mapping metadata:
+    # Arbitrary regionId exists, but no postal codes, no coordinates, no mapping table entry
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"regionId": 42},
+        {},
+    )
+    assert v is False
+    assert method == "marktguru_unverified_flyer"
+    assert reg_id == "42"
+    assert "lacks geographic mapping metadata" in reason
+
+    # Leaflet with only an arbitrary ID and no geographic metadata
+    v, method, reason, reg_id = verify_marktguru_regional_applicability(
+        "10115",
+        {"id": 9999},
+        {},
+    )
+    assert v is False
+    assert method == "marktguru_unverified_flyer"
+

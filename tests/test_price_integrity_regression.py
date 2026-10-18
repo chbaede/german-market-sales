@@ -762,7 +762,7 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     assert offer_reg.source_region_id == "42"
     assert offer_reg.verification_method == "marktguru_regional_flyer_postal_match"
 
-    # 3. Regional flyer with geographic regionId matching
+    # 3a. Regional flyer with geographic regionId / city matching (valid mapping)
     item_reg_id = {
         "id": 103,
         "product": {"name": "Regional Cheese"},
@@ -773,6 +773,60 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
     assert offer_reg_id.scope_type == "region"
     assert offer_reg_id.region_verified is True
     assert offer_reg_id.source_region_id == "berlin_north"
+    assert offer_reg_id.verification_method == "marktguru_regional_flyer_region_match"
+
+    # 3b. Regional flyer with explicit plzPrefixes mapping (valid mapping)
+    item_reg_prefixes = {
+        "id": 1031,
+        "product": {"name": "Regional Yoghurt"},
+        "price": 0.79,
+        "flyer": {"id": 778, "region": {"id": "reg_prefix", "plzPrefixes": ["10", "12"]}},
+    }
+    offer_reg_prefixes = MarktguruProvider._offer_from_api(item_reg_prefixes, "edeka", zip_code="10115")
+    assert offer_reg_prefixes.scope_type == "region"
+    assert offer_reg_prefixes.region_verified is True
+    assert offer_reg_prefixes.verification_method == "marktguru_regional_flyer_prefix_match"
+
+    # 3c. Regional flyer with mismatched postal codes (Munich flyer for Berlin PLZ)
+    item_mismatched_pc = {
+        "id": 1032,
+        "product": {"name": "Munich Leaflet Beer"},
+        "price": 1.19,
+        "flyer": {"id": 779, "postalCodes": ["80331", "80333"], "regionId": "munich_central"},
+    }
+    offer_mismatched_pc = MarktguruProvider._offer_from_api(item_mismatched_pc, "edeka", zip_code="10115")
+    assert offer_mismatched_pc.scope_type == "region"
+    assert offer_mismatched_pc.region_verified is False
+    assert offer_mismatched_pc.verification_method == "marktguru_unverified_flyer"
+    assert "postal codes do not cover" in offer_mismatched_pc.verification_reason
+
+    # 3d. Regional flyer with mismatched region name/ID (Munich region for Berlin PLZ)
+    item_mismatched_region = {
+        "id": 1033,
+        "product": {"name": "Munich Leaflet Pretzel"},
+        "price": 0.69,
+        "flyer": {"id": 780, "regionId": "munich_south", "regionName": "München Süd"},
+    }
+    offer_mismatched_reg = MarktguruProvider._offer_from_api(item_mismatched_region, "edeka", zip_code="10115")
+    assert offer_mismatched_reg.scope_type == "region"
+    assert offer_mismatched_reg.region_verified is False
+    assert offer_mismatched_reg.verification_method == "marktguru_unverified_flyer"
+    assert "mismatches requested PLZ" in offer_mismatched_reg.verification_reason
+
+    # 3e. Regional flyer with regionId but missing geographic mapping metadata
+    # (arbitrary integer or opaque ID that has no postal codes, no coordinates, no mapping table entry)
+    item_missing_mapping = {
+        "id": 1034,
+        "product": {"name": "Opaque Leaflet Butter"},
+        "price": 1.99,
+        "flyer": {"id": 781, "regionId": 42},  # Arbitrary regionId lacking geographic evidence
+    }
+    offer_missing_mapping = MarktguruProvider._offer_from_api(item_missing_mapping, "edeka", zip_code="10115")
+    assert offer_missing_mapping.scope_type == "region"
+    assert offer_missing_mapping.region_verified is False
+    assert offer_missing_mapping.source_region_id == "42"
+    assert offer_missing_mapping.verification_method == "marktguru_unverified_flyer"
+    assert "lacks geographic mapping metadata" in offer_missing_mapping.verification_reason
 
     # 4. Flyer without geographic proof (only a flyerId, no postalCode match or regionId)
     # Must NOT invent region ID from flyerId!
@@ -956,10 +1010,16 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
         national_atl = service.get_all_time_low_map(zip_code=None)
         assert national_atl[pkey] == 2.99
 
-        # 4. Product stats for Berlin user:
+        # 4. Product stats for Berlin user (with zip_code="10115"):
         berlin_stats = service.get_product_stats("Kaffee 500g", current_price=3.49, zip_code="10115")
         assert berlin_stats["regional_all_time_low"] == 3.49
         assert berlin_stats["national_all_time_low"] == 2.99
+        assert berlin_stats["all_time_low"] == 3.49
+        assert berlin_stats["record_count"] == 3  # Verified records (Berlin 3.49, Munich 2.99, Nationwide 3.99)
+        assert len(berlin_stats["history"]) == 2  # Berlin Mitte + Nationwide
+        assert not any(h["price"] == 0.50 for h in berlin_stats["history"])
+        assert len(berlin_stats["unverified_history"]) == 1  # Unverified 0.50 exposed separately
+        assert berlin_stats["unverified_history"][0]["price"] == 0.50
 
         # History points for Berlin user:
         # Must ONLY contain observations for Berlin or Nationwide.
@@ -968,7 +1028,20 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
         assert "EDEKA Berlin Mitte" in history_stores
         assert "EDEKA Munich Altstadt" not in history_stores
         assert all(h["price"] >= 2.99 for h in berlin_stats["history"])
-        assert not any(h["price"] == 0.50 for h in berlin_stats["history"])
+
+        # 5. Product stats without PLZ (zip_code=None):
+        national_stats = service.get_product_stats("Kaffee 500g", current_price=3.49, zip_code=None)
+        assert national_stats["all_time_low"] == 2.99  # Munich 2.99
+        assert national_stats["all_time_high"] == 3.99  # Nationwide 3.99
+        assert national_stats["avg_price"] == round((3.49 + 2.99 + 3.99) / 3, 2)
+        assert national_stats["record_count"] == 3
+        # Must contain all verified observations (Berlin, Munich, Nationwide), but MUST NOT contain unverified (0.50)!
+        assert len(national_stats["history"]) == 3
+        assert not any(h["price"] == 0.50 for h in national_stats["history"])
+        assert all(h["price"] >= 2.99 for h in national_stats["history"])
+        # Unverified history exposed separately
+        assert len(national_stats["unverified_history"]) == 1
+        assert national_stats["unverified_history"][0]["price"] == 0.50
 
 
 def test_cache_migration_forces_legacy_unverified_even_with_store_or_region_scope():
