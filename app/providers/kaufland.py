@@ -263,6 +263,17 @@ class KauflandProvider(OfferProvider):
             verification_method = "national_catalog_fallback"
             verification_reason = "No verified Kaufland store within 60km; fallback to national offers"
 
+        verification_evidence: dict[str, Any] | None = None
+        if region_verified:
+            verification_evidence = {
+                "scope": "store",
+                "store_id": clean_store_id,
+                "store_name": store_name,
+                "store_address": store_address,
+                "matched_plz": clean_zip,
+                "verification_method": verification_method,
+            }
+
         return Offer(
             id=f"kaufland-{source_key}",
             source_offer_id=source_offer_id_from_key(source_key, hash_fallback=True),
@@ -290,6 +301,7 @@ class KauflandProvider(OfferProvider):
             region_verified=region_verified,
             verification_method=verification_method,
             verification_reason=verification_reason,
+            verification_evidence=verification_evidence,
         )
 
 

@@ -162,6 +162,7 @@ def validate_observation_provenance(
     source_url: str | None = None,
     zip_code: str | None = None,
     retailer_slug: str | None = None,
+    verification_evidence: str | dict | None = None,
 ) -> tuple[bool, str, str]:
     """
     Validates whether an offer or historical price observation has complete,
@@ -201,6 +202,20 @@ def validate_observation_provenance(
     clean_provider = (source_provider or "").strip().lower()
     clean_retailer = (retailer_slug or "").strip().lower()
 
+    parsed_evidence: dict | None = None
+    if verification_evidence:
+        if isinstance(verification_evidence, dict):
+            parsed_evidence = verification_evidence
+        elif isinstance(verification_evidence, str):
+            try:
+                parsed_evidence = json.loads(verification_evidence)
+            except Exception:
+                return (
+                    False,
+                    "demoted_malformed_evidence",
+                    "Stored verification_evidence is malformed JSON",
+                )
+
     if scope == "store":
         clean_store_id = (store_id or "").strip()
         if not clean_store_id:
@@ -231,6 +246,25 @@ def validate_observation_provenance(
                         False,
                         "demoted_store_location_mismatch",
                         f"Store address PLZ {addr_plz} does not match requested PLZ {clean_zip}",
+                    )
+
+        if parsed_evidence is not None:
+            if parsed_evidence.get("store_id") and str(parsed_evidence["store_id"]).strip() != clean_store_id:
+                return (
+                    False,
+                    "demoted_store_evidence_mismatch",
+                    f"Store evidence ID '{parsed_evidence['store_id']}' contradicts store_id '{clean_store_id}'",
+                )
+            ev_plz = parsed_evidence.get("store_plz")
+            if ev_plz:
+                from app.services.location import normalize_german_plz
+
+                norm_zip = normalize_german_plz(clean_zip) or clean_zip
+                if str(ev_plz).strip() != clean_zip and str(ev_plz).strip() != norm_zip:
+                    return (
+                        False,
+                        "demoted_store_location_mismatch",
+                        f"Store evidence PLZ '{ev_plz}' does not match requested PLZ '{clean_zip}'",
                     )
 
         if raw_method == "marktguru_store_branch_verified" and clean_provider and clean_provider != "marktguru":
@@ -273,7 +307,22 @@ def validate_observation_provenance(
             )
 
         if raw_method in ("marktguru_authoritative_region_mapping", "marktguru_regional_flyer_postal_match"):
-            from app.providers.marktguru import get_verified_campaign_plzs
+            from app.providers.marktguru import (
+                get_verified_campaign_plzs,
+                register_verified_campaign,
+                validate_regional_campaign_evidence,
+            )
+
+            if parsed_evidence is not None:
+                plzs = parsed_evidence.get("covered_plzs") or parsed_evidence.get("validZipCodes") or []
+                is_ev_valid, ev_reason, val_ev = validate_regional_campaign_evidence(clean_reg_id, plzs, parsed_evidence)
+                if not is_ev_valid:
+                    return (
+                        False,
+                        "demoted_invalid_regional_evidence",
+                        f"Regional evidence failed validation: {ev_reason}",
+                    )
+                register_verified_campaign(clean_reg_id, plzs, val_ev)
 
             covered = get_verified_campaign_plzs(clean_reg_id)
             if not covered or clean_zip not in covered:
@@ -320,7 +369,21 @@ def validate_observation_provenance(
                 f"Inconsistent source_provider '{clean_provider}' for marktguru_national_flyer",
             )
 
-        from app.providers.marktguru import is_verified_nationwide_campaign
+        from app.providers.marktguru import (
+            is_verified_nationwide_campaign,
+            register_verified_nationwide_campaign,
+            validate_nationwide_coverage_evidence,
+        )
+
+        if parsed_evidence is not None:
+            is_ev_valid, ev_reason, val_ev = validate_nationwide_coverage_evidence(clean_reg_id, parsed_evidence)
+            if not is_ev_valid:
+                return (
+                    False,
+                    "demoted_invalid_nationwide_evidence",
+                    f"Nationwide evidence failed validation: {ev_reason}",
+                )
+            register_verified_nationwide_campaign(clean_reg_id, val_ev)
 
         if not is_verified_nationwide_campaign(clean_reg_id):
             return (
@@ -399,6 +462,18 @@ class PriceHistoryService:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS verified_campaign_registry (
+                    campaign_id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_vcr_camp ON verified_campaign_registry(campaign_id)")
+
             # Safe migration for existing tables:
             cursor = conn.execute("PRAGMA table_info(price_history)")
             existing_cols = {row["name"] for row in cursor.fetchall()}
@@ -411,6 +486,7 @@ class PriceHistoryService:
                 "source_provider": "TEXT",
                 "source_region_id": "TEXT",
                 "verification_method": "TEXT",
+                "verification_evidence": "TEXT",
             }
             for col_name, col_type in new_cols.items():
                 if col_name not in existing_cols:
@@ -439,15 +515,36 @@ class PriceHistoryService:
 
     @staticmethod
     def _revalidate_historical_records_conn(conn: sqlite3.Connection) -> int:
+        # 1. Reload verified campaigns from verified_campaign_registry table into Marktguru registries
+        try:
+            v_rows = conn.execute("SELECT campaign_id, scope_type, evidence_json FROM verified_campaign_registry").fetchall()
+            from app.providers.marktguru import register_verified_campaign, register_verified_nationwide_campaign
+
+            for v_row in v_rows:
+                c_id = v_row["campaign_id"]
+                s_type = v_row["scope_type"]
+                try:
+                    ev_data = json.loads(v_row["evidence_json"])
+                except Exception:
+                    continue
+                if s_type == "nationwide":
+                    register_verified_nationwide_campaign(c_id, ev_data)
+                elif s_type == "region":
+                    plzs = ev_data.get("covered_plzs") or ev_data.get("validZipCodes") or []
+                    register_verified_campaign(c_id, plzs, ev_data)
+        except Exception:
+            pass
+
         cursor = conn.execute("PRAGMA table_info(price_history)")
-        has_store_addr = any(row["name"] == "store_address" for row in cursor.fetchall())
-        store_addr_select = "store_address" if has_store_addr else "NULL as store_address"
+        col_names = {row["name"] for row in cursor.fetchall()}
+        store_addr_select = "store_address" if "store_address" in col_names else "NULL as store_address"
+        evidence_select = "verification_evidence" if "verification_evidence" in col_names else "NULL as verification_evidence"
 
         rows = conn.execute(
             f"""
             SELECT id, scope_type, region_verified, verification_method,
                    store_id, store_name, {store_addr_select}, source_region_id, source_provider,
-                   source_url, zip_code, retailer_slug
+                   source_url, zip_code, retailer_slug, {evidence_select}
             FROM price_history
             WHERE region_verified = 1
             """
@@ -467,6 +564,7 @@ class PriceHistoryService:
                 source_url=row["source_url"],
                 zip_code=row["zip_code"],
                 retailer_slug=row["retailer_slug"],
+                verification_evidence=row["verification_evidence"],
             )
             if not is_valid:
                 updates.append((norm_method, row["id"]))
@@ -546,6 +644,26 @@ class PriceHistoryService:
 
                 product_key = offer.product_key or normalize_product_key(offer.title, offer.brand)
                 scope_type, geo_id, effective_zip = get_geographic_identity(offer, zip_code)
+
+                # Auto-populate verification evidence from registries if present
+                if offer.region_verified and not offer.verification_evidence:
+                    if offer.scope_type == "nationwide":
+                        from app.providers.marktguru import get_verified_nationwide_evidence
+
+                        offer.verification_evidence = get_verified_nationwide_evidence(offer.source_region_id)
+                    elif offer.scope_type == "region":
+                        from app.providers.marktguru import get_verified_campaign_evidence
+
+                        offer.verification_evidence = get_verified_campaign_evidence(offer.source_region_id)
+
+                raw_ev = offer.verification_evidence
+                ev_json_str = None
+                if raw_ev is not None:
+                    if isinstance(raw_ev, (dict, list)):
+                        ev_json_str = json.dumps(raw_ev)
+                    elif isinstance(raw_ev, str):
+                        ev_json_str = raw_ev
+
                 is_verified, norm_method, _ = validate_observation_provenance(
                     scope_type=scope_type,
                     region_verified=offer.region_verified,
@@ -558,8 +676,22 @@ class PriceHistoryService:
                     source_url=offer.source_url,
                     zip_code=effective_zip,
                     retailer_slug=offer.retailer_slug,
+                    verification_evidence=raw_ev,
                 )
                 verified_int = 1 if is_verified else 0
+
+                # Persist verified campaign provenance to verified_campaign_registry table
+                if is_verified and scope_type in ("nationwide", "region") and offer.source_region_id and ev_json_str:
+                    try:
+                        conn.execute(
+                            """
+                            INSERT OR REPLACE INTO verified_campaign_registry (campaign_id, scope_type, evidence_json, created_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (offer.source_region_id, scope_type, ev_json_str, timestamp),
+                        )
+                    except Exception:
+                        pass
 
                 dedup_key = (
                     product_key,
@@ -600,6 +732,7 @@ class PriceHistoryService:
                         offer.source_provider,
                         offer.source_region_id,
                         norm_method if offer.region_verified and not is_verified else (offer.verification_method or norm_method),
+                        ev_json_str,
                     )
                 )
 
@@ -611,8 +744,8 @@ class PriceHistoryService:
                         price, old_price, unit_price, unit, discount_percent, recorded_at,
                         valid_from, valid_to, source_url, zip_code,
                         scope_type, store_id, store_name, store_address, region_verified, source_provider,
-                        source_region_id, verification_method
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source_region_id, verification_method, verification_evidence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows_to_insert,
                 )

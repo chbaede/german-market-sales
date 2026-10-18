@@ -42,12 +42,34 @@ class EdekaProvider(OfferProvider):
         candidate_markets = _sort_candidate_markets(candidate_markets, zip_code)
         if not candidate_markets:
             raise ValueError(f"No geographically valid EDEKA markets found for PLZ {zip_code}.")
-        last_error: Exception | None = None
+        from app.services.location import normalize_german_plz
 
-        for market in candidate_markets:
+        clean_zip = (zip_code or "").strip()
+        norm_zip = normalize_german_plz(clean_zip) or clean_zip
+
+        # Prioritize candidate markets whose postal code matches the requested PLZ
+        def _is_market_matching_plz(m: dict) -> bool:
+            m_addr = _market_address(m)
+            pc = _extract_market_plz(m, m_addr)
+            return bool(pc and (pc == clean_zip or pc == norm_zip))
+
+        # Stable partition: matching PLZ candidates first, followed by other eligible candidates
+        matching_candidates = [m for m in candidate_markets if _is_market_matching_plz(m)]
+        other_candidates = [m for m in candidate_markets if not _is_market_matching_plz(m)]
+        ordered_candidates = matching_candidates + other_candidates
+
+        unverified_fallback: tuple[list[Offer], list[str]] | None = None
+        last_error: Exception | None = None
+        evaluated_count = 0
+        max_candidates_to_try = 5
+
+        for market in ordered_candidates:
+            if evaluated_count >= max_candidates_to_try:
+                break
             raw_url = (market.get("url") or "").strip()
             if not raw_url:
                 continue
+            evaluated_count += 1
             try:
                 offers_url, used_insecure_offers = self._offers_url(raw_url)
                 market_warnings = list(warnings)
@@ -62,10 +84,6 @@ class EdekaProvider(OfferProvider):
                 store_id = str(market.get("id") or market.get("marketId") or "").strip() or None
                 store_address = _market_address(market)
 
-                from app.services.location import normalize_german_plz
-
-                clean_zip = (zip_code or "").strip()
-                norm_zip = normalize_german_plz(clean_zip) or clean_zip
                 market_pc = _extract_market_plz(market, store_address)
                 is_same_plz = bool(market_pc and (market_pc == clean_zip or market_pc == norm_zip))
 
@@ -80,11 +98,18 @@ class EdekaProvider(OfferProvider):
                     location_verified=is_same_plz,
                 )
                 if offers:
-                    # Select the closest geographical market with valid offers
-                    return offers, list(dict.fromkeys(market_warnings))
+                    if is_same_plz:
+                        # Preferred: exact/normalized PLZ match verified store
+                        return offers, list(dict.fromkeys(market_warnings))
+                    elif unverified_fallback is None:
+                        # Keep first candidate with offers as unverified fallback, but continue searching for a verified store
+                        unverified_fallback = (offers, list(dict.fromkeys(market_warnings)))
             except Exception as exc:
                 last_error = exc
                 continue
+
+        if unverified_fallback is not None:
+            return unverified_fallback
 
         if last_error:
             raise ValueError(f"No EDEKA offers found for PLZ {zip_code}: {last_error}") from last_error
@@ -202,6 +227,17 @@ class EdekaProvider(OfferProvider):
             verification_method = "unverified_missing_store_id"
             verification_reason = "EDEKA store identity could not be established"
 
+        verification_evidence: dict[str, Any] | None = None
+        if region_verified:
+            verification_evidence = {
+                "scope": "store",
+                "store_id": clean_store_id,
+                "store_name": market_name,
+                "store_address": store_address,
+                "matched_plz": clean_zip,
+                "verification_method": verification_method,
+            }
+
         return Offer(
             id=f"edeka-{source_key}",
             source_offer_id=source_offer_id_from_key(source_key, allow_hex=True),
@@ -229,6 +265,7 @@ class EdekaProvider(OfferProvider):
             region_verified=region_verified,
             verification_method=verification_method,
             verification_reason=verification_reason,
+            verification_evidence=verification_evidence,
         )
 
     def _candidate_markets(self, zip_code: str) -> tuple[list[dict], bool]:
@@ -384,22 +421,24 @@ MAX_STORE_DISTANCE_KM = 60.0
 
 
 def _sort_candidate_markets(markets: list[dict], zip_code: str) -> list[dict]:
-    from app.services.location import get_coordinates_for_plz, haversine_distance_km, is_valid_coordinates
+    from app.services.location import get_coordinates_for_plz, haversine_distance_km, is_valid_coordinates, normalize_german_plz
 
     user_coords = get_coordinates_for_plz(zip_code)
+    clean_zip = (zip_code or "").strip()
+    norm_zip = normalize_german_plz(clean_zip) or clean_zip
 
     def evaluate_market(m: dict) -> tuple[int, float] | None:
         contact = m.get("contact") if isinstance(m.get("contact"), dict) else {}
         address = contact.get("address") if isinstance(contact.get("address"), dict) else (m.get("address") if isinstance(m.get("address"), dict) else {})
-        market_pc = str(address.get("postalCode") or m.get("postalCode") or "").strip()
+        market_pc = _extract_market_plz(m, _market_address(m)) or str(address.get("postalCode") or m.get("postalCode") or "").strip()
 
         # Must have a store identifier
         store_id = str(m.get("id") or m.get("marketId") or "").strip()
         if not store_id:
             return None
 
-        # 1. Exact 5-digit PLZ match
-        if market_pc and market_pc == zip_code:
+        # 1. Exact or normalized 5-digit PLZ match
+        if market_pc and (market_pc == clean_zip or market_pc == norm_zip):
             return (0, 0.0)
 
         # 2. Raw distance if provided by official API
