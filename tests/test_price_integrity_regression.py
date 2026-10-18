@@ -41,6 +41,8 @@ from app.services.price_history import (
     validate_observation_provenance,
 )
 
+FIXTURE_EVIDENCE_DIR = Path(__file__).parent / "fixtures" / "evidence"
+
 
 # ---------------------------------------------------------------------------
 # 1. PLZ and Store Selection Regression Tests
@@ -327,6 +329,7 @@ def test_price_history_geographic_identities_and_isolation():
             requested_zip_code="10115",
             scope_type="store",
             store_id="edeka_berlin_10115",
+            store_address="Invalidenstraße 100, 10115 Berlin",
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
@@ -352,6 +355,7 @@ def test_price_history_geographic_identities_and_isolation():
             requested_zip_code="80331",
             scope_type="store",
             store_id="edeka_munich_80331",
+            store_address="Marienplatz 1, 80331 München",
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
@@ -394,6 +398,7 @@ def test_price_history_two_stores_in_same_plz_and_repeated_fetch():
             requested_zip_code="10115",
             scope_type="store",
             store_id="STORE_A",
+            store_address="Invalidenstr. 10, 10115 Berlin",
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
@@ -419,6 +424,7 @@ def test_price_history_two_stores_in_same_plz_and_repeated_fetch():
             requested_zip_code="10115",
             scope_type="store",
             store_id="STORE_B",
+            store_address="Torstr. 20, 10115 Berlin",
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
@@ -530,6 +536,7 @@ def test_unknown_scope_excluded_from_verified_regional_atl():
             requested_zip_code="10115",
             scope_type="store",
             store_id="DE10115",
+            store_address="Invalidenstr. 10, 10115 Berlin",
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
@@ -616,6 +623,7 @@ def test_legacy_database_revalidation_demotes_unsubstantiated_records():
                 "scope": "nationwide",
                 "promotional_applicability_confirmed": True,
                 "limitations": "Audited nationwide campaign",
+                "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "nat_proven_999.json"),
             },
         )
 
@@ -917,6 +925,7 @@ def test_marktguru_verification_logic_for_national_regional_branch_and_unknown()
             "scope": "nationwide",
             "promotional_applicability_confirmed": True,
             "limitations": "Audited nationwide flyer",
+            "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "999.json"),
         },
     )
     offer_nat = MarktguruProvider._offer_from_api(item_national, "edeka", zip_code="10115")
@@ -1128,6 +1137,7 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
             scope_type="store",
             store_id="store_b1",
             store_name="EDEKA Berlin Mitte",
+            store_address="Invalidenstr. 10, 10115 Berlin",
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
@@ -1155,6 +1165,7 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
             scope_type="store",
             store_id="store_m1",
             store_name="EDEKA Munich Altstadt",
+            store_address="Marienplatz 1, 80331 München",
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
@@ -1170,6 +1181,7 @@ def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
                 "scope": "nationwide",
                 "promotional_applicability_confirmed": True,
                 "limitations": "Audited nationwide promotion",
+                "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "901.json"),
             },
         )
         offer_nationwide = Offer(
@@ -1455,6 +1467,7 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
             scope_type="store",
             store_id="edeka_berlin_mitte",
             store_name="EDEKA Berlin Mitte",
+            store_address="Invalidenstraße 100, 10115 Berlin",
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
@@ -1471,6 +1484,7 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
                 "scope": "nationwide",
                 "promotional_applicability_confirmed": True,
                 "limitations": "Audited nationwide promotion",
+                "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "700.json"),
             },
         )
         verified_national = Offer(
@@ -1760,6 +1774,7 @@ def test_no_cross_plz_leakage_or_current_price_fallback_when_region_has_zero_ver
         requested_zip_code="10115",
         scope_type="store",
         store_id="store_b1",
+        store_address="Invalidenstr. 10, 10115 Berlin",
         source_provider="edeka-official",
         region_verified=True,
         verification_method="store_direct_api",
@@ -1792,6 +1807,7 @@ def test_no_cross_plz_leakage_or_current_price_fallback_when_region_has_zero_ver
         requested_zip_code="80331",
         scope_type="store",
         store_id="store_m1",
+        store_address="Marienplatz 1, 80331 München",
         source_provider="edeka-official",
         region_verified=True,
         verification_method="store_direct_api",
@@ -2366,6 +2382,7 @@ def test_case_5_valid_evidence_backed_regional_campaign_passes():
         "promotional_applicability_confirmed": True,
         "covered_plzs": ["10115", "10117"],
         "limitations": "Berlin Mitte confirmed distribution zone",
+        "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "reg_valid_101.json"),
     }
     assert register_verified_campaign("reg_valid_101", ["10115", "10117"], valid_ev) is True
     assert get_verified_campaign_plzs("reg_valid_101") == {"10115", "10117"}
@@ -2408,6 +2425,7 @@ def test_case_6_valid_evidence_backed_nationwide_campaign_passes():
         scope="nationwide",
         promotional_applicability_confirmed=True,
         limitations="Verified full nationwide circulation",
+        evidence_artifact_path=str(FIXTURE_EVIDENCE_DIR / "nat_valid_606.json"),
     )
     assert register_verified_nationwide_campaign("nat_valid_606", valid_nat_ev) is True
     assert is_verified_nationwide_campaign("nat_valid_606") is True
@@ -2440,6 +2458,7 @@ def test_case_7_verification_survives_application_restart_and_reload():
             "scope": "nationwide",
             "promotional_applicability_confirmed": True,
             "limitations": "Persisted nationwide evidence",
+            "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "restart_nat_707.json"),
         }
         register_verified_nationwide_campaign("restart_nat_707", ev)
 
@@ -2738,6 +2757,7 @@ def test_case_13_unverified_regional_and_nationwide_do_not_affect_verified_stats
             scope_type="store",
             store_id="edeka_10115",
             store_name="EDEKA Mitte",
+            store_address="Invalidenstraße 100, 10115 Berlin",
             region_verified=True,
             verification_method="store_direct_api",
         )
@@ -2841,6 +2861,7 @@ def test_case_14_no_duplicate_observations_when_multiple_store_candidates_checke
             scope_type="store",
             store_id="store_10115",
             store_name="EDEKA Mitte",
+            store_address="Invalidenstraße 100, 10115 Berlin",
             region_verified=True,
             verification_method="store_direct_api",
         )
@@ -2878,6 +2899,7 @@ def test_case_15_existing_valid_evidence_backed_offers_continue_to_work():
             "scope": "nationwide",
             "promotional_applicability_confirmed": True,
             "limitations": "Full national coverage",
+            "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "test_nat_15.json"),
         }
         assert register_verified_nationwide_campaign("test_nat_15", ev) is True
 
@@ -2927,6 +2949,627 @@ def test_case_15_existing_valid_evidence_backed_offers_continue_to_work():
         )
         assert wl_result["total_active_alerts"] == 1
         assert wl_result["items"][0]["best_deal"]["price"] == 1.69
+
+
+# ===========================================================================
+# 11. Explicit 18 False-Positive Price Verification Scenarios
+# ===========================================================================
+
+
+def test_scenario_1_fabricated_url_with_valid_metadata_is_rejected():
+    """1. A fabricated URL with otherwise valid nationwide metadata is rejected."""
+    clear_campaign_registries()
+    ev = {
+        "campaign_id": "fab_nat_1",
+        "source_url": "https://www.marktguru.de/leaflets/fabricated_flyer_123",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "nationwide",
+        "promotional_applicability_confirmed": True,
+        "limitations": "Fabricated leaflet URL without artifact",
+    }
+    assert register_verified_nationwide_campaign("fab_nat_1", ev) is False
+    assert is_verified_nationwide_campaign("fab_nat_1") is False
+
+
+def test_scenario_2_unsupported_or_unavailable_artifact_cannot_establish_nationwide():
+    """2. An unsupported or unavailable evidence artifact cannot establish nationwide applicability."""
+    clear_campaign_registries()
+    ev_missing_file = {
+        "campaign_id": "missing_art_2",
+        "source_url": "https://www.marktguru.de/leaflets/missing_art_2",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "nationwide",
+        "promotional_applicability_confirmed": True,
+        "limitations": "Artifact does not exist",
+        "evidence_artifact_path": "/tmp/nonexistent_artifact_xyz_12345.json",
+    }
+    assert register_verified_nationwide_campaign("missing_art_2", ev_missing_file) is False
+
+
+def test_scenario_3_missing_campaign_id_in_evidence_is_rejected():
+    """3. A missing campaign ID in evidence is rejected."""
+    clear_campaign_registries()
+    ev = {
+        "campaign_id": "",
+        "source_url": "https://www.marktguru.de/leaflets/missing_id",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "nationwide",
+        "promotional_applicability_confirmed": True,
+        "limitations": "Empty campaign ID",
+        "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "nat_valid_606.json"),
+    }
+    assert register_verified_nationwide_campaign("missing_id", ev) is False
+
+
+def test_scenario_4_invalid_calendar_date_is_rejected():
+    """4. An invalid calendar date is rejected."""
+    clear_campaign_registries()
+    for bad_date in ("2026-02-31", "2026-13-40", "invalid-date", "2026-04-31"):
+        ev = {
+            "campaign_id": "bad_date_camp",
+            "source_url": "https://www.marktguru.de/leaflets/bad_date",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": bad_date,
+            "scope": "nationwide",
+            "promotional_applicability_confirmed": True,
+            "limitations": "Invalid calendar date",
+            "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "nat_valid_606.json"),
+        }
+        assert register_verified_nationwide_campaign("bad_date_camp", ev) is False
+
+
+def test_scenario_5_caller_provided_regional_plz_list_without_artifact_is_rejected():
+    """5. A caller-provided regional PLZ list without independently validated promotional evidence is rejected."""
+    clear_campaign_registries()
+    caller_ev = {
+        "campaign_id": "caller_reg_5",
+        "source_url": "https://www.marktguru.de/leaflets/caller_reg_5",
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "region",
+        "promotional_applicability_confirmed": True,
+        "covered_plzs": ["10115", "10117"],
+        "limitations": "Caller supplied PLZ list without recorded artifact",
+    }
+    assert register_verified_campaign("caller_reg_5", ["10115", "10117"], caller_ev) is False
+    assert get_verified_campaign_plzs("caller_reg_5") is None
+
+
+def test_scenario_6_generic_geographic_postal_metadata_does_not_establish_applicability():
+    """6. Generic geographic postal-code metadata does not establish campaign applicability."""
+    from app.providers.marktguru import _extract_verified_campaign_plzs, verify_marktguru_regional_applicability
+
+    flyer_data = {
+        "id": "flyer_geo_6",
+        "validZipCodes": ["10115", "10117"],
+        "coverageScope": "geographic_service_area",  # generic geographic scope, NOT promotional_campaign
+    }
+    plzs, reason = _extract_verified_campaign_plzs(flyer_data, "flyer_geo_6")
+    assert plzs is None
+    assert "does not confirm promotional campaign" in (reason or "")
+
+    # verify_marktguru_regional_applicability fails closed (unverified)
+    v, method, _, _ = verify_marktguru_regional_applicability("10115", flyer_data, {})
+    assert v is False
+    assert method == "marktguru_diagnostic_region_match"
+
+
+def test_scenario_7_valid_source_backed_regional_and_nationwide_evidence_passes():
+    """7. Valid source-backed regional and nationwide evidence still passes."""
+    clear_campaign_registries()
+
+    # Regional passes
+    reg_ev = {
+        "campaign_id": "reg_valid_101",
+        "source_url": "https://www.marktguru.de/leaflets/reg_valid_101",
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "region",
+        "promotional_applicability_confirmed": True,
+        "covered_plzs": ["10115", "10117"],
+        "limitations": "Berlin Mitte confirmed distribution zone",
+        "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "reg_valid_101.json"),
+    }
+    assert register_verified_campaign("reg_valid_101", ["10115", "10117"], reg_ev) is True
+    assert get_verified_campaign_plzs("reg_valid_101") == {"10115", "10117"}
+
+    # Nationwide passes
+    nat_ev = {
+        "campaign_id": "nat_valid_606",
+        "source_url": "https://www.marktguru.de/leaflets/nat_valid_606",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "nationwide",
+        "promotional_applicability_confirmed": True,
+        "limitations": "Verified full nationwide circulation",
+        "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "nat_valid_606.json"),
+    }
+    assert register_verified_nationwide_campaign("nat_valid_606", nat_ev) is True
+    assert is_verified_nationwide_campaign("nat_valid_606") is True
+
+
+def test_scenario_8_store_id_plus_requested_plz_without_location_evidence_is_rejected():
+    """8. Store ID plus requested PLZ, without sufficient store-location evidence, is rejected."""
+    is_valid, reason, _ = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="store_xyz_8",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address=None,
+        verification_evidence=None,
+    )
+    assert is_valid is False
+    assert reason == "demoted_missing_store_location_evidence"
+
+
+def test_scenario_9_missing_store_address_and_missing_location_evidence_fail_closed():
+    """9. Missing store address and missing authoritative location evidence fail closed."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        service = PriceHistoryService(Path(tmp_dir))
+        o = Offer(
+            id="off-9",
+            source_offer_id=9,
+            retailer="EDEKA",
+            retailer_slug="edeka",
+            title="Keks 100g",
+            brand=None,
+            category="snacks",
+            price=0.99,
+            old_price=None,
+            unit_price=9.90,
+            unit="kg",
+            discount_percent=None,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://edeka.de",
+            requested_zip_code="10115",
+            scope_type="store",
+            store_id="store_no_addr",
+            store_address=None,
+            source_provider="edeka-official",
+            region_verified=True,
+            verification_method="store_direct_api",
+        )
+        service.record_offers([o], zip_code="10115")
+
+        with service._get_connection() as conn:
+            row = conn.execute("SELECT region_verified, verification_method FROM price_history WHERE id = 1").fetchone()
+            assert row["region_verified"] == 0
+            assert row["verification_method"] == "demoted_missing_store_location_evidence"
+
+
+def test_scenario_10_matched_plz_and_store_plz_inconsistency_rejected():
+    """10. matched_plz and store_plz inconsistencies are rejected."""
+    ev = {
+        "scope": "store",
+        "store_id": "store_10",
+        "store_plz": "10115",
+        "matched_plz": "10407",  # Contradicts store_plz!
+    }
+    is_valid, reason, msg = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="store_10",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address="Invalidenstr. 10, 10115 Berlin",
+        verification_evidence=ev,
+    )
+    assert is_valid is False
+    assert reason == "demoted_store_evidence_inconsistency"
+
+
+def test_scenario_11_evidence_for_different_store_or_retailer_rejected():
+    """11. Evidence for a different store or retailer is rejected."""
+    # 1. Different store_id
+    ev_diff_store = {
+        "scope": "store",
+        "store_id": "store_OTHER",
+        "store_plz": "10115",
+        "matched_plz": "10115",
+    }
+    is_valid_store, reason_store, _ = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="store_11",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address="Invalidenstr. 10, 10115 Berlin",
+        verification_evidence=ev_diff_store,
+    )
+    assert is_valid_store is False
+    assert reason_store == "demoted_store_evidence_mismatch"
+
+    # 2. Different retailer
+    ev_diff_retailer = {
+        "scope": "store",
+        "store_id": "store_11",
+        "retailer_slug": "kaufland",
+        "store_plz": "10115",
+        "matched_plz": "10115",
+    }
+    is_valid_ret, reason_ret, _ = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="store_11",
+        retailer_slug="edeka",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address="Invalidenstr. 10, 10115 Berlin",
+        verification_evidence=ev_diff_retailer,
+    )
+    assert is_valid_ret is False
+    assert reason_ret == "demoted_retailer_evidence_mismatch"
+
+
+def test_scenario_12_edeka_and_kaufland_providers_produce_compatible_evidence():
+    """12. EDEKA and Kaufland providers produce evidence compatible with the central validator."""
+    # EDEKA provider offer
+    html = """
+    <html>
+      <body>
+        <section>
+          <dialog id="dialog-angebot-butter-12">
+            <h3><span>Angebot:</span> EDEKA Butter</h3>
+            <div class="sr-only">Rabattierter Preis von 1.79 €</div>
+          </dialog>
+        </section>
+      </body>
+    </html>
+    """
+    edeka_offers = EdekaProvider.offers_from_html(
+        html,
+        limit=1,
+        source_url="https://edeka.de",
+        market_name="EDEKA Berlin Mitte",
+        store_id="edeka_10115",
+        store_address="Invalidenstraße 100, 10115 Berlin",
+        requested_zip="10115",
+        location_verified=True,
+    )
+    assert len(edeka_offers) == 1
+    edeka_offer = edeka_offers[0]
+    assert edeka_offer.region_verified is True
+    assert edeka_offer.verification_evidence is not None
+    assert edeka_offer.verification_evidence["retailer_slug"] == "edeka"
+    assert edeka_offer.verification_evidence["store_plz"] == "10115"
+    assert edeka_offer.verification_evidence["matched_plz"] == "10115"
+
+    is_valid_e, method_e, _ = validate_observation_provenance(
+        scope_type=edeka_offer.scope_type,
+        region_verified=edeka_offer.region_verified,
+        verification_method=edeka_offer.verification_method,
+        store_id=edeka_offer.store_id,
+        store_name=edeka_offer.store_name,
+        store_address=edeka_offer.store_address,
+        source_provider=edeka_offer.source_provider,
+        source_url=edeka_offer.source_url,
+        zip_code=edeka_offer.requested_zip_code,
+        retailer_slug=edeka_offer.retailer_slug,
+        verification_evidence=edeka_offer.verification_evidence,
+    )
+    assert is_valid_e is True
+    assert method_e == "store_direct_api"
+
+    # Kaufland provider offer
+    kaufland_item = {
+        "offerId": "k_item_12",
+        "title": "Kaufland Butter",
+        "price": 1.79,
+    }
+    kaufland_offer = KauflandProvider._offer_from_item(
+        kaufland_item,
+        category_name="dairy",
+        store_id="kaufland_10115",
+        store_name="Kaufland Berlin",
+        store_address="Alexanderplatz 1, 10115 Berlin",
+        requested_zip="10115",
+        location_verified=True,
+    )
+    assert kaufland_offer.region_verified is True
+    assert kaufland_offer.verification_evidence is not None
+    assert kaufland_offer.verification_evidence["retailer_slug"] == "kaufland"
+    assert kaufland_offer.verification_evidence["store_plz"] == "10115"
+    assert kaufland_offer.verification_evidence["matched_plz"] == "10115"
+
+    is_valid_k, method_k, _ = validate_observation_provenance(
+        scope_type=kaufland_offer.scope_type,
+        region_verified=kaufland_offer.region_verified,
+        verification_method=kaufland_offer.verification_method,
+        store_id=kaufland_offer.store_id,
+        store_name=kaufland_offer.store_name,
+        store_address=kaufland_offer.store_address,
+        source_provider="kaufland-official",
+        source_url=kaufland_offer.source_url,
+        zip_code=kaufland_offer.requested_zip_code,
+        retailer_slug=kaufland_offer.retailer_slug,
+        verification_evidence=kaufland_offer.verification_evidence,
+    )
+    assert is_valid_k is True
+    assert method_k == "store_cookie_session"
+
+
+def test_scenario_13_invalid_persisted_evidence_cannot_be_restored_as_verified_after_restart():
+    """13. Invalid persisted evidence cannot be restored as verified after restart."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        clear_campaign_registries()
+        db_path = Path(tmp_dir) / "price_history.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE verified_campaign_registry (
+                campaign_id TEXT PRIMARY KEY,
+                scope_type TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        # Persist invalid evidence (fabricated without artifact)
+        invalid_ev = {
+            "campaign_id": "invalid_persisted_13",
+            "source_url": "https://example.com/fake",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "scope": "nationwide",
+            "promotional_applicability_confirmed": True,
+            "limitations": "none",
+        }
+        conn.execute(
+            "INSERT INTO verified_campaign_registry VALUES (?, ?, ?, ?)",
+            ("invalid_persisted_13", "nationwide", json.dumps(invalid_ev), "2026-06-01T10:00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Reloading service MUST NOT restore invalid campaign
+        service = PriceHistoryService(Path(tmp_dir))
+        assert is_verified_nationwide_campaign("invalid_persisted_13") is False
+
+
+def test_scenario_14_malformed_registry_records_handled_safely_and_diagnostically(caplog):
+    """14. Malformed registry records are handled safely and diagnostically."""
+    import logging
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        clear_campaign_registries()
+        db_path = Path(tmp_dir) / "price_history.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE verified_campaign_registry (
+                campaign_id TEXT PRIMARY KEY,
+                scope_type TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        # Corrupt JSON record
+        conn.execute(
+            "INSERT INTO verified_campaign_registry VALUES (?, ?, ?, ?)",
+            ("corrupt_camp_14", "nationwide", "{ not valid json ...", "2026-06-01T10:00:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        with caplog.at_level(logging.WARNING):
+            service = PriceHistoryService(Path(tmp_dir))
+
+        assert is_verified_nationwide_campaign("corrupt_camp_14") is False
+        assert any("Malformed JSON in verified_campaign_registry" in rec.message for rec in caplog.records)
+
+
+def test_scenario_15_repeated_migrations_produce_consistent_results():
+    """15. Repeated migrations produce consistent results."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        clear_campaign_registries()
+        service = PriceHistoryService(Path(tmp_dir))
+        with service._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO price_history (
+                    product_key, title, retailer_slug, retailer_name, price, recorded_at,
+                    source_url, zip_code, scope_type, region_verified, source_provider,
+                    source_region_id, verification_method, verification_evidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                """,
+                ("item-15", "Tee", "rewe", "REWE", 1.99, "2026-06-01T10:00:00",
+                 "https://rewe.de", "10115", "store", "edeka-official", None, "store_direct_api", None),
+            )
+            conn.commit()
+
+        d1 = service.revalidate_historical_records()
+        d2 = service.revalidate_historical_records()
+        d3 = service.revalidate_historical_records()
+
+        assert d1 == 1  # First run demotes the record lacking store location evidence
+        assert d2 == 0  # Second run is idempotent
+        assert d3 == 0  # Third run is idempotent
+
+
+def test_scenario_16_unverified_observations_never_contaminate_verified_stats_atls_aggregates():
+    """16. Unverified observations never contaminate verified history, ATL, averages, counts, or aggregates."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        clear_campaign_registries()
+        service = PriceHistoryService(Path(tmp_dir))
+
+        ver_offer = Offer(
+            id="ver-16",
+            source_offer_id=161,
+            retailer="EDEKA",
+            retailer_slug="edeka",
+            title="Bio Apfel 1kg",
+            brand=None,
+            category="produce",
+            price=2.99,
+            old_price=3.99,
+            unit_price=2.99,
+            unit="kg",
+            discount_percent=25.0,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://edeka.de",
+            requested_zip_code="10115",
+            scope_type="store",
+            store_id="store_10115",
+            store_address="Invalidenstr. 10, 10115 Berlin",
+            region_verified=True,
+            verification_method="store_direct_api",
+        )
+
+        unv_cheap = Offer(
+            id="unv-16",
+            source_offer_id=162,
+            retailer="Discounter",
+            retailer_slug="penny",
+            title="Bio Apfel 1kg",
+            brand=None,
+            category="produce",
+            price=0.29,  # Ridiculously cheap unverified price
+            old_price=3.99,
+            unit_price=0.29,
+            unit="kg",
+            discount_percent=92.0,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://penny.de",
+            requested_zip_code="10115",
+            scope_type="unknown",
+            region_verified=False,
+            verification_method="legacy_unverified",
+        )
+
+        service.record_offers([ver_offer, unv_cheap], zip_code="10115")
+
+        pkey = normalize_product_key("Bio Apfel 1kg")
+        # Regional and national ATLs MUST be 2.99, NOT 0.29
+        assert service.get_all_time_low_map(zip_code="10115")[pkey] == 2.99
+        assert service.get_all_time_low_map(zip_code=None)[pkey] == 2.99
+
+        stats = service.get_product_stats("Bio Apfel 1kg", current_price=2.99, zip_code="10115")
+        assert stats["all_time_low"] == 2.99
+        assert stats["regional_all_time_low"] == 2.99
+        assert stats["national_all_time_low"] == 2.99
+        assert stats["average_price"] == 2.99
+        assert stats["record_count"] == 1
+        assert len(stats["history"]) == 1
+        assert stats["history"][0]["price"] == 2.99
+
+        # Unverified history is separated
+        assert len(stats["unverified_history"]) == 1
+        assert stats["unverified_history"][0]["price"] == 0.29
+
+
+def test_scenario_17_valid_evidence_backed_observations_continue_to_work():
+    """17. Valid, evidence-backed observations continue to work."""
+    clear_campaign_registries()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        service = PriceHistoryService(Path(tmp_dir))
+        ev = {
+            "campaign_id": "test_nat_15",
+            "source_url": "https://www.marktguru.de/leaflets/test_nat_15",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "scope": "nationwide",
+            "promotional_applicability_confirmed": True,
+            "limitations": "Full national coverage",
+            "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "test_nat_15.json"),
+        }
+        assert register_verified_nationwide_campaign("test_nat_15", ev) is True
+
+        offer = Offer(
+            id="v-17",
+            source_offer_id=17,
+            retailer="REWE",
+            retailer_slug="rewe",
+            title="Hafermilch 1L",
+            brand="Oatly",
+            category="dairy",
+            price=1.49,
+            old_price=2.19,
+            unit_price=1.49,
+            unit="l",
+            discount_percent=32.0,
+            description="",
+            valid_from="2026-06-01",
+            valid_to="2026-06-07",
+            image_url=None,
+            source_url="https://marktguru.de/rewe",
+            scope_type="nationwide",
+            source_provider="marktguru",
+            source_region_id="national_flyer:test_nat_15",
+            region_verified=True,
+            verification_method="marktguru_national_flyer",
+            verification_evidence=ev,
+        )
+        service.record_offers([offer], zip_code="10115")
+
+        stats = service.get_product_stats("Hafermilch 1L", brand="Oatly", current_price=1.49, zip_code="10115")
+        assert stats["all_time_low"] == 1.49
+        assert stats["record_count"] == 1
+        assert len(stats["history"]) == 1
+        assert stats["history"][0]["region_verified"] is True
+
+
+def test_scenario_18_unverified_offers_remain_available_rather_than_discarded():
+    """18. Unverified offers remain available to the user rather than being silently discarded."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        service = PriceHistoryService(Path(tmp_dir))
+        unv_offer = Offer(
+            id="unv-18",
+            source_offer_id=18,
+            retailer="Penny",
+            retailer_slug="penny",
+            title="Schokolade 100g",
+            brand="Milka",
+            category="sweets",
+            price=0.79,
+            old_price=1.49,
+            unit_price=7.90,
+            unit="kg",
+            discount_percent=47.0,
+            description="Tafel Schokolade",
+            valid_from="2026-06-01",
+            valid_to="2026-06-07",
+            image_url=None,
+            source_url="https://penny.de",
+            requested_zip_code="10115",
+            scope_type="unknown",
+            region_verified=False,
+            verification_method="legacy_unverified",
+        )
+        # Record unverified offer
+        count = service.record_offers([unv_offer], zip_code="10115")
+        assert count == 1
+
+        # Query stats
+        stats = service.get_product_stats("Schokolade 100g", brand="Milka", current_price=0.79, zip_code="10115")
+        # Verified history is empty, but unverified history preserves the observation!
+        assert len(stats["history"]) == 0
+        assert len(stats["unverified_history"]) == 1
+        assert stats["unverified_history"][0]["price"] == 0.79
+        assert stats["unverified_history"][0]["retailer"] == "Penny"
+        assert stats["unverified_history"][0]["region_verified"] is False
+
 
 
 

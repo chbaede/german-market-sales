@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 import json
+import logging
 from pathlib import Path
 import re
 import sqlite3
@@ -11,6 +12,8 @@ import unicodedata
 from zoneinfo import ZoneInfo
 
 from app.models import Offer
+
+logger = logging.getLogger(__name__)
 
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 
@@ -234,37 +237,82 @@ def validate_observation_provenance(
                 f"Store-scoped verification requires a valid 5-digit German PLZ with coordinates (got '{clean_zip}')",
             )
 
-        if store_address:
-            m_plz = re.search(r"\b(\d{5})\b", store_address)
-            if m_plz:
-                addr_plz = m_plz.group(1)
-                from app.services.location import normalize_german_plz
+        from app.services.location import normalize_german_plz
+        norm_zip = normalize_german_plz(clean_zip) or clean_zip
 
-                norm_zip = normalize_german_plz(clean_zip) or clean_zip
-                if addr_plz != clean_zip and addr_plz != norm_zip:
-                    return (
-                        False,
-                        "demoted_store_location_mismatch",
-                        f"Store address PLZ {addr_plz} does not match requested PLZ {clean_zip}",
-                    )
+        # Require authoritative store location evidence connecting the store to the requested PLZ.
+        # A store ID and requested PLZ without defensible store-location evidence fail closed.
+        eff_store_address = store_address or (parsed_evidence.get("store_address") if parsed_evidence else None)
+
+        if not eff_store_address and not (parsed_evidence and (parsed_evidence.get("store_plz") or parsed_evidence.get("matched_plz"))):
+            return (
+                False,
+                "demoted_missing_store_location_evidence",
+                f"Store verification requires authoritative store location evidence connecting store '{clean_store_id}' to requested PLZ '{clean_zip}'",
+            )
+
+        addr_plz: str | None = None
+        if eff_store_address:
+            m_plz = re.search(r"\b(\d{5})\b", eff_store_address)
+            if not m_plz:
+                return (
+                    False,
+                    "demoted_missing_store_location_evidence",
+                    f"Store address '{eff_store_address}' lacks a valid 5-digit postal code",
+                )
+            addr_plz = m_plz.group(1)
+            if addr_plz != clean_zip and addr_plz != norm_zip:
+                return (
+                    False,
+                    "demoted_store_location_mismatch",
+                    f"Store address PLZ {addr_plz} does not match requested PLZ {clean_zip}",
+                )
 
         if parsed_evidence is not None:
-            if parsed_evidence.get("store_id") and str(parsed_evidence["store_id"]).strip() != clean_store_id:
+            # Check store_id
+            ev_store_id = str(parsed_evidence.get("store_id") or "").strip()
+            if ev_store_id and ev_store_id != clean_store_id:
                 return (
                     False,
                     "demoted_store_evidence_mismatch",
-                    f"Store evidence ID '{parsed_evidence['store_id']}' contradicts store_id '{clean_store_id}'",
+                    f"Store evidence ID '{ev_store_id}' contradicts store_id '{clean_store_id}'",
                 )
-            ev_plz = parsed_evidence.get("store_plz")
-            if ev_plz:
-                from app.services.location import normalize_german_plz
 
-                norm_zip = normalize_german_plz(clean_zip) or clean_zip
-                if str(ev_plz).strip() != clean_zip and str(ev_plz).strip() != norm_zip:
+            # Check retailer_slug
+            ev_retailer = str(parsed_evidence.get("retailer_slug") or parsed_evidence.get("retailer") or "").strip().lower()
+            if ev_retailer and clean_retailer and ev_retailer != clean_retailer:
+                return (
+                    False,
+                    "demoted_retailer_evidence_mismatch",
+                    f"Store evidence retailer '{ev_retailer}' contradicts observation retailer '{clean_retailer}'",
+                )
+
+            # Resolve inconsistency between store_plz and matched_plz
+            ev_store_plz = str(parsed_evidence.get("store_plz") or "").strip()
+            ev_matched_plz = str(parsed_evidence.get("matched_plz") or "").strip()
+            if ev_store_plz and ev_matched_plz and ev_store_plz != ev_matched_plz:
+                return (
+                    False,
+                    "demoted_store_evidence_inconsistency",
+                    f"Evidence contains inconsistent store_plz '{ev_store_plz}' and matched_plz '{ev_matched_plz}'",
+                )
+
+            for field_name, field_val in (("store_plz", ev_store_plz), ("matched_plz", ev_matched_plz)):
+                if field_val and field_val != clean_zip and field_val != norm_zip:
                     return (
                         False,
                         "demoted_store_location_mismatch",
-                        f"Store evidence PLZ '{ev_plz}' does not match requested PLZ '{clean_zip}'",
+                        f"Store evidence {field_name} '{field_val}' does not match requested PLZ '{clean_zip}'",
+                    )
+
+            ev_addr = parsed_evidence.get("store_address")
+            if ev_addr and store_address and str(ev_addr).strip() != str(store_address).strip():
+                ev_addr_m = re.search(r"\b(\d{5})\b", str(ev_addr))
+                if ev_addr_m and addr_plz and ev_addr_m.group(1) != addr_plz:
+                    return (
+                        False,
+                        "demoted_store_address_evidence_mismatch",
+                        f"Evidence store address PLZ '{ev_addr_m.group(1)}' contradicts observation address PLZ '{addr_plz}'",
                     )
 
         if raw_method == "marktguru_store_branch_verified" and clean_provider and clean_provider != "marktguru":
@@ -525,15 +573,23 @@ class PriceHistoryService:
                 s_type = v_row["scope_type"]
                 try:
                     ev_data = json.loads(v_row["evidence_json"])
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Malformed JSON in verified_campaign_registry for campaign '%s': %s", c_id, exc)
                     continue
+
                 if s_type == "nationwide":
-                    register_verified_nationwide_campaign(c_id, ev_data)
+                    success = register_verified_nationwide_campaign(c_id, ev_data)
+                    if not success:
+                        logger.warning("Failed to restore verified nationwide campaign '%s': invalid evidence", c_id)
                 elif s_type == "region":
                     plzs = ev_data.get("covered_plzs") or ev_data.get("validZipCodes") or []
-                    register_verified_campaign(c_id, plzs, ev_data)
-        except Exception:
-            pass
+                    success = register_verified_campaign(c_id, plzs, ev_data)
+                    if not success:
+                        logger.warning("Failed to restore verified regional campaign '%s': invalid evidence", c_id)
+        except sqlite3.OperationalError as exc:
+            logger.debug("verified_campaign_registry table not available during revalidation: %s", exc)
+        except Exception as exc:
+            logger.warning("Unexpected error reading verified_campaign_registry: %s", exc)
 
         cursor = conn.execute("PRAGMA table_info(price_history)")
         col_names = {row["name"] for row in cursor.fetchall()}
@@ -690,8 +746,8 @@ class PriceHistoryService:
                             """,
                             (offer.source_region_id, scope_type, ev_json_str, timestamp),
                         )
-                    except Exception:
-                        pass
+                    except sqlite3.Error as exc:
+                        logger.warning("Failed to persist verified campaign '%s' to registry: %s", offer.source_region_id, exc)
 
                 dedup_key = (
                     product_key,

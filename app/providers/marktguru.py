@@ -173,6 +173,21 @@ VALID_EVIDENCE_TYPES: frozenset[str] = frozenset(
 )
 
 
+def _is_valid_calendar_date(val: Any) -> bool:
+    if not val or not isinstance(val, str):
+        return False
+    s = val.strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return False
+    try:
+        from datetime import datetime
+
+        d = datetime.strptime(s, "%Y-%m-%d").date()
+        return 2020 <= d.year <= 2050
+    except (ValueError, TypeError):
+        return False
+
+
 def validate_nationwide_coverage_evidence(
     campaign_id: str,
     evidence: Any,
@@ -180,6 +195,7 @@ def validate_nationwide_coverage_evidence(
     """
     Validates explicit, scope-specific nationwide coverage evidence for Germany.
     Rejects missing, empty, generic, contradictory, or unsupported evidence.
+    Evidence must be traceable to an accessible recorded evidence artifact.
     """
     if not campaign_id or not str(campaign_id).strip():
         return False, "Missing campaign_id", None
@@ -202,8 +218,10 @@ def validate_nationwide_coverage_evidence(
         return False, "Empty evidence dictionary cannot establish nationwide applicability", None
 
     ev_campaign_id = str(ev_dict.get("campaign_id") or "").strip().casefold()
+    if not ev_campaign_id:
+        return False, "Missing campaign_id in nationwide evidence", None
     ev_core_id = ev_campaign_id.removeprefix("national_flyer:").removeprefix("national_campaign:")
-    if ev_core_id and ev_core_id != clean_core_id:
+    if not ev_core_id or ev_core_id != clean_core_id:
         return False, f"Evidence campaign_id '{ev_campaign_id}' does not match claimed campaign '{clean_id}'", None
 
     source_url = str(ev_dict.get("source_url") or "").strip()
@@ -215,8 +233,8 @@ def validate_nationwide_coverage_evidence(
         return False, f"Unsupported nationwide evidence_type '{evidence_type}'", None
 
     verification_date = str(ev_dict.get("verification_date") or "").strip()
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", verification_date):
-        return False, "Invalid or missing verification_date in nationwide evidence (expected YYYY-MM-DD)", None
+    if not _is_valid_calendar_date(verification_date):
+        return False, "Invalid or unparseable calendar date for verification_date (expected valid YYYY-MM-DD)", None
 
     scope = str(ev_dict.get("scope") or "").strip().casefold()
     if scope != "nationwide":
@@ -233,21 +251,38 @@ def validate_nationwide_coverage_evidence(
     if ev_dict.get("region_id") or ev_dict.get("regionId") or ev_dict.get("postalCodes") or ev_dict.get("validZipCodes"):
         return False, "Contradictory regional restriction fields found in nationwide evidence", None
 
+    # Artifact check: a syntactically valid URL or non-empty dictionary is not proof by itself.
+    # Evidence must be traceable to an accessible recorded evidence artifact.
     artifact_path = ev_dict.get("evidence_artifact_path")
-    if artifact_path:
-        p = Path(artifact_path)
-        if not p.is_file():
-            return False, f"Recorded nationwide evidence artifact '{artifact_path}' does not exist", None
-        try:
-            art_data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(art_data, dict):
-                return False, "Recorded evidence artifact must be a JSON object", None
-            if str(art_data.get("scope") or "").strip().casefold() != "nationwide":
-                return False, "Artifact does not confirm nationwide scope", None
-            if art_data.get("promotional_campaign_applicability") is not True:
-                return False, "Artifact does not confirm promotional_campaign_applicability", None
-        except Exception as exc:
-            return False, f"Failed to read recorded nationwide evidence artifact: {exc}", None
+    if not artifact_path or not str(artifact_path).strip():
+        return False, "Remote source_url or dictionary cannot establish nationwide coverage without an accessible recorded evidence artifact", None
+
+    p = Path(artifact_path)
+    if not p.is_file():
+        return False, f"Recorded nationwide evidence artifact '{artifact_path}' does not exist", None
+
+    try:
+        art_data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"Failed to read recorded nationwide evidence artifact: {exc}", None
+
+    if not isinstance(art_data, dict):
+        return False, "Recorded evidence artifact must be a JSON object", None
+
+    if str(art_data.get("scope") or "").strip().casefold() != "nationwide":
+        return False, "Artifact does not confirm nationwide scope", None
+
+    if art_data.get("promotional_campaign_applicability") is not True and art_data.get("scope_meaning") != "promotional_campaign":
+        return False, "Artifact does not confirm promotional_campaign_applicability", None
+
+    art_campaign_id = str(art_data.get("campaign_id") or "").strip().casefold()
+    art_core_id = art_campaign_id.removeprefix("national_flyer:").removeprefix("national_campaign:")
+    if art_core_id and art_core_id != clean_core_id:
+        return False, f"Artifact campaign_id '{art_campaign_id}' does not match claimed campaign '{clean_id}'", None
+
+    art_source_url = str(art_data.get("source_url") or "").strip()
+    if art_source_url and art_source_url != source_url:
+        return False, "Artifact source_url does not match evidence source_url", None
 
     validated = {
         "campaign_id": clean_id,
@@ -257,7 +292,7 @@ def validate_nationwide_coverage_evidence(
         "scope": "nationwide",
         "promotional_applicability_confirmed": True,
         "limitations": limitations,
-        "evidence_artifact_path": str(artifact_path) if artifact_path else None,
+        "evidence_artifact_path": str(artifact_path),
     }
     return True, "Verified nationwide campaign evidence", validated
 
@@ -270,6 +305,8 @@ def validate_regional_campaign_evidence(
     """
     Validates explicit, scope-specific regional coverage evidence.
     Rejects missing, empty, generic, or unsupported evidence.
+    A caller-provided regional PLZ list without an independently validated
+    promotional evidence artifact is rejected.
     """
     from app.services.location import get_coordinates_for_plz
 
@@ -315,8 +352,10 @@ def validate_regional_campaign_evidence(
         return False, "Empty evidence dictionary cannot establish regional applicability", None
 
     ev_campaign_id = str(ev_dict.get("campaign_id") or "").strip().casefold()
+    if not ev_campaign_id:
+        return False, "Missing campaign_id in regional evidence", None
     ev_core_id = ev_campaign_id.removeprefix("flyer:").removeprefix("campaign:")
-    if ev_core_id and ev_core_id != clean_core_id:
+    if not ev_core_id or ev_core_id != clean_core_id:
         return False, f"Evidence campaign_id '{ev_campaign_id}' does not match claimed campaign '{clean_id}'", None
 
     source_url = str(ev_dict.get("source_url") or "").strip()
@@ -328,8 +367,8 @@ def validate_regional_campaign_evidence(
         return False, f"Unsupported regional evidence_type '{evidence_type}'", None
 
     verification_date = str(ev_dict.get("verification_date") or "").strip()
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", verification_date):
-        return False, "Invalid or missing verification_date in regional evidence (expected YYYY-MM-DD)", None
+    if not _is_valid_calendar_date(verification_date):
+        return False, "Invalid or unparseable calendar date for verification_date (expected valid YYYY-MM-DD)", None
 
     if ev_dict.get("promotional_applicability_confirmed") is not True:
         return False, "promotional_applicability_confirmed must be strictly True in regional evidence", None
@@ -344,22 +383,37 @@ def validate_regional_campaign_evidence(
         if ev_plzs != normalized_plzs:
             return False, "Evidence covered_plzs does not match claimed covered_plzs set", None
 
+    # Artifact check: a caller-provided PLZ list without an accessible recorded artifact is rejected
     artifact_path = ev_dict.get("evidence_artifact_path")
-    if artifact_path:
-        p = Path(artifact_path)
-        if not p.is_file():
-            return False, f"Recorded regional evidence artifact '{artifact_path}' does not exist", None
-        try:
-            art_data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(art_data, dict):
-                return False, "Recorded evidence artifact must be a JSON object", None
-            if art_data.get("scope_meaning") != "promotional_campaign_applicability":
-                return False, "Artifact does not confirm promotional_campaign_applicability", None
-            art_plzs = {str(p).strip() for p in art_data.get("covered_plzs", [])}
-            if art_plzs != normalized_plzs:
-                return False, "Artifact covered_plzs does not match claimed covered_plzs", None
-        except Exception as exc:
-            return False, f"Failed to read recorded regional evidence artifact: {exc}", None
+    if not artifact_path or not str(artifact_path).strip():
+        return False, "Regional campaign registration requires an accessible recorded evidence artifact confirming promotional applicability", None
+
+    p = Path(artifact_path)
+    if not p.is_file():
+        return False, f"Recorded regional evidence artifact '{artifact_path}' does not exist", None
+
+    try:
+        art_data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"Failed to read recorded regional evidence artifact: {exc}", None
+
+    if not isinstance(art_data, dict):
+        return False, "Recorded evidence artifact must be a JSON object", None
+
+    if art_data.get("scope_meaning") != "promotional_campaign_applicability" and art_data.get("promotional_campaign_applicability") is not True:
+        return False, "Artifact does not confirm promotional_campaign_applicability", None
+
+    art_campaign_id = str(art_data.get("campaign_id") or "").strip().casefold()
+    art_core_id = art_campaign_id.removeprefix("flyer:").removeprefix("campaign:")
+    if art_core_id and art_core_id != clean_core_id:
+        return False, f"Artifact campaign_id '{art_campaign_id}' does not match claimed campaign '{clean_id}'", None
+
+    art_plzs_raw = art_data.get("covered_plzs") or art_data.get("validZipCodes")
+    if not isinstance(art_plzs_raw, list) or not art_plzs_raw:
+        return False, "Artifact lacks covered_plzs list", None
+    art_plzs = {str(p).strip() for p in art_plzs_raw}
+    if art_plzs != normalized_plzs:
+        return False, "Artifact covered_plzs does not match claimed covered_plzs", None
 
     validated = {
         "campaign_id": clean_id,
@@ -370,7 +424,7 @@ def validate_regional_campaign_evidence(
         "promotional_applicability_confirmed": True,
         "covered_plzs": sorted(normalized_plzs),
         "limitations": limitations,
-        "evidence_artifact_path": str(artifact_path) if artifact_path else None,
+        "evidence_artifact_path": str(artifact_path),
     }
     return True, "Verified regional campaign evidence", validated
 
@@ -879,26 +933,13 @@ class MarktguruProvider(OfferProvider):
             lat = coords.get("lat") or branch_data.get("latitude")
             lon = coords.get("lon") or branch_data.get("longitude")
 
-            matched_geo = False
-            pc_conflict = False
-            if user_coords and branch_pc:
-                if branch_pc == clean_zip:
-                    matched_geo = True
-                elif len(branch_pc) == 5 and branch_pc.isdigit():
-                    b_coords = get_coordinates_for_plz(branch_pc)
-                    if b_coords and haversine_distance_km(user_coords[0], user_coords[1], b_coords[0], b_coords[1]) <= 60.0:
-                        matched_geo = True
-                    else:
-                        pc_conflict = True
-                else:
-                    pc_conflict = True
+            from app.services.location import normalize_german_plz
+            norm_zip = normalize_german_plz(clean_zip) or clean_zip
 
-            if user_coords and not matched_geo and not pc_conflict:
-                if isinstance(branch_dist, (int, float)) and not isinstance(branch_dist, bool) and 0 <= float(branch_dist) <= 60.0:
+            matched_geo = False
+            if user_coords and branch_pc:
+                if branch_pc == clean_zip or branch_pc == norm_zip:
                     matched_geo = True
-                elif is_valid_coordinates(lat, lon):
-                    if haversine_distance_km(user_coords[0], user_coords[1], lat, lon) <= 60.0:
-                        matched_geo = True
 
             if matched_geo:
                 region_verified = True
@@ -956,6 +997,18 @@ class MarktguruProvider(OfferProvider):
             verification_evidence = get_verified_nationwide_evidence(source_region_id or clean_flyer_id)
         elif scope_type == "region" and region_verified:
             verification_evidence = get_verified_campaign_evidence(source_region_id)
+        elif scope_type == "store" and region_verified:
+            verification_evidence = {
+                "scope": "store",
+                "retailer_slug": retailer.get("uniqueName") or retailer_slug,
+                "store_id": store_id,
+                "store_name": store_name,
+                "store_address": store_address,
+                "store_plz": branch_pc or clean_zip,
+                "matched_plz": clean_zip,
+                "requested_plz": clean_zip,
+                "verification_method": verification_method,
+            }
 
         return Offer(
             id=f"marktguru-{source_offer_id}",

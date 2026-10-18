@@ -241,8 +241,6 @@ class KauflandProvider(OfferProvider):
                     is_location_substantiated = True
                 else:
                     location_mismatch = True
-            elif location_verified:
-                is_location_substantiated = True
 
         if clean_store_id and is_location_substantiated and not location_mismatch:
             scope_type = "store"
@@ -267,10 +265,13 @@ class KauflandProvider(OfferProvider):
         if region_verified:
             verification_evidence = {
                 "scope": "store",
+                "retailer_slug": cls.retailer_slug,
                 "store_id": clean_store_id,
                 "store_name": store_name,
                 "store_address": store_address,
+                "store_plz": addr_plz or clean_zip,
                 "matched_plz": clean_zip,
+                "requested_plz": clean_zip,
                 "verification_method": verification_method,
             }
 
