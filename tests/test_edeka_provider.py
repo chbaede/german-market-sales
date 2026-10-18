@@ -73,8 +73,8 @@ def test_edeka_fetch_offers_skips_empty_markets_and_uses_candidate_with_offers(m
 
     def mock_candidate_markets(zip_code):
         return [
-            {"name": "Market 1", "url": "https://www.edeka.de/m1/ "},
-            {"name": "Market 2", "url": "https://www.edeka.de/m2/"},
+            {"id": "market-1", "name": "Market 1", "url": "https://www.edeka.de/m1/ ", "contact": {"address": {"postalCode": "50667"}}},
+            {"id": "market-2", "name": "Market 2", "url": "https://www.edeka.de/m2/", "contact": {"address": {"postalCode": "50667"}}},
         ], False
 
     def mock_offers_url(url):

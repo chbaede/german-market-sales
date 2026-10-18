@@ -128,37 +128,98 @@ class MarktguruProvider(OfferProvider):
         unit_price = parse_positive_float(item.get("referencePrice"))
         discount_percent = compute_discount_percent(price, old_price)
         description = (item.get("description") or "").strip()
-        flyer_id = item.get("flyerId") or (item.get("flyer") or {}).get("id")
-        branch_id = item.get("branchId") or (item.get("branch") or {}).get("id")
+        from app.providers.base import clean_text
+        from app.services.location import get_coordinates_for_plz, haversine_distance_km, is_valid_coordinates
+
+        branch_data = item.get("branch") if isinstance(item.get("branch"), dict) else {}
+        branch_id = item.get("branchId") or branch_data.get("id")
+        store_name = clean_text(branch_data.get("name") or branch_data.get("branchName")) or None
+        store_address = clean_text(branch_data.get("address") or branch_data.get("street")) or None
+
+        flyer_data = item.get("flyer") if isinstance(item.get("flyer"), dict) else {}
+        flyer_id = item.get("flyerId") or flyer_data.get("id")
+
+        scope_type = "unknown"
+        store_id: str | None = None
+        source_region_id: str | None = None
+        region_verified = False
+        verification_method = "unknown_scope"
+        verification_reason = "No geographic scope could be established"
+
+        # Check if item or flyer explicitly defines national scope
+        is_national = (
+            flyer_data.get("isNational") is True
+            or flyer_data.get("national") is True
+            or item.get("isNational") is True
+            or item.get("national") is True
+            or flyer_data.get("scope") == "national"
+            or item.get("scope") == "national"
+        )
 
         if branch_id:
-            scope_type = "store"
             store_id = str(branch_id)
-            source_region_id = str(flyer_id) if flyer_id else None
+            scope_type = "store"
+
+            # Verify branch against requested zip_code
+            branch_pc = str(branch_data.get("postalCode") or branch_data.get("zipCode") or "").strip()
+            branch_dist = branch_data.get("distance")
+            coords = branch_data.get("coordinates") if isinstance(branch_data.get("coordinates"), dict) else {}
+            lat = coords.get("lat") or branch_data.get("latitude")
+            lon = coords.get("lon") or branch_data.get("longitude")
+
+            matched_geo = False
+            if zip_code:
+                if branch_pc and branch_pc == zip_code:
+                    matched_geo = True
+                elif isinstance(branch_dist, (int, float)) and 0 <= float(branch_dist) <= 60.0:
+                    matched_geo = True
+                elif is_valid_coordinates(lat, lon):
+                    user_coords = get_coordinates_for_plz(zip_code)
+                    if user_coords and haversine_distance_km(user_coords[0], user_coords[1], lat, lon) <= 60.0:
+                        matched_geo = True
+
+            if matched_geo:
+                region_verified = True
+                verification_method = "marktguru_store_branch_verified"
+                verification_reason = f"Marktguru branch {branch_id} geographically verified for PLZ {zip_code}"
+            else:
+                region_verified = False
+                verification_method = "marktguru_unverified_branch"
+                verification_reason = f"Marktguru branch {branch_id} lacks geographic verification for PLZ {zip_code}"
+
+        elif is_national:
+            scope_type = "nationwide"
             region_verified = True
-            verification_method = "marktguru_store_branch"
-            verification_reason = f"Marktguru branch {branch_id} matched"
-        elif flyer_id:
+            verification_method = "marktguru_national_flyer"
+            verification_reason = "Marktguru leaflet explicitly marked as national"
+
+        elif flyer_id or flyer_data:
             scope_type = "region"
-            store_id = None
-            source_region_id = str(flyer_id)
-            region_verified = True
-            verification_method = "marktguru_flyer_api"
-            verification_reason = f"Marktguru regional leaflet {flyer_id}"
+            flyer_pcs = flyer_data.get("postalCodes") or flyer_data.get("zipCodes") or item.get("postalCodes")
+            region_id = flyer_data.get("regionId") or flyer_data.get("geographicRegionId") or item.get("regionId")
+
+            if zip_code and isinstance(flyer_pcs, (list, tuple, set)) and zip_code in flyer_pcs:
+                source_region_id = str(region_id) if region_id else None
+                region_verified = True
+                verification_method = "marktguru_regional_flyer_postal_match"
+                verification_reason = f"Marktguru leaflet covers PLZ {zip_code}"
+            elif zip_code and region_id:
+                source_region_id = str(region_id)
+                region_verified = True
+                verification_method = "marktguru_regional_flyer_region_id"
+                verification_reason = f"Marktguru regional leaflet for region {region_id}"
+            else:
+                # Do NOT invent region_id from flyer_id unless it represents geographic identity
+                source_region_id = None
+                region_verified = False
+                verification_method = "marktguru_unverified_flyer"
+                verification_reason = "Marktguru leaflet lacks geographic verification for requested PLZ"
+
         elif zip_code:
-            scope_type = "region"
-            store_id = None
-            source_region_id = None
-            region_verified = False
-            verification_method = "unverified_zip_query"
-            verification_reason = "Marktguru query without specific leaflet/branch identifier"
-        else:
             scope_type = "unknown"
-            store_id = None
-            source_region_id = None
             region_verified = False
             verification_method = "unknown_scope"
-            verification_reason = "No geographic scope could be established"
+            verification_reason = "Marktguru response lacks branch and leaflet geographic metadata"
 
         return Offer(
             id=f"marktguru-{source_offer_id}",
@@ -181,6 +242,8 @@ class MarktguruProvider(OfferProvider):
             requested_zip_code=zip_code,
             scope_type=scope_type,
             store_id=store_id,
+            store_name=store_name,
+            store_address=store_address,
             source_provider="marktguru",
             source_region_id=source_region_id,
             region_verified=region_verified,

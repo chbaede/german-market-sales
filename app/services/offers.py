@@ -21,7 +21,7 @@ from app.services.categories import categorize_offer
 from app.services.formatting import parse_offer_date
 from app.services.price_history import PriceHistoryService, normalize_product_key
 
-CACHE_SCHEMA_VERSION = 13
+CACHE_SCHEMA_VERSION = 14
 UPSTREAM_FETCH_MULTIPLIER = 10
 MIN_UPSTREAM_FETCH_LIMIT = 500
 DEFAULT_CACHE_ZIP = "14195"
@@ -143,8 +143,8 @@ class OfferService:
             if version == CACHE_SCHEMA_VERSION:
                 return data
 
-            # Safe migration for legacy caches (e.g. version 11 or 12):
-            if isinstance(version, int) and version < CACHE_SCHEMA_VERSION:
+            # Safe migration for legacy or unversioned caches:
+            if version != CACHE_SCHEMA_VERSION:
                 migrated_offers = []
                 for item in data.get("offers", []):
                     scope = item.get("scope_type")
@@ -386,6 +386,7 @@ class OfferService:
                 scope_type = next((o.scope_type for o in offers if o.scope_type), "unknown")
                 region_verified = any(o.region_verified for o in offers)
                 valid_from = next((o.valid_from for o in offers if o.valid_from), None)
+                valid_to = next((o.valid_to for o in offers if o.valid_to), None)
                 source_url = next((o.source_url for o in offers if o.source_url), None)
                 verification_method = next((o.verification_method for o in offers if o.verification_method), None)
                 verification_reason = next((o.verification_reason for o in offers if o.verification_reason), None)

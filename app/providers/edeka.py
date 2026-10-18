@@ -40,6 +40,8 @@ class EdekaProvider(OfferProvider):
             warnings.append("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.")
 
         candidate_markets = _sort_candidate_markets(candidate_markets, zip_code)
+        if not candidate_markets:
+            raise ValueError(f"No geographically valid EDEKA markets found for PLZ {zip_code}.")
         last_error: Exception | None = None
 
         for market in candidate_markets:
@@ -140,6 +142,18 @@ class EdekaProvider(OfferProvider):
         description = _description(dialog, price_note, market_name)
         valid_from = _valid_from(dialog) or fallback_from
 
+        has_store_identity = bool(store_id and (market_name or store_address))
+        if has_store_identity:
+            scope_type = "store"
+            region_verified = True
+            verification_method = "store_direct_api"
+            verification_reason = f"Official EDEKA store endpoint for market {store_id}"
+        else:
+            scope_type = "unknown"
+            region_verified = False
+            verification_method = "unverified_missing_store_id"
+            verification_reason = "EDEKA store identity could not be established"
+
         return Offer(
             id=f"edeka-{source_key}",
             source_offer_id=source_offer_id_from_key(source_key, allow_hex=True),
@@ -159,14 +173,14 @@ class EdekaProvider(OfferProvider):
             image_url=_image_url(dialog),
             source_url=source_url,
             requested_zip_code=requested_zip,
-            scope_type="store",
+            scope_type=scope_type,
             store_id=store_id,
             store_name=market_name,
             store_address=store_address,
             source_provider="edeka-official",
-            region_verified=True,
-            verification_method="store_direct_api",
-            verification_reason=f"Official EDEKA store endpoint for market {store_id}" if store_id else "Official EDEKA store endpoint",
+            region_verified=region_verified,
+            verification_method=verification_method,
+            verification_reason=verification_reason,
         )
 
     def _candidate_markets(self, zip_code: str) -> tuple[list[dict], bool]:
@@ -331,6 +345,11 @@ def _sort_candidate_markets(markets: list[dict], zip_code: str) -> list[dict]:
         address = contact.get("address") if isinstance(contact.get("address"), dict) else (m.get("address") if isinstance(m.get("address"), dict) else {})
         market_pc = str(address.get("postalCode") or m.get("postalCode") or "").strip()
 
+        # Must have a store identifier
+        store_id = str(m.get("id") or m.get("marketId") or "").strip()
+        if not store_id:
+            return None
+
         # 1. Exact 5-digit PLZ match
         if market_pc and market_pc == zip_code:
             return (0, 0.0)
@@ -339,7 +358,7 @@ def _sort_candidate_markets(markets: list[dict], zip_code: str) -> list[dict]:
         raw_dist = m.get("distance")
         if isinstance(raw_dist, (int, float)):
             f_dist = float(raw_dist)
-            if f_dist <= MAX_STORE_DISTANCE_KM:
+            if 0 <= f_dist <= MAX_STORE_DISTANCE_KM:
                 return (1, f_dist)
             return None
 
@@ -352,10 +371,8 @@ def _sort_candidate_markets(markets: list[dict], zip_code: str) -> list[dict]:
                 dist = haversine_distance_km(user_coords[0], user_coords[1], lat, lon)
                 if dist <= MAX_STORE_DISTANCE_KM:
                     return (1, dist)
-        # 4. If market has no address, coordinates, or distance at all (e.g. basic mock without coords):
-        if not market_pc and not coords and raw_dist is None:
-            return (2, 999.0)
 
+        # Fail closed: reject any candidate without defensible geographic match
         return None
 
     valid_candidates: list[tuple[tuple[int, float], dict]] = []

@@ -88,9 +88,9 @@ def test_edeka_market_sorting_uses_haversine_and_exact_match():
     munich_coords = get_coordinates_for_plz("80331")
 
     markets = [
-        {"name": "Edeka Munich", "contact": {"address": {"postalCode": "80331"}}, "coordinates": {"lat": munich_coords[0], "lon": munich_coords[1]}},
-        {"name": "Edeka Cologne Near", "contact": {"address": {"postalCode": "50825"}}, "coordinates": {"lat": 50.94, "lon": 6.91}},
-        {"name": "Edeka Cologne Center", "contact": {"address": {"postalCode": "50667"}}, "coordinates": {"lat": cologne_coords[0], "lon": cologne_coords[1]}},
+        {"id": "edeka-munich", "name": "Edeka Munich", "contact": {"address": {"postalCode": "80331"}}, "coordinates": {"lat": munich_coords[0], "lon": munich_coords[1]}},
+        {"id": "edeka-cologne-near", "name": "Edeka Cologne Near", "contact": {"address": {"postalCode": "50825"}}, "coordinates": {"lat": 50.94, "lon": 6.91}},
+        {"id": "edeka-cologne-center", "name": "Edeka Cologne Center", "contact": {"address": {"postalCode": "50667"}}, "coordinates": {"lat": cologne_coords[0], "lon": cologne_coords[1]}},
     ]
 
     sorted_markets = _sort_candidate_markets(markets, "50667")
@@ -244,9 +244,37 @@ def test_cache_isolation_between_regions():
         assert cached_munich.warnings == ["Munich note"]
 
 
-def test_api_diagnostics_endpoint():
+def test_api_diagnostics_endpoint(monkeypatch):
     app = create_app()
     client = app.test_client()
+
+    def mock_fetch_retailer_offers(self, slug, zip_code):
+        return [
+            Offer(
+                id=f"{slug}-test-1",
+                source_offer_id=1,
+                retailer=slug.upper(),
+                retailer_slug=slug,
+                title="Test Product",
+                brand=None,
+                category="food",
+                price=1.99,
+                old_price=None,
+                unit_price=1.99,
+                unit="kg",
+                discount_percent=None,
+                description="",
+                valid_from="2026-06-01",
+                valid_to="2026-06-07",
+                image_url=None,
+                source_url="https://example.com",
+                requested_zip_code=zip_code,
+                scope_type="nationwide",
+                region_verified=True,
+            )
+        ], []
+
+    monkeypatch.setattr(OfferService, "_fetch_retailer_offers", mock_fetch_retailer_offers)
 
     response = client.get("/api/diagnostics?zip_code=10115")
     assert response.status_code == 200
@@ -261,6 +289,30 @@ def test_four_cities_deterministic_pipeline(monkeypatch):
     Deterministic end-to-end verification for Berlin (10115), Munich (80331),
     Hamburg (20095), and Cologne (50667) without external network dependencies.
     """
+    dummy_offer = Offer(
+        id="dummy",
+        source_offer_id=1,
+        retailer="ALDI",
+        retailer_slug="aldi",
+        title="Dummy",
+        brand=None,
+        category="food",
+        price=1.0,
+        old_price=None,
+        unit_price=None,
+        unit=None,
+        discount_percent=None,
+        description="",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://example.com",
+    )
+    monkeypatch.setattr(AldiSuedProvider, "offers_from_html", lambda *args, **kwargs: [dummy_offer])
+    monkeypatch.setattr(AldiSuedProvider, "_request_text", lambda *args, **kwargs: ("<html></html>", False))
+    monkeypatch.setattr(AldiNordProvider, "offers_from_html", lambda *args, **kwargs: [dummy_offer])
+    monkeypatch.setattr(AldiNordProvider, "_request_text", lambda *args, **kwargs: ("<html></html>", False))
+
     app = create_app()
     client = app.test_client()
 

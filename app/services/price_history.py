@@ -322,6 +322,11 @@ class PriceHistoryService:
                     SELECT product_key, MIN(price) as min_price
                     FROM price_history
                     WHERE price IS NOT NULL AND price > 0
+                      AND (
+                          (scope_type = 'store' AND region_verified = 1)
+                          OR (scope_type = 'region' AND region_verified = 1)
+                          OR scope_type = 'nationwide'
+                      )
                     GROUP BY product_key
                     """
                 )
@@ -346,6 +351,11 @@ class PriceHistoryService:
                     COUNT(*) as count
                 FROM price_history
                 WHERE product_key = ? AND price IS NOT NULL
+                  AND (
+                      (scope_type = 'store' AND region_verified = 1)
+                      OR (scope_type = 'region' AND region_verified = 1)
+                      OR scope_type = 'nationwide'
+                  )
                 """,
                 (product_key,),
             )
@@ -386,19 +396,43 @@ class PriceHistoryService:
                     if current_price is not None:
                         is_regional_atl = current_price <= (regional_min + 0.001)
 
-            # Fetch recent price observation points
-            points_cursor = conn.execute(
+            # Fetch recent price observation points: strictly isolate by scope / location
+            if zip_code:
+                if store_id:
+                    store_p_clause = "(scope_type = 'store' AND region_verified = 1 AND store_id = ?)"
+                    p_params = (product_key, store_id, zip_code)
+                else:
+                    store_p_clause = "(scope_type = 'store' AND region_verified = 1 AND zip_code = ?)"
+                    p_params = (product_key, zip_code, zip_code)
+                p_query = f"""
+                    SELECT
+                        recorded_at, price, old_price, retailer_name, retailer_slug,
+                        source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name,
+                        store_id, region_verified
+                    FROM price_history
+                    WHERE product_key = ? AND price IS NOT NULL
+                      AND (
+                          {store_p_clause}
+                          OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
+                          OR scope_type = 'nationwide'
+                      )
+                    ORDER BY recorded_at ASC
+                    LIMIT 30
                 """
-                SELECT
-                    recorded_at, price, old_price, retailer_name, retailer_slug,
-                    source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name
-                FROM price_history
-                WHERE product_key = ? AND price IS NOT NULL
-                ORDER BY recorded_at ASC
-                LIMIT 30
-                """,
-                (product_key,),
-            )
+                points_cursor = conn.execute(p_query, p_params)
+            else:
+                p_query = """
+                    SELECT
+                        recorded_at, price, old_price, retailer_name, retailer_slug,
+                        source_url, unit_price, unit, discount_percent, zip_code, scope_type, store_name,
+                        store_id, region_verified
+                    FROM price_history
+                    WHERE product_key = ? AND price IS NOT NULL
+                    ORDER BY recorded_at ASC
+                    LIMIT 30
+                """
+                points_cursor = conn.execute(p_query, (product_key,))
+
             history = [
                 {
                     "date": row["recorded_at"].split("T", 1)[0],
@@ -414,6 +448,8 @@ class PriceHistoryService:
                     "zip_code": row["zip_code"],
                     "scope_type": row["scope_type"],
                     "store_name": row["store_name"],
+                    "store_id": row["store_id"],
+                    "region_verified": bool(row["region_verified"]),
                 }
                 for row in points_cursor.fetchall()
             ]

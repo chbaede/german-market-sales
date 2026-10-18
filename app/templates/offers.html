@@ -259,6 +259,8 @@
                   <span class="card-category">{% if lang == "en" %}{{ category.en or category.de }}{% else %}{{ category.ko }}{% endif %}</span>
                   {% if offer.scope_type == 'store' and offer.region_verified %}
                     <span class="scope-badge scope-store" title="{{ offer.store_address or offer.store_name }}">📍 {{ offer.store_name or '매장 전용' }}</span>
+                  {% elif offer.scope_type == 'store' and not offer.region_verified %}
+                    <span class="scope-badge scope-unverified" title="{{ offer.verification_reason or (offer.store_name ~ ' (미검증)') }}">📍 {{ offer.store_name or '매장' }} ({% if lang == 'de' %}nicht verifiziert{% elif lang == 'en' %}unverified{% else %}미검증{% endif %})</span>
                   {% elif offer.scope_type == 'region' and offer.region_verified %}
                     <span class="scope-badge scope-region" title="지역 검증 할인">🗺️ {% if lang == 'de' %}Regional verifiziert{% elif lang == 'en' %}Verified Regional{% else %}지역 검증{% endif %}</span>
                   {% elif offer.scope_type == 'nationwide' %}

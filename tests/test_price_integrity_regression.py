@@ -7,7 +7,8 @@ import tempfile
 
 import pytest
 
-from app.models import Offer
+from app import create_app
+from app.models import Offer, OfferResult
 from app.providers.aldi_nord import AldiNordProvider
 from app.providers.aldi_sued import AldiSuedProvider
 from app.providers.dm import DmProvider
@@ -567,10 +568,14 @@ def test_legacy_database_migration_preserves_history_without_inventing_verificat
             assert row["scope_type"] == "unknown"
             assert row["region_verified"] == 0
 
-        # Legacy row must not be counted in regional verified ATL
+        # Legacy row must not be counted in regional or national verified ATL
         assert "apfel-1kg" not in service.get_all_time_low_map(zip_code="10115")
-        # But counted in national general history
-        assert service.get_all_time_low_map(zip_code=None)["apfel-1kg"] == 1.99
+        assert "apfel-1kg" not in service.get_all_time_low_map(zip_code=None)
+
+        # But row is preserved in raw database
+        with service._get_connection() as c:
+            raw_row = c.execute("SELECT price FROM price_history WHERE product_key = 'apfel-1kg'").fetchone()
+            assert raw_row["price"] == 1.99
 
 
 # ---------------------------------------------------------------------------
@@ -657,7 +662,424 @@ def test_cache_migration_from_schema_11_and_12():
         assert edeka_migrated.scope_type == "unknown"
         assert edeka_migrated.region_verified is False
 
-        # File on disk should now be schema 13
+        # File on disk should now be schema 14
         with open(legacy_cache_file, "r", encoding="utf-8") as f:
             disk_data = json.load(f)
             assert disk_data["schema_version"] == CACHE_SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# 5. Targeted Fail-Closed & Scope Integrity Regression Tests
+# ---------------------------------------------------------------------------
+
+
+def test_edeka_fail_closed_rejections_and_missing_store_identity():
+    # 1. Candidate with missing postal code (and no coords/distance) -> rejected
+    cand_no_pc = [{"id": "m1", "name": "No PC Market"}]
+    assert _sort_candidate_markets(cand_no_pc, "10115") == []
+
+    # 2. Candidate with missing coordinates (and no pc/distance) -> rejected
+    cand_no_coords = [{"id": "m2", "name": "No Coords", "coordinates": {}}]
+    assert _sort_candidate_markets(cand_no_coords, "10115") == []
+
+    # 3. Candidate with missing store ID -> rejected
+    cand_no_id = [{"name": "No ID Market", "contact": {"address": {"postalCode": "10115"}}}]
+    assert _sort_candidate_markets(cand_no_id, "10115") == []
+
+    # 4. Candidate with invalid coordinates -> rejected
+    cand_invalid_coords = [
+        {"id": "m3", "name": "Null Island", "coordinates": {"lat": 0.0, "lon": 0.0}},
+        {"id": "m4", "name": "Bad Lat", "coordinates": {"lat": 95.0, "lon": 13.4}},
+    ]
+    assert _sort_candidate_markets(cand_invalid_coords, "10115") == []
+
+    # 5. No valid candidates in candidate list -> returns empty list
+    assert _sort_candidate_markets([], "10115") == []
+
+    # 6. EDEKA _offer_from_dialog missing store identity -> scope_type="unknown", region_verified=False
+    from bs4 import BeautifulSoup
+    dialog_html = """
+    <dialog id="dialog-angebot-test1">
+      <h3><span>Angebot:</span> Test Butter</h3>
+      <div class="sr-only">Festpreis von 1.49 €</div>
+    </dialog>
+    """
+    soup = BeautifulSoup(dialog_html, "html.parser")
+    dialog = soup.find("dialog")
+
+    offer_no_store = EdekaProvider._offer_from_dialog(
+        dialog,
+        fallback_from="2026-06-01",
+        fallback_to="2026-06-07",
+        source_url="https://edeka.de",
+        market_name=None,
+        store_id=None,
+    )
+    assert offer_no_store is not None
+    assert offer_no_store.scope_type == "unknown"
+    assert offer_no_store.region_verified is False
+    assert offer_no_store.verification_method == "unverified_missing_store_id"
+
+    # With store identity -> scope_type="store", region_verified=True
+    offer_with_store = EdekaProvider._offer_from_dialog(
+        dialog,
+        fallback_from="2026-06-01",
+        fallback_to="2026-06-07",
+        source_url="https://edeka.de",
+        market_name="EDEKA Mitte",
+        store_id="801006",
+    )
+    assert offer_with_store is not None
+    assert offer_with_store.scope_type == "store"
+    assert offer_with_store.region_verified is True
+    assert offer_with_store.store_id == "801006"
+
+
+def test_marktguru_verification_logic_for_national_regional_branch_and_unknown():
+    # 1. National flyer: explicitly national
+    item_national = {
+        "id": 101,
+        "product": {"name": "National Butter"},
+        "price": 1.29,
+        "flyer": {"id": 999, "isNational": True},
+    }
+    offer_nat = MarktguruProvider._offer_from_api(item_national, "edeka", zip_code="10115")
+    assert offer_nat.scope_type == "nationwide"
+    assert offer_nat.region_verified is True
+    assert offer_nat.source_region_id is None
+    assert offer_nat.verification_method == "marktguru_national_flyer"
+
+    # 2. Regional flyer with matching postal code
+    item_reg_plz = {
+        "id": 102,
+        "product": {"name": "Regional Milk"},
+        "price": 0.99,
+        "flyer": {"id": 888, "postalCodes": ["10115", "10117"], "regionId": 42},
+    }
+    offer_reg = MarktguruProvider._offer_from_api(item_reg_plz, "edeka", zip_code="10115")
+    assert offer_reg.scope_type == "region"
+    assert offer_reg.region_verified is True
+    assert offer_reg.source_region_id == "42"
+    assert offer_reg.verification_method == "marktguru_regional_flyer_postal_match"
+
+    # 3. Regional flyer with geographic regionId matching
+    item_reg_id = {
+        "id": 103,
+        "product": {"name": "Regional Cheese"},
+        "price": 2.49,
+        "flyer": {"id": 777, "regionId": "berlin_north"},
+    }
+    offer_reg_id = MarktguruProvider._offer_from_api(item_reg_id, "edeka", zip_code="10115")
+    assert offer_reg_id.scope_type == "region"
+    assert offer_reg_id.region_verified is True
+    assert offer_reg_id.source_region_id == "berlin_north"
+
+    # 4. Flyer without geographic proof (only a flyerId, no postalCode match or regionId)
+    # Must NOT invent region ID from flyerId!
+    item_unverified_flyer = {
+        "id": 104,
+        "product": {"name": "Unverified Leaflet Item"},
+        "price": 3.99,
+        "flyer": {"id": 555},  # Only arbitrary flyerId
+    }
+    offer_unv_flyer = MarktguruProvider._offer_from_api(item_unverified_flyer, "edeka", zip_code="10115")
+    assert offer_unv_flyer.scope_type == "region"
+    assert offer_unv_flyer.region_verified is False
+    assert offer_unv_flyer.source_region_id is None
+    assert offer_unv_flyer.verification_method == "marktguru_unverified_flyer"
+
+    # 5. Branch with matching postal code
+    item_branch_match = {
+        "id": 105,
+        "product": {"name": "Branch Coffee"},
+        "price": 4.99,
+        "branch": {"id": 1234, "name": "Filiale Mitte", "postalCode": "10115"},
+    }
+    offer_branch = MarktguruProvider._offer_from_api(item_branch_match, "edeka", zip_code="10115")
+    assert offer_branch.scope_type == "store"
+    assert offer_branch.region_verified is True
+    assert offer_branch.store_id == "1234"
+    assert offer_branch.store_name == "Filiale Mitte"
+
+    # 6. Branch with mismatched postal code and no nearby distance
+    item_branch_mismatch = {
+        "id": 106,
+        "product": {"name": "Munich Branch Coffee"},
+        "price": 4.99,
+        "branch": {"id": 5678, "name": "Filiale München", "postalCode": "80331"},
+    }
+    offer_branch_mismatch = MarktguruProvider._offer_from_api(item_branch_mismatch, "edeka", zip_code="10115")
+    assert offer_branch_mismatch.scope_type == "store"
+    assert offer_branch_mismatch.region_verified is False
+    assert offer_branch_mismatch.verification_method == "marktguru_unverified_branch"
+
+    # 7. Item with no branch and no flyer
+    item_no_geo = {
+        "id": 107,
+        "product": {"name": "Unknown Item"},
+        "price": 1.00,
+    }
+    offer_no_geo = MarktguruProvider._offer_from_api(item_no_geo, "edeka", zip_code="10115")
+    assert offer_no_geo.scope_type == "unknown"
+    assert offer_no_geo.region_verified is False
+    assert offer_no_geo.verification_method == "unknown_scope"
+
+
+def test_price_history_isolation_mixed_verified_unverified_and_multi_region():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        service = PriceHistoryService(Path(tmp_dir))
+
+        # Setup 4 offers for the same product "Kaffee 500g":
+        # 1. Store in Berlin 10115 (verified, price 3.49)
+        # 2. Store in Munich 80331 (verified, price 2.99)
+        # 3. Nationwide offer (verified, price 3.99)
+        # 4. Unknown/unverified offer in Berlin 10115 (unverified, fake low price 0.50)
+
+        offer_berlin = Offer(
+            id="berlin-kaffee",
+            source_offer_id=1,
+            retailer="EDEKA",
+            retailer_slug="edeka",
+            title="Kaffee 500g",
+            brand=None,
+            category="coffee",
+            price=3.49,
+            old_price=None,
+            unit_price=6.98,
+            unit="kg",
+            discount_percent=None,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://edeka.de",
+            requested_zip_code="10115",
+            scope_type="store",
+            store_id="store_b1",
+            store_name="EDEKA Berlin Mitte",
+            region_verified=True,
+        )
+
+        offer_munich = Offer(
+            id="munich-kaffee",
+            source_offer_id=2,
+            retailer="EDEKA",
+            retailer_slug="edeka",
+            title="Kaffee 500g",
+            brand=None,
+            category="coffee",
+            price=2.99,
+            old_price=None,
+            unit_price=5.98,
+            unit="kg",
+            discount_percent=None,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://edeka.de",
+            requested_zip_code="80331",
+            scope_type="store",
+            store_id="store_m1",
+            store_name="EDEKA Munich Altstadt",
+            region_verified=True,
+        )
+
+        offer_nationwide = Offer(
+            id="nat-kaffee",
+            source_offer_id=3,
+            retailer="REWE",
+            retailer_slug="rewe",
+            title="Kaffee 500g",
+            brand=None,
+            category="coffee",
+            price=3.99,
+            old_price=None,
+            unit_price=7.98,
+            unit="kg",
+            discount_percent=None,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://rewe.de",
+            scope_type="nationwide",
+            region_verified=False,
+        )
+
+        offer_unverified = Offer(
+            id="unv-kaffee",
+            source_offer_id=4,
+            retailer="Unknown",
+            retailer_slug="unknown",
+            title="Kaffee 500g",
+            brand=None,
+            category="coffee",
+            price=0.50,
+            old_price=None,
+            unit_price=1.00,
+            unit="kg",
+            discount_percent=None,
+            description="",
+            valid_from=None,
+            valid_to=None,
+            image_url=None,
+            source_url="https://example.com",
+            requested_zip_code="10115",
+            scope_type="unknown",
+            region_verified=False,
+        )
+
+        service.record_offers(
+            [offer_berlin, offer_munich, offer_nationwide, offer_unverified],
+            zip_code="10115",
+            recorded_at="2026-06-01T10:00:00",
+        )
+
+        pkey = normalize_product_key("Kaffee 500g")
+
+        # 1. Berlin regional ATL:
+        # Includes Berlin store (3.49) and Nationwide (3.99).
+        # MUST EXCLUDE Munich store (2.99) and Unverified fake (0.50).
+        berlin_atl = service.get_all_time_low_map(zip_code="10115")
+        assert berlin_atl[pkey] == 3.49
+
+        # 2. Munich regional ATL:
+        # Includes Munich store (2.99) and Nationwide (3.99).
+        # MUST EXCLUDE Berlin store (3.49) and Unverified (0.50).
+        munich_atl = service.get_all_time_low_map(zip_code="80331")
+        assert munich_atl[pkey] == 2.99
+
+        # 3. National verified ATL:
+        # Includes verified observations (Munich 2.99, Berlin 3.49, Nationwide 3.99).
+        # MUST EXCLUDE unverified (0.50).
+        national_atl = service.get_all_time_low_map(zip_code=None)
+        assert national_atl[pkey] == 2.99
+
+        # 4. Product stats for Berlin user:
+        berlin_stats = service.get_product_stats("Kaffee 500g", current_price=3.49, zip_code="10115")
+        assert berlin_stats["regional_all_time_low"] == 3.49
+        assert berlin_stats["national_all_time_low"] == 2.99
+
+        # History points for Berlin user:
+        # Must ONLY contain observations for Berlin or Nationwide.
+        # MUST NOT contain Munich or unverified observations!
+        history_stores = [h["store_name"] for h in berlin_stats["history"]]
+        assert "EDEKA Berlin Mitte" in history_stores
+        assert "EDEKA Munich Altstadt" not in history_stores
+        assert all(h["price"] >= 2.99 for h in berlin_stats["history"])
+        assert not any(h["price"] == 0.50 for h in berlin_stats["history"])
+
+
+def test_cache_migration_forces_legacy_unverified_even_with_store_or_region_scope():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cache_path = Path(tmp_dir)
+        service = OfferService(
+            cache_dir=cache_path,
+            retailers={"edeka": "EDEKA"},
+            cache_ttl_seconds=3600,
+            timeout=5,
+            verify_tls=True,
+            max_offers_per_retailer=10,
+        )
+
+        legacy_cache_file = cache_path / "offers_10115.json"
+        # Legacy cache that claimed to have store scope and region_verified=True
+        legacy_data = {
+            "schema_version": 12,
+            "zip_code": "10115",
+            "fetched_at": "2026-06-01T10:00:00",
+            "warnings": [],
+            "offers": [
+                {
+                    "id": "edeka-old-claimed-verified",
+                    "source_offer_id": 99,
+                    "retailer": "EDEKA",
+                    "retailer_slug": "edeka",
+                    "title": "Legacy Claimed Verified Butter",
+                    "brand": None,
+                    "category": "dairy",
+                    "price": 1.79,
+                    "old_price": None,
+                    "unit_price": 7.16,
+                    "unit": "kg",
+                    "discount_percent": None,
+                    "description": "",
+                    "valid_from": None,
+                    "valid_to": None,
+                    "image_url": None,
+                    "source_url": "https://edeka.de",
+                    "scope_type": "store",
+                    "region_verified": True,
+                }
+            ],
+        }
+        with open(legacy_cache_file, "w", encoding="utf-8") as f:
+            json.dump(legacy_data, f)
+
+        result = service.get_cached_offers("10115")
+        assert result is not None
+        assert len(result.offers) == 1
+        migrated = result.offers[0]
+
+        # Must be demoted to region_verified=False upon cache migration!
+        assert migrated.region_verified is False
+        assert migrated.verification_method == "legacy_cache_migration"
+
+
+def test_ui_unverified_store_badge_rendering(monkeypatch):
+    import app.routes as routes
+
+    from datetime import datetime as real_datetime
+
+    class FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 6, 4, tzinfo=tz)
+
+    unverified_store_offer = Offer(
+        id="edeka-unv-store",
+        source_offer_id=1,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Unverified Store Apple",
+        brand=None,
+        category="produce",
+        price=1.99,
+        old_price=None,
+        unit_price=1.99,
+        unit="kg",
+        discount_percent=None,
+        description="",
+        valid_from="2026-06-01T00:00:00+02:00",
+        valid_to="2026-06-07T23:59:59+02:00",
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_name="EDEKA Unverified Store",
+        region_verified=False,
+        verification_method="unverified_missing_coords",
+    )
+
+    class FakeOfferService:
+        def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
+            return OfferResult(
+                offers=[unverified_store_offer],
+                fetched_at="2026-06-04T08:00:00+00:00",
+                warnings=[],
+            )
+
+    monkeypatch.setattr(routes, "datetime", FrozenDateTime)
+    monkeypatch.setattr(routes, "offer_service", lambda: FakeOfferService())
+    app = create_app()
+    response = app.test_client().get("/?zip=10115")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    # Must contain unverified badge
+    assert "scope-unverified" in html
+    assert "미검증" in html
+    # Must NOT contain verified store badge
+    assert "scope-badge scope-store" not in html
+
