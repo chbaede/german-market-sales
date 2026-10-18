@@ -173,6 +173,25 @@ VALID_EVIDENCE_TYPES: frozenset[str] = frozenset(
 )
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+APPROVED_EVIDENCE_ROOTS: set[Path] = {
+    (PROJECT_ROOT / "data" / "evidence").resolve(),
+    (PROJECT_ROOT / "tests" / "fixtures" / "evidence").resolve(),
+}
+
+
+def register_approved_evidence_root(path: str | Path) -> None:
+    APPROVED_EVIDENCE_ROOTS.add(Path(path).resolve())
+
+
+def is_approved_evidence_path(p: Path) -> bool:
+    try:
+        resolved = p.resolve()
+        return any(resolved == root or resolved.is_relative_to(root) for root in APPROVED_EVIDENCE_ROOTS)
+    except Exception:
+        return False
+
+
 def _is_valid_calendar_date(val: Any) -> bool:
     if not val or not isinstance(val, str):
         return False
@@ -261,6 +280,9 @@ def validate_nationwide_coverage_evidence(
     if not p.is_file():
         return False, f"Recorded nationwide evidence artifact '{artifact_path}' does not exist", None
 
+    if not is_approved_evidence_path(p):
+        return False, f"Recorded nationwide evidence artifact '{artifact_path}' does not originate from an approved evidence source or contract directory", None
+
     try:
         art_data = json.loads(p.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -269,20 +291,30 @@ def validate_nationwide_coverage_evidence(
     if not isinstance(art_data, dict):
         return False, "Recorded evidence artifact must be a JSON object", None
 
-    if str(art_data.get("scope") or "").strip().casefold() != "nationwide":
-        return False, "Artifact does not confirm nationwide scope", None
-
-    if art_data.get("promotional_campaign_applicability") is not True and art_data.get("scope_meaning") != "promotional_campaign":
-        return False, "Artifact does not confirm promotional_campaign_applicability", None
-
     art_campaign_id = str(art_data.get("campaign_id") or "").strip().casefold()
+    if not art_campaign_id:
+        return False, "Artifact lacks required non-empty campaign_id", None
     art_core_id = art_campaign_id.removeprefix("national_flyer:").removeprefix("national_campaign:")
-    if art_core_id and art_core_id != clean_core_id:
+    if art_core_id != clean_core_id:
         return False, f"Artifact campaign_id '{art_campaign_id}' does not match claimed campaign '{clean_id}'", None
 
     art_source_url = str(art_data.get("source_url") or "").strip()
-    if art_source_url and art_source_url != source_url:
-        return False, "Artifact source_url does not match evidence source_url", None
+    if not art_source_url:
+        return False, "Artifact lacks required non-empty source_url", None
+    if art_source_url != source_url:
+        return False, f"Artifact source_url '{art_source_url}' does not match evidence source_url '{source_url}'", None
+
+    if str(art_data.get("scope") or "").strip().casefold() != "nationwide":
+        return False, "Artifact does not confirm nationwide scope", None
+
+    if art_data.get("promotional_campaign_applicability") is not True:
+        return False, "Artifact promotional_campaign_applicability must be strictly True", None
+
+    art_date = str(art_data.get("verification_date") or "").strip()
+    if not _is_valid_calendar_date(art_date):
+        return False, f"Artifact verification_date '{art_date}' is missing or not a valid calendar date", None
+    if art_date != verification_date:
+        return False, f"Artifact verification_date '{art_date}' does not match evidence verification_date '{verification_date}'", None
 
     validated = {
         "campaign_id": clean_id,
@@ -377,11 +409,14 @@ def validate_regional_campaign_evidence(
     if not limitations:
         return False, "Missing limitations documentation in regional evidence", None
 
-    ev_plzs_raw = ev_dict.get("covered_plzs") or ev_dict.get("validZipCodes")
-    if ev_plzs_raw is not None:
-        ev_plzs = {str(p).strip() for p in ev_plzs_raw}
-        if ev_plzs != normalized_plzs:
-            return False, "Evidence covered_plzs does not match claimed covered_plzs set", None
+    ev_plzs_raw = ev_dict.get("covered_plzs")
+    if ev_plzs_raw is None:
+        return False, "Missing covered_plzs in regional evidence", None
+    if not isinstance(ev_plzs_raw, (set, frozenset, list, tuple)):
+        return False, "Regional evidence covered_plzs must be a list or set", None
+    ev_plzs = {str(p).strip() for p in ev_plzs_raw}
+    if ev_plzs != normalized_plzs:
+        return False, "Evidence covered_plzs does not match claimed covered_plzs set", None
 
     # Artifact check: a caller-provided PLZ list without an accessible recorded artifact is rejected
     artifact_path = ev_dict.get("evidence_artifact_path")
@@ -392,6 +427,9 @@ def validate_regional_campaign_evidence(
     if not p.is_file():
         return False, f"Recorded regional evidence artifact '{artifact_path}' does not exist", None
 
+    if not is_approved_evidence_path(p):
+        return False, f"Recorded regional evidence artifact '{artifact_path}' does not originate from an approved evidence source or contract directory", None
+
     try:
         art_data = json.loads(p.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -400,15 +438,32 @@ def validate_regional_campaign_evidence(
     if not isinstance(art_data, dict):
         return False, "Recorded evidence artifact must be a JSON object", None
 
-    if art_data.get("scope_meaning") != "promotional_campaign_applicability" and art_data.get("promotional_campaign_applicability") is not True:
-        return False, "Artifact does not confirm promotional_campaign_applicability", None
-
     art_campaign_id = str(art_data.get("campaign_id") or "").strip().casefold()
+    if not art_campaign_id:
+        return False, "Artifact lacks required non-empty campaign_id", None
     art_core_id = art_campaign_id.removeprefix("flyer:").removeprefix("campaign:")
-    if art_core_id and art_core_id != clean_core_id:
+    if art_core_id != clean_core_id:
         return False, f"Artifact campaign_id '{art_campaign_id}' does not match claimed campaign '{clean_id}'", None
 
-    art_plzs_raw = art_data.get("covered_plzs") or art_data.get("validZipCodes")
+    art_source_url = str(art_data.get("source_url") or "").strip()
+    if not art_source_url:
+        return False, "Artifact lacks required non-empty source_url", None
+    if art_source_url != source_url:
+        return False, f"Artifact source_url '{art_source_url}' does not match evidence source_url '{source_url}'", None
+
+    if str(art_data.get("scope") or "").strip().casefold() != "region":
+        return False, "Artifact scope must be 'region'", None
+
+    if art_data.get("promotional_campaign_applicability") is not True:
+        return False, "Artifact promotional_campaign_applicability must be strictly True", None
+
+    art_date = str(art_data.get("verification_date") or "").strip()
+    if not _is_valid_calendar_date(art_date):
+        return False, f"Artifact verification_date '{art_date}' is missing or not a valid calendar date", None
+    if art_date != verification_date:
+        return False, f"Artifact verification_date '{art_date}' does not match evidence verification_date '{verification_date}'", None
+
+    art_plzs_raw = art_data.get("covered_plzs")
     if not isinstance(art_plzs_raw, list) or not art_plzs_raw:
         return False, "Artifact lacks covered_plzs list", None
     art_plzs = {str(p).strip() for p in art_plzs_raw}

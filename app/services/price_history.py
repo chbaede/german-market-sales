@@ -241,32 +241,31 @@ def validate_observation_provenance(
         norm_zip = normalize_german_plz(clean_zip) or clean_zip
 
         # Require authoritative store location evidence connecting the store to the requested PLZ.
-        # A store ID and requested PLZ without defensible store-location evidence fail closed.
-        eff_store_address = store_address or (parsed_evidence.get("store_address") if parsed_evidence else None)
+        # A store ID, requested PLZ, matching PLZ fields, or caller-supplied address strings without
+        # authoritative physical store location evidence fail closed.
+        eff_store_address = (store_address or (parsed_evidence.get("store_address") if parsed_evidence else None) or "").strip()
 
-        if not eff_store_address and not (parsed_evidence and (parsed_evidence.get("store_plz") or parsed_evidence.get("matched_plz"))):
+        if not eff_store_address:
             return (
                 False,
                 "demoted_missing_store_location_evidence",
                 f"Store verification requires authoritative store location evidence connecting store '{clean_store_id}' to requested PLZ '{clean_zip}'",
             )
 
-        addr_plz: str | None = None
-        if eff_store_address:
-            m_plz = re.search(r"\b(\d{5})\b", eff_store_address)
-            if not m_plz:
-                return (
-                    False,
-                    "demoted_missing_store_location_evidence",
-                    f"Store address '{eff_store_address}' lacks a valid 5-digit postal code",
-                )
-            addr_plz = m_plz.group(1)
-            if addr_plz != clean_zip and addr_plz != norm_zip:
-                return (
-                    False,
-                    "demoted_store_location_mismatch",
-                    f"Store address PLZ {addr_plz} does not match requested PLZ {clean_zip}",
-                )
+        m_plz = re.search(r"\b(\d{5})\b", eff_store_address)
+        if not m_plz:
+            return (
+                False,
+                "demoted_missing_store_location_evidence",
+                f"Store address '{eff_store_address}' lacks a valid 5-digit postal code",
+            )
+        addr_plz = m_plz.group(1)
+        if addr_plz != clean_zip and addr_plz != norm_zip:
+            return (
+                False,
+                "demoted_store_location_mismatch",
+                f"Store address PLZ {addr_plz} does not match requested PLZ {clean_zip}",
+            )
 
         if parsed_evidence is not None:
             # Check store_id
@@ -362,7 +361,7 @@ def validate_observation_provenance(
             )
 
             if parsed_evidence is not None:
-                plzs = parsed_evidence.get("covered_plzs") or parsed_evidence.get("validZipCodes") or []
+                plzs = parsed_evidence.get("covered_plzs") or []
                 is_ev_valid, ev_reason, val_ev = validate_regional_campaign_evidence(clean_reg_id, plzs, parsed_evidence)
                 if not is_ev_valid:
                     return (

@@ -3571,6 +3571,230 @@ def test_scenario_18_unverified_offers_remain_available_rather_than_discarded():
         assert stats["unverified_history"][0]["region_verified"] is False
 
 
+def test_scenario_19_artifact_missing_or_mismatched_campaign_id_rejected():
+    """19. Artifact missing campaign_id or having mismatched campaign_id is strictly rejected."""
+    clear_campaign_registries()
+    art_no_id = FIXTURE_EVIDENCE_DIR / "test_artifact_no_id.json"
+    art_mismatch_id = FIXTURE_EVIDENCE_DIR / "test_artifact_mismatch_id.json"
+    try:
+        # Artifact missing campaign_id
+        art_no_id.write_text(
+            json.dumps({
+                "source_url": "https://www.marktguru.de/leaflets/camp_19",
+                "scope": "nationwide",
+                "promotional_campaign_applicability": True,
+                "verification_date": "2026-06-01",
+                "evidence_type": "verified_nationwide_distribution_manifest",
+            }),
+            encoding="utf-8",
+        )
+        ev_no_id = {
+            "campaign_id": "camp_19",
+            "source_url": "https://www.marktguru.de/leaflets/camp_19",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "scope": "nationwide",
+            "promotional_applicability_confirmed": True,
+            "limitations": "Missing artifact campaign_id",
+            "evidence_artifact_path": str(art_no_id),
+        }
+        assert register_verified_nationwide_campaign("camp_19", ev_no_id) is False
+
+        # Artifact with mismatched campaign_id
+        art_mismatch_id.write_text(
+            json.dumps({
+                "campaign_id": "different_campaign_id",
+                "source_url": "https://www.marktguru.de/leaflets/camp_19",
+                "scope": "nationwide",
+                "promotional_campaign_applicability": True,
+                "verification_date": "2026-06-01",
+                "evidence_type": "verified_nationwide_distribution_manifest",
+            }),
+            encoding="utf-8",
+        )
+        ev_mismatch = {
+            "campaign_id": "camp_19",
+            "source_url": "https://www.marktguru.de/leaflets/camp_19",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "scope": "nationwide",
+            "promotional_applicability_confirmed": True,
+            "limitations": "Mismatched artifact campaign_id",
+            "evidence_artifact_path": str(art_mismatch_id),
+        }
+        assert register_verified_nationwide_campaign("camp_19", ev_mismatch) is False
+    finally:
+        art_no_id.unlink(missing_ok=True)
+        art_mismatch_id.unlink(missing_ok=True)
+
+
+def test_scenario_20_artifact_missing_or_mismatched_source_url_rejected():
+    """20. Artifact missing source_url or having mismatched source_url is strictly rejected."""
+    clear_campaign_registries()
+    art_no_url = FIXTURE_EVIDENCE_DIR / "test_artifact_no_url.json"
+    art_mismatch_url = FIXTURE_EVIDENCE_DIR / "test_artifact_mismatch_url.json"
+    try:
+        # Missing source_url
+        art_no_url.write_text(
+            json.dumps({
+                "campaign_id": "camp_20",
+                "scope": "nationwide",
+                "promotional_campaign_applicability": True,
+                "verification_date": "2026-06-01",
+                "evidence_type": "verified_nationwide_distribution_manifest",
+            }),
+            encoding="utf-8",
+        )
+        ev_no_url = {
+            "campaign_id": "camp_20",
+            "source_url": "https://www.marktguru.de/leaflets/camp_20",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "scope": "nationwide",
+            "promotional_applicability_confirmed": True,
+            "limitations": "Missing artifact source_url",
+            "evidence_artifact_path": str(art_no_url),
+        }
+        assert register_verified_nationwide_campaign("camp_20", ev_no_url) is False
+
+        # Mismatched source_url
+        art_mismatch_url.write_text(
+            json.dumps({
+                "campaign_id": "camp_20",
+                "source_url": "https://www.marktguru.de/leaflets/different_url",
+                "scope": "nationwide",
+                "promotional_campaign_applicability": True,
+                "verification_date": "2026-06-01",
+                "evidence_type": "verified_nationwide_distribution_manifest",
+            }),
+            encoding="utf-8",
+        )
+        ev_mismatch_url = {
+            "campaign_id": "camp_20",
+            "source_url": "https://www.marktguru.de/leaflets/camp_20",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "scope": "nationwide",
+            "promotional_applicability_confirmed": True,
+            "limitations": "Mismatched artifact source_url",
+            "evidence_artifact_path": str(art_mismatch_url),
+        }
+        assert register_verified_nationwide_campaign("camp_20", ev_mismatch_url) is False
+    finally:
+        art_no_url.unlink(missing_ok=True)
+        art_mismatch_url.unlink(missing_ok=True)
+
+
+def test_scenario_21_artifact_scope_meaning_bypass_rejected():
+    """21. Artifact specifying scope_meaning without promotional_campaign_applicability: True is rejected."""
+    clear_campaign_registries()
+    art_scope_meaning = FIXTURE_EVIDENCE_DIR / "test_artifact_scope_meaning.json"
+    try:
+        art_scope_meaning.write_text(
+            json.dumps({
+                "campaign_id": "camp_21",
+                "source_url": "https://www.marktguru.de/leaflets/camp_21",
+                "scope": "nationwide",
+                "scope_meaning": "promotional_campaign",  # Alternative field without boolean flag
+                "verification_date": "2026-06-01",
+                "evidence_type": "verified_nationwide_distribution_manifest",
+            }),
+            encoding="utf-8",
+        )
+        ev = {
+            "campaign_id": "camp_21",
+            "source_url": "https://www.marktguru.de/leaflets/camp_21",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "scope": "nationwide",
+            "promotional_applicability_confirmed": True,
+            "limitations": "scope_meaning without boolean flag",
+            "evidence_artifact_path": str(art_scope_meaning),
+        }
+        assert register_verified_nationwide_campaign("camp_21", ev) is False
+    finally:
+        art_scope_meaning.unlink(missing_ok=True)
+
+
+def test_scenario_22_artifact_from_unapproved_directory_rejected(tmp_path):
+    """22. An artifact created outside approved evidence directories is rejected as unapproved."""
+    clear_campaign_registries()
+    fake_art = tmp_path / "fake_self_asserted.json"
+    fake_art.write_text(
+        json.dumps({
+            "campaign_id": "unapproved_camp_22",
+            "source_url": "https://www.marktguru.de/leaflets/unapproved_camp_22",
+            "scope": "nationwide",
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "limitations": "Self asserted in tmp_path",
+        }),
+        encoding="utf-8",
+    )
+    ev = {
+        "campaign_id": "unapproved_camp_22",
+        "source_url": "https://www.marktguru.de/leaflets/unapproved_camp_22",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "nationwide",
+        "promotional_applicability_confirmed": True,
+        "limitations": "Self asserted in tmp_path",
+        "evidence_artifact_path": str(fake_art),
+    }
+    assert register_verified_nationwide_campaign("unapproved_camp_22", ev) is False
+
+
+def test_scenario_23_store_verification_missing_store_address_with_store_plz_rejected():
+    """23. Missing store address cannot be bypassed by store_plz or matched_plz in evidence."""
+    ev = {
+        "scope": "store",
+        "store_id": "store_23",
+        "store_plz": "10115",
+        "matched_plz": "10115",
+    }
+    is_valid, reason, _ = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="store_23",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address=None,  # Missing store address!
+        verification_evidence=ev,
+    )
+    assert is_valid is False
+    assert reason == "demoted_missing_store_location_evidence"
+
+
+def test_scenario_24_store_verification_mismatched_retailer_rejected():
+    """24. Evidence indicating a different retailer than observation retailer is rejected."""
+    ev = {
+        "scope": "store",
+        "store_id": "store_24",
+        "retailer_slug": "rewe",  # Contradicts edeka observation
+        "store_address": "Invalidenstr. 10, 10115 Berlin",
+        "store_plz": "10115",
+        "matched_plz": "10115",
+    }
+    is_valid, reason, _ = validate_observation_provenance(
+        scope_type="store",
+        region_verified=True,
+        verification_method="store_direct_api",
+        store_id="store_24",
+        retailer_slug="edeka",
+        zip_code="10115",
+        source_provider="edeka-official",
+        source_url="https://edeka.de",
+        store_address="Invalidenstr. 10, 10115 Berlin",
+        verification_evidence=ev,
+    )
+    assert is_valid is False
+    assert reason == "demoted_retailer_evidence_mismatch"
+
+
+
 
 
 
