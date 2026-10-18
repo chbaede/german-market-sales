@@ -50,12 +50,16 @@ class RossmannProvider(OfferProvider):
                 offer.scope_type = "region"
                 offer.store_name = "ROSSMANN (Offizieller Prospekt)"
                 offer.region_verified = True
+                offer.verification_method = "rossmann_catalog_match"
+                offer.verification_reason = f"Matched official weekly catalog {catalog.catalog_id}"
                 offer.requested_zip_code = zip_code
         else:
             for offer in offers:
                 offer.requested_zip_code = zip_code
                 offer.store_name = offer.store_name or "ROSSMANN"
-                offer.region_verified = True
+                offer.region_verified = False
+                offer.verification_method = "rossmann_unverified_fallback"
+                offer.verification_reason = "Low match against official weekly catalog index"
             warnings.append(
                 "ROSSMANN 공식 전단지 색인과 Marktguru 항목의 일치율이 낮아 Marktguru 출처 링크를 유지했습니다."
             )

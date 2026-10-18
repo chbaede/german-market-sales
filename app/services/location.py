@@ -271,18 +271,36 @@ PLZ_PREFIX2_COORDINATES: dict[str, tuple[float, float]] = {
     "99": (50.98, 11.03),
 }
 
-def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def is_valid_coordinates(lat: Any, lon: Any) -> bool:
+    try:
+        f_lat = float(lat)
+        f_lon = float(lon)
+        if not (-90.0 <= f_lat <= 90.0 and -180.0 <= f_lon <= 180.0):
+            return False
+        if abs(f_lat) < 0.0001 and abs(f_lon) < 0.0001:
+            return False
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def haversine_distance_km(lat1: Any, lon1: Any, lat2: Any, lon2: Any) -> float:
+    if not (is_valid_coordinates(lat1, lon1) and is_valid_coordinates(lat2, lon2)):
+        return 99999.0
     r = 6371.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
+    phi1, phi2 = math.radians(float(lat1)), math.radians(float(lat2))
+    dphi = math.radians(float(lat2) - float(lat1))
+    dlambda = math.radians(float(lon2) - float(lon1))
     a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
     return 2.0 * r * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+
 
 def get_coordinates_for_plz(zip_code: str | None) -> tuple[float, float] | None:
     if not zip_code:
         return None
     cleaned = str(zip_code).strip()
+    if not (cleaned.isdigit() and len(cleaned) == 5):
+        return None
     if cleaned in PLZ_COORDINATES:
         return PLZ_COORDINATES[cleaned]
     prefix2 = cleaned[:2]

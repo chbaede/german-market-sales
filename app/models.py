@@ -37,6 +37,8 @@ class Offer:
     store_address: str | None = None
     source_provider: str | None = None  # e.g., "edeka-official", "marktguru"
     source_region_id: str | None = None
+    verification_method: str | None = None
+    verification_reason: str | None = None
     data_updated_at: str | None = None
     region_verified: bool = False
     regional_all_time_low: float | None = None

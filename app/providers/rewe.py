@@ -177,6 +177,8 @@ class ReweProvider(OfferProvider):
             store_name="REWE (Nationale Angebote)",
             source_provider="rewe-official",
             region_verified=False,
+            verification_method="national_catalog",
+            verification_reason="REWE official national offers endpoint (nationale-angebote) has no store context",
         )
 
     def _frontend_include_contents(self, offer_requests: list[dict[str, str]]) -> tuple[list[str], bool]:

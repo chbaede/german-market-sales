@@ -242,7 +242,10 @@ class AldiSuedProvider(OfferProvider):
             scope_type="region",
             store_name="ALDI Süd (Süddeutschland)",
             source_provider="aldi-sued-official",
-            region_verified=True,
+            source_region_id="aldi-sued-territory",
+            region_verified=False,
+            verification_method="retailer_territory_unverified",
+            verification_reason="PLZ is in ALDI Süd territory, but web catalog lacks offer-level regional leaflet evidence",
         )
 
 

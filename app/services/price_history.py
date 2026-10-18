@@ -102,6 +102,28 @@ def normalize_product_key(title: str, brand: str | None = None) -> str:
     return base
 
 
+def get_geographic_identity(offer: Offer, fallback_zip: str) -> tuple[str, str, str]:
+    """
+    Returns (scope_type, geo_id, effective_zip) ensuring consistent identity per scope:
+    - store: ('store', store_id or effective_zip, effective_zip)
+    - region: ('region', region_id or effective_zip, effective_zip)
+    - nationwide: ('nationwide', 'DE', 'DE')
+    - unknown: ('unknown', effective_zip, effective_zip)
+    """
+    scope = offer.scope_type or "unknown"
+    effective_zip = offer.requested_zip_code or fallback_zip
+    if scope == "store":
+        geo_id = offer.store_id or offer.store_name or effective_zip
+        return ("store", geo_id, effective_zip)
+    elif scope == "region":
+        geo_id = offer.source_region_id or effective_zip
+        return ("region", geo_id, effective_zip)
+    elif scope == "nationwide":
+        return ("nationwide", "DE", "DE")
+    else:
+        return ("unknown", effective_zip, effective_zip)
+
+
 class PriceHistoryService:
     _INITIALIZED_DBS: set[Path] = set()
     _SEEDED_DBS: set[Path] = set()
@@ -154,6 +176,8 @@ class PriceHistoryService:
                 "store_name": "TEXT",
                 "region_verified": "INTEGER DEFAULT 0",
                 "source_provider": "TEXT",
+                "source_region_id": "TEXT",
+                "verification_method": "TEXT",
             }
             for col_name, col_type in new_cols.items():
                 if col_name not in existing_cols:
@@ -180,22 +204,32 @@ class PriceHistoryService:
         with self._get_connection() as conn:
             existing_rows = conn.execute(
                 """
-                SELECT product_key, retailer_slug, zip_code, COALESCE(store_id, '') as store_id, price
+                SELECT product_key, retailer_slug, COALESCE(scope_type, 'unknown') as scope_type,
+                       COALESCE(store_id, '') as store_id, COALESCE(source_region_id, '') as source_region_id,
+                       COALESCE(zip_code, '') as zip_code, price
                 FROM price_history
                 WHERE recorded_at LIKE ? AND price IS NOT NULL
                 """,
                 (f"{date_prefix}%",),
             ).fetchall()
-            seen_today: set[tuple[str, str, str, str, float]] = {
-                (
+            seen_today: set[tuple[str, str, str, str, float]] = set()
+            for row in existing_rows:
+                s_type = row["scope_type"]
+                if s_type == "store":
+                    g_id = row["store_id"]
+                elif s_type == "region":
+                    g_id = row["source_region_id"] or row["zip_code"]
+                elif s_type == "nationwide":
+                    g_id = "DE"
+                else:
+                    g_id = row["zip_code"]
+                seen_today.add((
                     row["product_key"],
                     row["retailer_slug"],
-                    row["zip_code"] or "",
-                    row["store_id"] or "",
+                    s_type,
+                    g_id,
                     round(float(row["price"]), 4),
-                )
-                for row in existing_rows
-            }
+                ))
 
             rows_to_insert: list[tuple] = []
             for offer in offers:
@@ -203,13 +237,12 @@ class PriceHistoryService:
                     continue
 
                 product_key = offer.product_key or normalize_product_key(offer.title, offer.brand)
-                effective_zip = offer.requested_zip_code or zip_code
-                store_id = offer.store_id or ""
+                scope_type, geo_id, effective_zip = get_geographic_identity(offer, zip_code)
                 dedup_key = (
                     product_key,
                     offer.retailer_slug,
-                    effective_zip,
-                    store_id,
+                    scope_type,
+                    geo_id,
                     round(float(offer.price), 4),
                 )
                 if dedup_key in seen_today:
@@ -234,11 +267,13 @@ class PriceHistoryService:
                         offer.valid_to,
                         offer.source_url,
                         effective_zip,
-                        offer.scope_type,
+                        scope_type,
                         offer.store_id,
                         offer.store_name,
                         1 if offer.region_verified else 0,
                         offer.source_provider,
+                        offer.source_region_id,
+                        offer.verification_method,
                     )
                 )
 
@@ -249,8 +284,9 @@ class PriceHistoryService:
                         product_key, title, brand, category, retailer_slug, retailer_name,
                         price, old_price, unit_price, unit, discount_percent, recorded_at,
                         valid_from, valid_to, source_url, zip_code,
-                        scope_type, store_id, store_name, region_verified, source_provider
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        scope_type, store_id, store_name, region_verified, source_provider,
+                        source_region_id, verification_method
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows_to_insert,
                 )
@@ -259,18 +295,27 @@ class PriceHistoryService:
 
         return len(rows_to_insert)
 
-    def get_all_time_low_map(self, zip_code: str | None = None) -> dict[str, float]:
+    def get_all_time_low_map(self, zip_code: str | None = None, store_id: str | None = None) -> dict[str, float]:
         with self._get_connection() as conn:
             if zip_code:
-                cursor = conn.execute(
-                    """
+                if store_id:
+                    store_clause = "(scope_type = 'store' AND region_verified = 1 AND store_id = ?)"
+                    params = (store_id, zip_code)
+                else:
+                    store_clause = "(scope_type = 'store' AND region_verified = 1 AND zip_code = ?)"
+                    params = (zip_code, zip_code)
+                query = f"""
                     SELECT product_key, MIN(price) as min_price
                     FROM price_history
-                    WHERE price IS NOT NULL AND price > 0 AND (zip_code = ? OR scope_type = 'nationwide')
+                    WHERE price IS NOT NULL AND price > 0
+                      AND (
+                          {store_clause}
+                          OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
+                          OR scope_type = 'nationwide'
+                      )
                     GROUP BY product_key
-                    """,
-                    (zip_code,),
-                )
+                """
+                cursor = conn.execute(query, params)
             else:
                 cursor = conn.execute(
                     """
@@ -288,6 +333,7 @@ class PriceHistoryService:
         brand: str | None = None,
         current_price: float | None = None,
         zip_code: str | None = None,
+        store_id: str | None = None,
     ) -> dict:
         product_key = normalize_product_key(title, brand)
         with self._get_connection() as conn:
@@ -314,16 +360,25 @@ class PriceHistoryService:
             regional_avg = None
             is_regional_atl = False
             if zip_code:
-                r_cursor = conn.execute(
-                    """
+                if store_id:
+                    store_clause = "(scope_type = 'store' AND region_verified = 1 AND store_id = ?)"
+                    r_params = (product_key, store_id, zip_code)
+                else:
+                    store_clause = "(scope_type = 'store' AND region_verified = 1 AND zip_code = ?)"
+                    r_params = (product_key, zip_code, zip_code)
+                r_query = f"""
                     SELECT
                         MIN(price) as min_price,
                         AVG(price) as avg_price
                     FROM price_history
-                    WHERE product_key = ? AND price IS NOT NULL AND (zip_code = ? OR scope_type = 'nationwide')
-                    """,
-                    (product_key, zip_code),
-                )
+                    WHERE product_key = ? AND price IS NOT NULL
+                      AND (
+                          {store_clause}
+                          OR (scope_type = 'region' AND region_verified = 1 AND zip_code = ?)
+                          OR scope_type = 'nationwide'
+                      )
+                """
+                r_cursor = conn.execute(r_query, r_params)
                 r_agg = r_cursor.fetchone()
                 if r_agg and r_agg["min_price"] is not None:
                     regional_min = float(r_agg["min_price"])

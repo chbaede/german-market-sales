@@ -96,7 +96,8 @@ def test_edeka_market_sorting_uses_haversine_and_exact_match():
     sorted_markets = _sort_candidate_markets(markets, "50667")
     assert sorted_markets[0]["name"] == "Edeka Cologne Center"
     assert sorted_markets[1]["name"] == "Edeka Cologne Near"
-    assert sorted_markets[2]["name"] == "Edeka Munich"
+    assert len(sorted_markets) == 2  # Munich (>60km) is defensively excluded
+
 
 
 def test_kaufland_store_resolution_uses_haversine_not_numeric_difference():

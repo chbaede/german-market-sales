@@ -1032,6 +1032,18 @@ select:focus {
   font-weight: 700;
 }
 
+.scope-unverified {
+  background: #fefce8;
+  border: 1px solid #fef08a;
+  color: #854d0e;
+}
+
+.scope-unknown {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  color: #64748b;
+}
+
 .card-title-group {
   display: flex;
   flex-direction: column;

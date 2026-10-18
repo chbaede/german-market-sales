@@ -128,6 +128,37 @@ class MarktguruProvider(OfferProvider):
         unit_price = parse_positive_float(item.get("referencePrice"))
         discount_percent = compute_discount_percent(price, old_price)
         description = (item.get("description") or "").strip()
+        flyer_id = item.get("flyerId") or (item.get("flyer") or {}).get("id")
+        branch_id = item.get("branchId") or (item.get("branch") or {}).get("id")
+
+        if branch_id:
+            scope_type = "store"
+            store_id = str(branch_id)
+            source_region_id = str(flyer_id) if flyer_id else None
+            region_verified = True
+            verification_method = "marktguru_store_branch"
+            verification_reason = f"Marktguru branch {branch_id} matched"
+        elif flyer_id:
+            scope_type = "region"
+            store_id = None
+            source_region_id = str(flyer_id)
+            region_verified = True
+            verification_method = "marktguru_flyer_api"
+            verification_reason = f"Marktguru regional leaflet {flyer_id}"
+        elif zip_code:
+            scope_type = "region"
+            store_id = None
+            source_region_id = None
+            region_verified = False
+            verification_method = "unverified_zip_query"
+            verification_reason = "Marktguru query without specific leaflet/branch identifier"
+        else:
+            scope_type = "unknown"
+            store_id = None
+            source_region_id = None
+            region_verified = False
+            verification_method = "unknown_scope"
+            verification_reason = "No geographic scope could be established"
 
         return Offer(
             id=f"marktguru-{source_offer_id}",
@@ -148,9 +179,13 @@ class MarktguruProvider(OfferProvider):
             image_url=_image_url(source_offer_id, item),
             source_url=f"https://www.marktguru.de/r/{retailer_slug}",
             requested_zip_code=zip_code,
-            scope_type="region",
+            scope_type=scope_type,
+            store_id=store_id,
             source_provider="marktguru",
-            region_verified=True,
+            source_region_id=source_region_id,
+            region_verified=region_verified,
+            verification_method=verification_method,
+            verification_reason=verification_reason,
         )
 
 

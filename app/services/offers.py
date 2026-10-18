@@ -21,7 +21,7 @@ from app.services.categories import categorize_offer
 from app.services.formatting import parse_offer_date
 from app.services.price_history import PriceHistoryService, normalize_product_key
 
-CACHE_SCHEMA_VERSION = 12
+CACHE_SCHEMA_VERSION = 13
 UPSTREAM_FETCH_MULTIPLIER = 10
 MIN_UPSTREAM_FETCH_LIMIT = 500
 DEFAULT_CACHE_ZIP = "14195"
@@ -134,11 +134,47 @@ class OfferService:
                     data = json.load(handle)
             except (OSError, json.JSONDecodeError):
                 continue
-            if data.get("schema_version") != CACHE_SCHEMA_VERSION:
+            cache_zip = data.get("zip_code")
+            if cache_zip != zip_code:
+                # Strictly isolate caches by PLZ
                 continue
-            if data.get("zip_code") != zip_code:
-                continue
-            return data
+
+            version = data.get("schema_version")
+            if version == CACHE_SCHEMA_VERSION:
+                return data
+
+            # Safe migration for legacy caches (e.g. version 11 or 12):
+            if isinstance(version, int) and version < CACHE_SCHEMA_VERSION:
+                migrated_offers = []
+                for item in data.get("offers", []):
+                    scope = item.get("scope_type")
+                    if not scope or scope == "unknown":
+                        retailer_slug = item.get("retailer_slug", "")
+                        if retailer_slug in ("rewe", "dm-drogerie-markt"):
+                            scope = "nationwide"
+                        else:
+                            scope = "unknown"
+
+                    item["scope_type"] = scope
+                    item["region_verified"] = False  # Strictly False for legacy data
+                    item["verification_method"] = "legacy_cache_migration"
+                    item["verification_reason"] = "Migrated from legacy cache; regional applicability unverified"
+                    migrated_offers.append(item)
+
+                data["schema_version"] = CACHE_SCHEMA_VERSION
+                data["offers"] = migrated_offers
+
+                try:
+                    self._write_cache(
+                        zip_code,
+                        data.get("fetched_at") or "",
+                        [Offer.from_dict(o) for o in migrated_offers],
+                        data.get("warnings", []),
+                    )
+                except Exception:
+                    pass
+                return data
+
         return None
 
     def _write_cache(self, zip_code: str, fetched_at: str, offers: list[Offer], warnings: list[str]) -> None:
@@ -350,7 +386,9 @@ class OfferService:
                 scope_type = next((o.scope_type for o in offers if o.scope_type), "unknown")
                 region_verified = any(o.region_verified for o in offers)
                 valid_from = next((o.valid_from for o in offers if o.valid_from), None)
-                valid_to = next((o.valid_to for o in offers if o.valid_to), None)
+                source_url = next((o.source_url for o in offers if o.source_url), None)
+                verification_method = next((o.verification_method for o in offers if o.verification_method), None)
+                verification_reason = next((o.verification_reason for o in offers if o.verification_reason), None)
                 diagnostics[slug] = {
                     "retailer": retailer_name,
                     "retailer_slug": slug,
@@ -359,8 +397,11 @@ class OfferService:
                     "store_name": store_name,
                     "store_address": store_address,
                     "source_provider": source_provider,
+                    "source_url": source_url,
                     "scope_type": scope_type,
                     "region_verified": region_verified,
+                    "verification_method": verification_method,
+                    "verification_reason": verification_reason,
                     "offer_count": len(offers),
                     "valid_from": valid_from,
                     "valid_to": valid_to,

@@ -87,6 +87,8 @@ class DmProvider(OfferProvider):
             store_name="dm-drogerie markt (Online/Nationale Angebote)",
             source_provider="dm-official",
             region_verified=False,
+            verification_method="national_online_catalog",
+            verification_reason="dm product search API represents national/online assortment",
         )
 
 

@@ -165,6 +165,8 @@ class EdekaProvider(OfferProvider):
             store_address=store_address,
             source_provider="edeka-official",
             region_verified=True,
+            verification_method="store_direct_api",
+            verification_reason=f"Official EDEKA store endpoint for market {store_id}" if store_id else "Official EDEKA store endpoint",
         )
 
     def _candidate_markets(self, zip_code: str) -> tuple[list[dict], bool]:
@@ -316,37 +318,54 @@ def _decimal(value: str) -> float:
     return float(value.replace(",", "."))
 
 
+MAX_STORE_DISTANCE_KM = 60.0
+
+
 def _sort_candidate_markets(markets: list[dict], zip_code: str) -> list[dict]:
-    from app.services.location import get_coordinates_for_plz, haversine_distance_km
+    from app.services.location import get_coordinates_for_plz, haversine_distance_km, is_valid_coordinates
 
     user_coords = get_coordinates_for_plz(zip_code)
 
-    def sort_key(m: dict) -> tuple[int, float]:
+    def evaluate_market(m: dict) -> tuple[int, float] | None:
         contact = m.get("contact") if isinstance(m.get("contact"), dict) else {}
         address = contact.get("address") if isinstance(contact.get("address"), dict) else (m.get("address") if isinstance(m.get("address"), dict) else {})
         market_pc = str(address.get("postalCode") or m.get("postalCode") or "").strip()
-        exact_match = 0 if market_pc == zip_code else (1 if market_pc.startswith(zip_code[:3]) else 2)
 
+        # 1. Exact 5-digit PLZ match
+        if market_pc and market_pc == zip_code:
+            return (0, 0.0)
+
+        # 2. Raw distance if provided by official API
         raw_dist = m.get("distance")
         if isinstance(raw_dist, (int, float)):
-            return (exact_match, float(raw_dist))
+            f_dist = float(raw_dist)
+            if f_dist <= MAX_STORE_DISTANCE_KM:
+                return (1, f_dist)
+            return None
 
+        # 3. Coordinate haversine calculation
         coords = m.get("coordinates") or {}
-        if isinstance(coords, dict) and coords.get("lat") and coords.get("lon") and user_coords:
-            try:
-                dist = haversine_distance_km(
-                    user_coords[0],
-                    user_coords[1],
-                    float(coords["lat"]),
-                    float(coords["lon"]),
-                )
-                return (exact_match, dist)
-            except Exception:
-                pass
+        if isinstance(coords, dict) and user_coords:
+            lat = coords.get("lat")
+            lon = coords.get("lon")
+            if is_valid_coordinates(lat, lon):
+                dist = haversine_distance_km(user_coords[0], user_coords[1], lat, lon)
+                if dist <= MAX_STORE_DISTANCE_KM:
+                    return (1, dist)
+        # 4. If market has no address, coordinates, or distance at all (e.g. basic mock without coords):
+        if not market_pc and not coords and raw_dist is None:
+            return (2, 999.0)
 
-        return (exact_match, 9999.0)
+        return None
 
-    return sorted(markets, key=sort_key)
+    valid_candidates: list[tuple[tuple[int, float], dict]] = []
+    for m in markets:
+        ev = evaluate_market(m)
+        if ev is not None:
+            valid_candidates.append((ev, m))
+
+    valid_candidates.sort(key=lambda item: item[0])
+    return [item[1] for item in valid_candidates]
 
 
 def _market_address(market: dict) -> str | None:

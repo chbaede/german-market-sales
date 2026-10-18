@@ -85,21 +85,17 @@ class KauflandProvider(OfferProvider):
             # Without verified geographic coordinates, do not guess
             return None
 
-        # 2. Postcode prefix match (4, 3, 2 digits) within reasonable distance
-        for prefix_len in (4, 3, 2):
-            prefix = cleaned[:prefix_len]
-            matches = [s for s in stores if str(s.get("pc") or "").strip().startswith(prefix) and s.get("n")]
-            if matches:
-                closest = min(matches, key=lambda s: _store_distance(s, user_coords))
-                if _store_distance(closest, user_coords) <= MAX_STORE_DISTANCE_KM:
-                    return closest
+        # 2. True geographic distance (haversine) across all stores within MAX_STORE_DISTANCE_KM
+        valid_stores = [s for s in stores if s.get("n")]
+        candidates_with_dist = []
+        for s in valid_stores:
+            dist = _store_distance(s, user_coords)
+            if dist <= MAX_STORE_DISTANCE_KM:
+                candidates_with_dist.append((dist, s))
 
-        # 3. True geographic distance fallback (haversine) within MAX_STORE_DISTANCE_KM
-        valid_stores = [s for s in stores if s.get("n") and s.get("lat") and s.get("lng")]
-        if valid_stores:
-            closest = min(valid_stores, key=lambda s: _store_distance(s, user_coords))
-            if _store_distance(closest, user_coords) <= MAX_STORE_DISTANCE_KM:
-                return closest
+        if candidates_with_dist:
+            candidates_with_dist.sort(key=lambda x: x[0])
+            return candidates_with_dist[0][1]
 
         return None
 
@@ -232,6 +228,8 @@ class KauflandProvider(OfferProvider):
             store_address=store_address,
             source_provider="kaufland-official",
             region_verified=True if store_id else False,
+            verification_method="store_cookie_session" if store_id else "national_catalog_fallback",
+            verification_reason=f"Kaufland store session for store {store_id}" if store_id else "No verified Kaufland store within 60km; fallback to national offers",
         )
 
 
@@ -318,20 +316,22 @@ def _format_kaufland_address(store: dict) -> str | None:
 
 
 def _store_distance(store: dict, user_coords: tuple[float, float]) -> float:
-    from app.services.location import get_coordinates_for_plz, haversine_distance_km
+    from app.services.location import get_coordinates_for_plz, haversine_distance_km, is_valid_coordinates
 
     lat = store.get("lat")
     lng = store.get("lng")
     if lat is not None and lng is not None:
-        try:
-            return haversine_distance_km(user_coords[0], user_coords[1], float(lat), float(lng))
-        except (ValueError, TypeError):
-            pass
+        if is_valid_coordinates(lat, lng):
+            try:
+                return haversine_distance_km(user_coords[0], user_coords[1], float(lat), float(lng))
+            except (ValueError, TypeError):
+                pass
+        return 99999.0
 
     store_pc = str(store.get("pc") or "").strip()
     if store_pc:
         store_coords = get_coordinates_for_plz(store_pc)
-        if store_coords:
+        if store_coords and is_valid_coordinates(store_coords[0], store_coords[1]):
             return haversine_distance_km(user_coords[0], user_coords[1], store_coords[0], store_coords[1])
 
     return 99999.0

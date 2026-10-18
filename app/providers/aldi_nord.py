@@ -146,7 +146,10 @@ class AldiNordProvider(OfferProvider):
             scope_type="region",
             store_name="ALDI Nord (Norddeutschland)",
             source_provider="aldi-nord-official",
-            region_verified=True,
+            source_region_id="aldi-nord-territory",
+            region_verified=False,
+            verification_method="retailer_territory_unverified",
+            verification_reason="PLZ is in ALDI Nord territory, but web catalog lacks offer-level regional leaflet evidence",
         )
 
 
