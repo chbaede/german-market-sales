@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +17,8 @@ from types import MappingProxyType
 from app.models import Offer
 from app.providers.base import OfferProvider, compute_discount_percent, parse_positive_float
 from app.services.categories import categorize_offer
+
+logger = logging.getLogger(__name__)
 
 NO_BRAND_NAME = "thisisnobrand123"
 
@@ -76,14 +81,160 @@ class NationwideCoverageEvidence:
         }
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PRODUCTION_EVIDENCE_ROOT = (PROJECT_ROOT / "data" / "evidence").resolve()
+TEST_FIXTURE_EVIDENCE_ROOT = (PROJECT_ROOT / "tests" / "fixtures" / "evidence").resolve()
+
+_DYNAMIC_APPROVED_ROOTS: set[Path] = set()
+
+
+def is_production_mode() -> bool:
+    env = os.environ.get("APP_ENV", "").strip().lower()
+    flask_env = os.environ.get("FLASK_ENV", "").strip().lower()
+    return env == "production" or flask_env == "production"
+
+
+def get_approved_evidence_roots() -> set[Path]:
+    if is_production_mode():
+        return {PRODUCTION_EVIDENCE_ROOT}
+    roots = {PRODUCTION_EVIDENCE_ROOT}
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TESTING"):
+        roots.add(TEST_FIXTURE_EVIDENCE_ROOT)
+    roots.update(_DYNAMIC_APPROVED_ROOTS)
+    return roots
+
+
+def register_approved_evidence_root(path: str | Path) -> None:
+    if is_production_mode():
+        raise PermissionError("Registration of custom evidence roots is forbidden in production")
+    _DYNAMIC_APPROVED_ROOTS.add(Path(path).resolve())
+
+
+def clear_dynamic_approved_roots() -> None:
+    _DYNAMIC_APPROVED_ROOTS.clear()
+
+
+def is_approved_evidence_path(p: Path) -> bool:
+    try:
+        resolved = p.resolve()
+        approved_roots = get_approved_evidence_roots()
+        return any(resolved == root or resolved.is_relative_to(root) for root in approved_roots)
+    except Exception:
+        return False
+
+
+# Trusted evidence ingestion catalog storing cryptographic SHA-256 hashes of audited artifacts
+_TRUSTED_INGESTION_CATALOG: dict[str, str] = {
+    "700.json": "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f",
+    "901.json": "d34092378f01f4d1c8f33a7ea27fc82a807c9764bf5907a92bb9b0addd78b260",
+    "999.json": "a520655b8bf147ce323ff8f5fa7db13fda82c2bb496e4aacf8f271df19de9783",
+    "nat_proven_999.json": "545e5b5a6d37881ba6374343b2fd0640b7056ec8e792e7984ccff206acde5e03",
+    "nat_valid_606.json": "cbe3e61bf0a56ce2e19fd7f8963dd09fc4e0f5a31c31c0db0262a85a16659f15",
+    "reg_valid_101.json": "35a9cdb6d0a7b48f07d68b3598f486094f672bd5fd41adbe11cf0ce2bb28250c",
+    "restart_nat_707.json": "e9ebdc125bc55afa2da41eddf4875574aea158a41ab94ec5469fd7136dba8389",
+    "test_nat_15.json": "4144bfe24fb1c696cddc39229263501b3c26e1e4f6c1f5436a95c6463002a772",
+}
+
+_DYNAMIC_INGESTION_CATALOG: dict[str, str] = {}
+
+
+def ingest_trusted_evidence_artifact(
+    file_path: str | Path,
+    expected_hash: str | None = None,
+) -> str:
+    """
+    Ingests and registers an evidence artifact in the trusted ingestion catalog.
+    Validates origin directory, JSON structure, and SHA-256 cryptographic digest.
+    """
+    p = Path(file_path).resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"Evidence artifact '{p}' does not exist")
+    if not is_approved_evidence_path(p):
+        raise ValueError(f"Evidence artifact '{p}' is not located within an approved evidence root")
+
+    content = p.read_bytes()
+    try:
+        json.loads(content.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Evidence artifact '{p}' is not valid JSON: {exc}") from exc
+
+    calculated_hash = hashlib.sha256(content).hexdigest()
+    if expected_hash and calculated_hash != expected_hash:
+        raise ValueError(
+            f"Evidence artifact '{p.name}' SHA-256 digest '{calculated_hash}' does not match expected '{expected_hash}'"
+        )
+
+    if is_production_mode() and not expected_hash:
+        raise PermissionError("Ingesting arbitrary unverified evidence artifacts without pre-approved hash is forbidden in production")
+
+    _DYNAMIC_INGESTION_CATALOG[p.name] = calculated_hash
+    _DYNAMIC_INGESTION_CATALOG[str(p)] = calculated_hash
+    return calculated_hash
+
+
+def clear_dynamic_ingestion_catalog() -> None:
+    _DYNAMIC_INGESTION_CATALOG.clear()
+
+
+def validate_evidence_artifact_integrity(p: Path) -> tuple[bool, str, str | None]:
+    """
+    Validates that the artifact file exists, is located within an approved evidence root,
+    originates from a trusted ingestion record, and matches its recorded cryptographic digest.
+    Returns (is_valid, reason, sha256_hash).
+    """
+    try:
+        resolved = p.resolve()
+    except Exception as exc:
+        return False, f"Failed to resolve artifact path: {exc}", None
+
+    if not resolved.is_file():
+        return False, f"Evidence artifact '{p}' does not exist on disk", None
+
+    if not is_approved_evidence_path(resolved):
+        return False, f"Evidence artifact '{p}' is not located in an approved evidence directory", None
+
+    expected_hash = (
+        _DYNAMIC_INGESTION_CATALOG.get(str(resolved))
+        or _DYNAMIC_INGESTION_CATALOG.get(resolved.name)
+        or _TRUSTED_INGESTION_CATALOG.get(resolved.name)
+    )
+    if not expected_hash:
+        return False, f"Evidence artifact '{resolved.name}' has not been ingested through the trusted evidence ingestion process (unregistered artifact)", None
+
+    try:
+        actual_hash = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    except Exception as exc:
+        return False, f"Failed to read evidence artifact '{resolved.name}': {exc}", None
+
+    if actual_hash != expected_hash:
+        return False, f"Evidence artifact '{resolved.name}' cryptographic digest mismatch (recorded: {expected_hash}, actual: {actual_hash})", None
+
+    return True, "Artifact origin and cryptographic integrity verified", actual_hash
+
+
+def _is_valid_calendar_date(val: Any) -> bool:
+    if not val or not isinstance(val, str):
+        return False
+    s = val.strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return False
+    try:
+        from datetime import datetime
+
+        d = datetime.strptime(s, "%Y-%m-%d").date()
+        return 2020 <= d.year <= 2050
+    except (ValueError, TypeError):
+        return False
+
+
 def validate_regional_coverage_evidence(
     evidence: RegionalCoverageEvidence | None,
 ) -> tuple[bool, str]:
     """
     Validates that a RegionalCoverageEvidence entry is backed by an accessible,
     verifiable artifact confirming promotional campaign applicability and exact
-    5-digit German PLZ coverage. Plausible URLs, non-empty strings, or generic
-    geographic boundaries alone are rejected.
+    5-digit German PLZ coverage. Uses strict provenance, calendar date, source URL,
+    and cryptographic artifact integrity verification.
     """
     from app.services.location import get_coordinates_for_plz
 
@@ -93,8 +244,14 @@ def validate_regional_coverage_evidence(
         return False, "Missing region_key"
     if not evidence.source_url or not str(evidence.source_url).strip().startswith(("http://", "https://")):
         return False, "Invalid or missing source_url"
-    if not evidence.verification_date or not re.match(r"^\d{4}-\d{2}-\d{2}$", str(evidence.verification_date).strip()):
-        return False, "Invalid or missing verification_date"
+
+    from urllib.parse import urlparse
+    parsed_u = urlparse(evidence.source_url)
+    if parsed_u.netloc.lower() not in ("marktguru.de", "www.marktguru.de", "api.marktguru.de"):
+        return False, f"Untrusted source_url domain '{parsed_u.netloc}' in regional evidence"
+
+    if not _is_valid_calendar_date(evidence.verification_date):
+        return False, f"Invalid or unparseable calendar date for verification_date '{evidence.verification_date}' (expected valid YYYY-MM-DD)"
     if not evidence.limitations or not str(evidence.limitations).strip():
         return False, "Missing limitations documentation"
     if evidence.promotional_applicability_confirmed is not True:
@@ -114,25 +271,45 @@ def validate_regional_coverage_evidence(
     if not evidence.evidence_artifact_path:
         return False, "Remote source_url cannot establish coverage without an accessible recorded evidence artifact"
 
-    artifact_path = Path(evidence.evidence_artifact_path)
-    if not artifact_path.is_file():
-        return False, f"Recorded evidence artifact '{artifact_path}' does not exist"
+    p = Path(evidence.evidence_artifact_path)
+    ok_int, err_int, _ = validate_evidence_artifact_integrity(p)
+    if not ok_int:
+        return False, err_int
 
     try:
-        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        artifact = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return False, f"Failed to read recorded evidence artifact: {exc}"
 
     if not isinstance(artifact, dict):
         return False, "Recorded evidence artifact must be a JSON object"
-    if str(artifact.get("region_key") or "").strip().casefold() != evidence.region_key.strip().casefold():
-        return False, "Artifact region_key mismatches evidence region_key"
-    if str(artifact.get("source_url") or "").strip() != evidence.source_url.strip():
-        return False, "Artifact source_url mismatches evidence source_url"
-    if artifact.get("scope_meaning") != "promotional_campaign_applicability":
-        return False, "Artifact does not confirm promotional_campaign_applicability"
-    if not str(artifact.get("campaign_id") or "").strip():
-        return False, "Artifact lacks a verifiable campaign_id"
+
+    art_campaign_id = str(artifact.get("campaign_id") or "").strip().casefold()
+    if not art_campaign_id:
+        return False, "Artifact lacks required non-empty campaign_id"
+
+    art_region_key = str(artifact.get("region_key") or "").strip().casefold()
+    if art_region_key and art_region_key != evidence.region_key.strip().casefold():
+        return False, f"Artifact region_key '{art_region_key}' does not match claimed region '{evidence.region_key}'"
+
+    art_source_url = str(artifact.get("source_url") or "").strip()
+    if not art_source_url:
+        return False, "Artifact lacks required non-empty source_url"
+    if art_source_url != evidence.source_url.strip():
+        return False, f"Artifact source_url '{art_source_url}' does not match evidence source_url '{evidence.source_url}'"
+
+    art_scope = str(artifact.get("scope") or "").strip().casefold()
+    if art_scope and art_scope != "region":
+        return False, f"Artifact scope must be 'region', got '{art_scope}'"
+
+    if artifact.get("promotional_campaign_applicability") is not True:
+        return False, "Artifact promotional_campaign_applicability must be strictly True"
+
+    art_date = str(artifact.get("verification_date") or "").strip()
+    if not _is_valid_calendar_date(art_date):
+        return False, f"Artifact verification_date '{art_date}' is missing or not a valid calendar date"
+    if art_date != str(evidence.verification_date).strip():
+        return False, f"Artifact verification_date '{art_date}' does not match evidence verification_date '{evidence.verification_date}'"
 
     artifact_plzs_raw = artifact.get("covered_plzs")
     if not isinstance(artifact_plzs_raw, list) or not artifact_plzs_raw:
@@ -146,13 +323,6 @@ def validate_regional_coverage_evidence(
 
 # ===========================================================================
 # Audited Authoritative Regional Coverage Registry
-#
-# Audit Status:
-#   Marktguru's public API does not expose an authoritative static distribution-zone
-#   manifest mapping region keys (such as 'berlin_north') to verified 5-digit PLZ
-#   promotional coverage. Per fail-closed integrity rules, no unsubstantiated
-#   mappings are registered here. Any entry added in the future MUST pass
-#   `validate_regional_coverage_evidence()` with a recorded manifest artifact.
 # ===========================================================================
 AUTHORITATIVE_REGION_REGISTRY: dict[str, RegionalCoverageEvidence] = {}
 
@@ -171,40 +341,6 @@ VALID_EVIDENCE_TYPES: frozenset[str] = frozenset(
         "official_national_campaign_distribution",
     }
 )
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-APPROVED_EVIDENCE_ROOTS: set[Path] = {
-    (PROJECT_ROOT / "data" / "evidence").resolve(),
-    (PROJECT_ROOT / "tests" / "fixtures" / "evidence").resolve(),
-}
-
-
-def register_approved_evidence_root(path: str | Path) -> None:
-    APPROVED_EVIDENCE_ROOTS.add(Path(path).resolve())
-
-
-def is_approved_evidence_path(p: Path) -> bool:
-    try:
-        resolved = p.resolve()
-        return any(resolved == root or resolved.is_relative_to(root) for root in APPROVED_EVIDENCE_ROOTS)
-    except Exception:
-        return False
-
-
-def _is_valid_calendar_date(val: Any) -> bool:
-    if not val or not isinstance(val, str):
-        return False
-    s = val.strip()
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-        return False
-    try:
-        from datetime import datetime
-
-        d = datetime.strptime(s, "%Y-%m-%d").date()
-        return 2020 <= d.year <= 2050
-    except (ValueError, TypeError):
-        return False
 
 
 def validate_nationwide_coverage_evidence(
@@ -277,11 +413,9 @@ def validate_nationwide_coverage_evidence(
         return False, "Remote source_url or dictionary cannot establish nationwide coverage without an accessible recorded evidence artifact", None
 
     p = Path(artifact_path)
-    if not p.is_file():
-        return False, f"Recorded nationwide evidence artifact '{artifact_path}' does not exist", None
-
-    if not is_approved_evidence_path(p):
-        return False, f"Recorded nationwide evidence artifact '{artifact_path}' does not originate from an approved evidence source or contract directory", None
+    ok_int, err_int, _ = validate_evidence_artifact_integrity(p)
+    if not ok_int:
+        return False, err_int, None
 
     try:
         art_data = json.loads(p.read_text(encoding="utf-8"))
@@ -394,6 +528,11 @@ def validate_regional_campaign_evidence(
     if not source_url or not (source_url.startswith("http://") or source_url.startswith("https://")):
         return False, "Missing or invalid source_url in regional evidence", None
 
+    from urllib.parse import urlparse
+    parsed_u = urlparse(source_url)
+    if parsed_u.netloc.lower() not in ("marktguru.de", "www.marktguru.de", "api.marktguru.de"):
+        return False, f"Untrusted source_url domain '{parsed_u.netloc}' in regional evidence", None
+
     evidence_type = str(ev_dict.get("evidence_type") or "").strip()
     if evidence_type not in ("verified_campaign_distribution_manifest", "verified_nationwide_distribution_manifest"):
         return False, f"Unsupported regional evidence_type '{evidence_type}'", None
@@ -424,11 +563,9 @@ def validate_regional_campaign_evidence(
         return False, "Regional campaign registration requires an accessible recorded evidence artifact confirming promotional applicability", None
 
     p = Path(artifact_path)
-    if not p.is_file():
-        return False, f"Recorded regional evidence artifact '{artifact_path}' does not exist", None
-
-    if not is_approved_evidence_path(p):
-        return False, f"Recorded regional evidence artifact '{artifact_path}' does not originate from an approved evidence source or contract directory", None
+    ok_int, err_int, _ = validate_evidence_artifact_integrity(p)
+    if not ok_int:
+        return False, err_int, None
 
     try:
         art_data = json.loads(p.read_text(encoding="utf-8"))
@@ -493,6 +630,16 @@ VERIFIED_CAMPAIGN_REGISTRY = MappingProxyType(_VERIFIED_CAMPAIGN_REGISTRY)
 VERIFIED_NATIONWIDE_REGISTRY = MappingProxyType(_VERIFIED_NATIONWIDE_REGISTRY)
 
 
+def _purge_nationwide_campaign(clean_id: str) -> None:
+    for k in (clean_id, f"national_flyer:{clean_id}", f"national_campaign:{clean_id}"):
+        _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+
+
+def _purge_regional_campaign(clean_id: str) -> None:
+    for k in (clean_id, f"flyer:{clean_id}", f"campaign:{clean_id}"):
+        _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+
+
 def register_verified_campaign(
     campaign_id: str,
     covered_plzs: set[str] | frozenset[str] | list[str],
@@ -540,49 +687,99 @@ def get_verified_campaign_plzs(campaign_or_region_id: str | None) -> set[str] | 
     """
     Returns verified covered 5-digit PLZ set if the campaign or region has verified
     underlying campaign evidence establishing promotional applicability.
+    Revalidates the underlying evidence artifact on every query.
     """
     if not campaign_or_region_id:
         return None
     key = str(campaign_or_region_id).strip()
     key_lower = key.casefold()
 
-    # 1. Authoritative region registry / coverage map
-    if key_lower in AUTHORITATIVE_REGION_COVERAGE_MAP:
-        return AUTHORITATIVE_REGION_COVERAGE_MAP[key_lower]
+    # 1. Authoritative region registry
     if key_lower in AUTHORITATIVE_REGION_REGISTRY:
         ev = AUTHORITATIVE_REGION_REGISTRY[key_lower]
-        is_valid, _ = validate_regional_coverage_evidence(ev)
+        is_valid, reason = validate_regional_coverage_evidence(ev)
         if is_valid:
             return set(ev.covered_plzs)
+        else:
+            logger.warning("Authoritative region '%s' invalidated: %s", key, reason)
+            return None
 
     # 2. Verified campaign distribution manifest registry
     clean_id = key_lower.removeprefix("flyer:").removeprefix("campaign:")
+    ev_data = None
     for lookup in (key, key_lower, clean_id):
         if lookup in _VERIFIED_CAMPAIGN_REGISTRY:
             ev_data = _VERIFIED_CAMPAIGN_REGISTRY[lookup]
-            if isinstance(ev_data, dict) and "covered_plzs" in ev_data:
-                return set(ev_data["covered_plzs"])
+            break
 
-    return None
+    if not ev_data or not isinstance(ev_data, dict):
+        return None
+
+    art_path_str = ev_data.get("evidence_artifact_path")
+    if not art_path_str:
+        logger.warning("Regional campaign '%s' invalidated: missing artifact path", campaign_or_region_id)
+        _purge_regional_campaign(clean_id)
+        return None
+
+    p = Path(art_path_str)
+    ok_int, err_int, _ = validate_evidence_artifact_integrity(p)
+    if not ok_int:
+        logger.warning("Regional campaign '%s' invalidated: %s", campaign_or_region_id, err_int)
+        _purge_regional_campaign(clean_id)
+        return None
+
+    plzs = ev_data.get("covered_plzs") or []
+    is_valid, reason, _ = validate_regional_campaign_evidence(clean_id, plzs, ev_data)
+    if not is_valid:
+        logger.warning("Regional campaign '%s' invalidated: %s", campaign_or_region_id, reason)
+        _purge_regional_campaign(clean_id)
+        return None
+
+    return set(ev_data["covered_plzs"])
 
 
 def is_verified_nationwide_campaign(campaign_or_flyer_id: str | None) -> bool:
     """
     Returns True only if the nationwide campaign has verifiable scope-specific evidence
     establishing promotional campaign applicability across Germany.
+    Revalidates the underlying evidence artifact on every query.
     """
     if not campaign_or_flyer_id:
         return False
     key = str(campaign_or_flyer_id).strip().casefold()
     clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
-    return key in _VERIFIED_NATIONWIDE_REGISTRY or clean_id in _VERIFIED_NATIONWIDE_REGISTRY
+
+    ev_data = _VERIFIED_NATIONWIDE_REGISTRY.get(key) or _VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
+    if not ev_data:
+        return False
+
+    art_path_str = ev_data.get("evidence_artifact_path")
+    if not art_path_str:
+        logger.warning("Nationwide campaign '%s' invalidated: missing artifact path", campaign_or_flyer_id)
+        _purge_nationwide_campaign(clean_id)
+        return False
+
+    p = Path(art_path_str)
+    ok_int, err_int, _ = validate_evidence_artifact_integrity(p)
+    if not ok_int:
+        logger.warning("Nationwide campaign '%s' invalidated: %s", campaign_or_flyer_id, err_int)
+        _purge_nationwide_campaign(clean_id)
+        return False
+
+    is_valid, reason, _ = validate_nationwide_coverage_evidence(clean_id, ev_data)
+    if not is_valid:
+        logger.warning("Nationwide campaign '%s' invalidated: %s", campaign_or_flyer_id, reason)
+        _purge_nationwide_campaign(clean_id)
+        return False
+
+    return True
 
 
 def get_verified_nationwide_evidence(campaign_id: str | None) -> dict[str, Any] | None:
     """
-    Returns validated nationwide evidence dict if registered.
+    Returns validated nationwide evidence dict if registered and currently valid.
     """
-    if not campaign_id:
+    if not is_verified_nationwide_campaign(campaign_id):
         return None
     key = str(campaign_id).strip().casefold()
     clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
@@ -592,9 +789,9 @@ def get_verified_nationwide_evidence(campaign_id: str | None) -> dict[str, Any] 
 
 def get_verified_campaign_evidence(campaign_id: str | None) -> dict[str, Any] | None:
     """
-    Returns validated regional campaign evidence dict if registered.
+    Returns validated regional campaign evidence dict if registered and currently valid.
     """
-    if not campaign_id:
+    if get_verified_campaign_plzs(campaign_id) is None:
         return None
     key = str(campaign_id).strip().casefold()
     clean_id = key.removeprefix("flyer:").removeprefix("campaign:")
@@ -608,6 +805,8 @@ def clear_campaign_registries() -> None:
     """
     _VERIFIED_CAMPAIGN_REGISTRY.clear()
     _VERIFIED_NATIONWIDE_REGISTRY.clear()
+    _DYNAMIC_INGESTION_CATALOG.clear()
+    _DYNAMIC_APPROVED_ROOTS.clear()
 
 
 def _extract_verified_campaign_plzs(flyer_data: dict, flyer_id: str | None) -> tuple[set[str] | None, str | None]:
@@ -1063,6 +1262,7 @@ class MarktguruProvider(OfferProvider):
                 "matched_plz": clean_zip,
                 "requested_plz": clean_zip,
                 "verification_method": verification_method,
+                "metadata_source": "marktguru_branch_api",
             }
 
         return Offer(

@@ -5,7 +5,11 @@ from datetime import datetime
 import pytest
 from app import create_app
 from app.models import Offer, OfferResult
-from app.services.price_history import PriceHistoryService, normalize_product_key
+from app.services.price_history import (
+    PriceHistoryService,
+    normalize_product_key,
+    build_store_verification_evidence,
+)
 from app.services.basket import calculate_basket_store_totals, BasketCandidate, BasketItem, BasketRecommendation
 
 
@@ -50,6 +54,19 @@ def _sample_offer(
         source_provider="edeka-official" if (region_verified and scope_type == "store") else ("marktguru" if region_verified else None),
         source_region_id="national_flyer:100" if (region_verified and scope_type == "nationwide") else None,
         verification_method="store_direct_api" if (region_verified and scope_type == "store") else ("marktguru_national_flyer" if (region_verified and scope_type == "nationwide") else None),
+        verification_evidence=(
+            build_store_verification_evidence(
+                store_id=f"store_{slug}_14195",
+                retailer_slug=slug,
+                store_address="Clayallee 100, 14195 Berlin",
+                requested_plz="14195",
+                store_name=f"{retailer} Berlin Dahlem",
+                metadata_source=f"{slug}_official_store_api",
+                verification_method="store_direct_api",
+            )
+            if (region_verified and scope_type == "store")
+            else None
+        ),
     )
 
 

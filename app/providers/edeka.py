@@ -237,6 +237,7 @@ class EdekaProvider(OfferProvider):
                 "matched_plz": clean_zip,
                 "requested_plz": clean_zip,
                 "verification_method": verification_method,
+                "metadata_source": "edeka_official_market_api",
             }
 
         return Offer(

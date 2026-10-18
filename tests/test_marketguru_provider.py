@@ -225,6 +225,8 @@ def test_audited_regional_coverage_registry_traceability(tmp_path, monkeypatch):
         RegionalCoverageEvidence,
         validate_regional_coverage_evidence,
         verify_marktguru_regional_applicability,
+        register_approved_evidence_root,
+        ingest_trusted_evidence_artifact,
     )
 
     # 1. Default registry is empty because no external Marktguru distribution-zone API
@@ -284,12 +286,17 @@ def test_audited_regional_coverage_registry_traceability(tmp_path, monkeypatch):
                 "region_key": "verified_test_zone",
                 "source_url": "https://www.marktguru.de/r/edeka",
                 "campaign_id": "camp-verified-100",
+                "scope": "region",
+                "verification_date": "2026-06-01",
+                "promotional_campaign_applicability": True,
                 "scope_meaning": "promotional_campaign_applicability",
                 "covered_plzs": ["10115", "10117"],
             }
         ),
         encoding="utf-8",
     )
+    register_approved_evidence_root(tmp_path)
+    ingest_trusted_evidence_artifact(manifest_file)
     valid_ev = RegionalCoverageEvidence(
         region_key="verified_test_zone",
         covered_plzs=frozenset({"10115", "10117"}),

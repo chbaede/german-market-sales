@@ -309,6 +309,7 @@ class OfferService:
                     source_url=offer.source_url,
                     zip_code=eff_zip,
                     retailer_slug=offer.retailer_slug,
+                    verification_evidence=offer.verification_evidence,
                 )
                 if not is_valid:
                     offer.region_verified = False

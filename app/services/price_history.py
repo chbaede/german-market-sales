@@ -152,6 +152,37 @@ _VERIFIED_NATIONWIDE_SQL = (
 )
 
 
+def build_store_verification_evidence(
+    *,
+    store_id: str,
+    retailer_slug: str,
+    store_address: str,
+    requested_plz: str,
+    store_name: str | None = None,
+    metadata_source: str = "official_store_api",
+    verification_method: str = "store_direct_api",
+) -> dict[str, Any]:
+    """
+    Builds an authoritative store verification evidence dictionary tying
+    the exact store ID, retailer, verified physical address, and postal code
+    to an authoritative metadata source.
+    """
+    m = re.search(r"\b(\d{5})\b", store_address)
+    store_plz = m.group(1) if m else requested_plz
+    return {
+        "scope": "store",
+        "retailer_slug": retailer_slug.strip().lower(),
+        "store_id": str(store_id).strip(),
+        "store_name": store_name,
+        "store_address": store_address.strip(),
+        "store_plz": store_plz,
+        "matched_plz": requested_plz.strip(),
+        "requested_plz": requested_plz.strip(),
+        "verification_method": verification_method,
+        "metadata_source": metadata_source,
+    }
+
+
 def validate_observation_provenance(
     *,
     scope_type: str | None,
@@ -240,44 +271,39 @@ def validate_observation_provenance(
         from app.services.location import normalize_german_plz
         norm_zip = normalize_german_plz(clean_zip) or clean_zip
 
-        # Require authoritative store location evidence connecting the store to the requested PLZ.
-        # A store ID, requested PLZ, matching PLZ fields, or caller-supplied address strings without
-        # authoritative physical store location evidence fail closed.
-        eff_store_address = (store_address or (parsed_evidence.get("store_address") if parsed_evidence else None) or "").strip()
-
-        if not eff_store_address:
+        # If neither store_address nor parsed_evidence provides an address, fail with missing location evidence
+        ev_address_candidate = (
+            (parsed_evidence.get("store_address") if isinstance(parsed_evidence, dict) else None)
+            or store_address
+            or ""
+        )
+        if not str(ev_address_candidate).strip():
             return (
                 False,
                 "demoted_missing_store_location_evidence",
                 f"Store verification requires authoritative store location evidence connecting store '{clean_store_id}' to requested PLZ '{clean_zip}'",
             )
 
-        m_plz = re.search(r"\b(\d{5})\b", eff_store_address)
-        if not m_plz:
+        # Inconsistency between store_plz and matched_plz in evidence
+        ev_store_plz = str(parsed_evidence.get("store_plz") or "").strip() if isinstance(parsed_evidence, dict) else ""
+        ev_matched_plz = str(parsed_evidence.get("matched_plz") or "").strip() if isinstance(parsed_evidence, dict) else ""
+        if ev_store_plz and ev_matched_plz and ev_store_plz != ev_matched_plz:
             return (
                 False,
-                "demoted_missing_store_location_evidence",
-                f"Store address '{eff_store_address}' lacks a valid 5-digit postal code",
-            )
-        addr_plz = m_plz.group(1)
-        if addr_plz != clean_zip and addr_plz != norm_zip:
-            return (
-                False,
-                "demoted_store_location_mismatch",
-                f"Store address PLZ {addr_plz} does not match requested PLZ {clean_zip}",
+                "demoted_store_evidence_inconsistency",
+                f"Evidence contains inconsistent store_plz '{ev_store_plz}' and matched_plz '{ev_matched_plz}'",
             )
 
-        if parsed_evidence is not None:
-            # Check store_id
+        # Mismatched store_id or retailer in evidence
+        if isinstance(parsed_evidence, dict):
             ev_store_id = str(parsed_evidence.get("store_id") or "").strip()
             if ev_store_id and ev_store_id != clean_store_id:
                 return (
                     False,
                     "demoted_store_evidence_mismatch",
-                    f"Store evidence ID '{ev_store_id}' contradicts store_id '{clean_store_id}'",
+                    f"Store evidence ID '{ev_store_id}' contradicts observation store_id '{clean_store_id}'",
                 )
 
-            # Check retailer_slug
             ev_retailer = str(parsed_evidence.get("retailer_slug") or parsed_evidence.get("retailer") or "").strip().lower()
             if ev_retailer and clean_retailer and ev_retailer != clean_retailer:
                 return (
@@ -286,33 +312,102 @@ def validate_observation_provenance(
                     f"Store evidence retailer '{ev_retailer}' contradicts observation retailer '{clean_retailer}'",
                 )
 
-            # Resolve inconsistency between store_plz and matched_plz
-            ev_store_plz = str(parsed_evidence.get("store_plz") or "").strip()
-            ev_matched_plz = str(parsed_evidence.get("matched_plz") or "").strip()
-            if ev_store_plz and ev_matched_plz and ev_store_plz != ev_matched_plz:
+        # Require authoritative store metadata evidence linking exact store ID, retailer, address, and PLZ.
+        # A caller-supplied store_address or PLZ string alone does not independently establish store verification.
+        if parsed_evidence is None or not isinstance(parsed_evidence, dict) or not parsed_evidence:
+            return (
+                False,
+                "demoted_missing_store_evidence",
+                f"Store verification requires authoritative store metadata evidence linking store '{clean_store_id}' to requested PLZ '{clean_zip}'; caller-supplied address string alone is rejected",
+            )
+
+        # Check store_id in evidence
+        if not ev_store_id:
+            return (
+                False,
+                "demoted_missing_store_id_evidence",
+                "Store evidence lacks store_id",
+            )
+
+        # Require evidence identifying the authoritative source of the store metadata
+        metadata_source = str(
+            parsed_evidence.get("metadata_source")
+            or parsed_evidence.get("source")
+            or parsed_evidence.get("evidence_source")
+            or parsed_evidence.get("store_metadata_source")
+            or ""
+        ).strip()
+        if not metadata_source:
+            return (
+                False,
+                "demoted_missing_authoritative_metadata_source",
+                f"Store evidence for store '{clean_store_id}' lacks identification of authoritative store metadata source",
+            )
+
+        if not clean_retailer:
+            return (
+                False,
+                "demoted_missing_retailer_identity",
+                "Store-scoped verification requires a non-empty retailer identity",
+            )
+        if not ev_retailer:
+            return (
+                False,
+                "demoted_missing_retailer_evidence",
+                "Store evidence lacks retailer identity",
+            )
+
+        # Check store physical address in evidence
+        ev_address = str(parsed_evidence.get("store_address") or "").strip()
+        if not ev_address:
+            return (
+                False,
+                "demoted_missing_store_location_evidence",
+                f"Store evidence lacks physical store address for store '{clean_store_id}'",
+            )
+
+        m_plz = re.search(r"\b(\d{5})\b", ev_address)
+        if not m_plz:
+            return (
+                False,
+                "demoted_missing_store_location_evidence",
+                f"Store evidence address '{ev_address}' lacks a valid 5-digit postal code",
+            )
+        addr_plz = m_plz.group(1)
+        if addr_plz != clean_zip and addr_plz != norm_zip:
+            return (
+                False,
+                "demoted_store_location_mismatch",
+                f"Store evidence address PLZ {addr_plz} does not match requested PLZ {clean_zip}",
+            )
+
+        # If caller also passed store_address, verify consistency with evidence
+        if store_address and str(store_address).strip() != ev_address:
+            caller_m = re.search(r"\b(\d{5})\b", str(store_address))
+            if caller_m and caller_m.group(1) != addr_plz:
                 return (
                     False,
-                    "demoted_store_evidence_inconsistency",
-                    f"Evidence contains inconsistent store_plz '{ev_store_plz}' and matched_plz '{ev_matched_plz}'",
+                    "demoted_store_address_evidence_mismatch",
+                    f"Observation store address PLZ '{caller_m.group(1)}' contradicts authoritative evidence address PLZ '{addr_plz}'",
                 )
 
-            for field_name, field_val in (("store_plz", ev_store_plz), ("matched_plz", ev_matched_plz)):
-                if field_val and field_val != clean_zip and field_val != norm_zip:
-                    return (
-                        False,
-                        "demoted_store_location_mismatch",
-                        f"Store evidence {field_name} '{field_val}' does not match requested PLZ '{clean_zip}'",
-                    )
+        # Check store_plz and matched_plz in evidence
+        ev_store_plz = str(parsed_evidence.get("store_plz") or "").strip()
+        ev_matched_plz = str(parsed_evidence.get("matched_plz") or "").strip()
+        if ev_store_plz and ev_matched_plz and ev_store_plz != ev_matched_plz:
+            return (
+                False,
+                "demoted_store_evidence_inconsistency",
+                f"Evidence contains inconsistent store_plz '{ev_store_plz}' and matched_plz '{ev_matched_plz}'",
+            )
 
-            ev_addr = parsed_evidence.get("store_address")
-            if ev_addr and store_address and str(ev_addr).strip() != str(store_address).strip():
-                ev_addr_m = re.search(r"\b(\d{5})\b", str(ev_addr))
-                if ev_addr_m and addr_plz and ev_addr_m.group(1) != addr_plz:
-                    return (
-                        False,
-                        "demoted_store_address_evidence_mismatch",
-                        f"Evidence store address PLZ '{ev_addr_m.group(1)}' contradicts observation address PLZ '{addr_plz}'",
-                    )
+        for field_name, field_val in (("store_plz", ev_store_plz), ("matched_plz", ev_matched_plz)):
+            if field_val and field_val != clean_zip and field_val != norm_zip:
+                return (
+                    False,
+                    "demoted_store_location_mismatch",
+                    f"Store evidence {field_name} '{field_val}' does not match requested PLZ '{clean_zip}'",
+                )
 
         if raw_method == "marktguru_store_branch_verified" and clean_provider and clean_provider != "marktguru":
             return (

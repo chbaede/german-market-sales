@@ -22,7 +22,11 @@ from app.services.location import (
     get_coordinates_for_plz,
 )
 from app.services.offers import OfferService
-from app.services.price_history import PriceHistoryService, normalize_product_key
+from app.services.price_history import (
+    PriceHistoryService,
+    normalize_product_key,
+    build_store_verification_evidence,
+)
 
 
 def test_territory_separation_berlin_munich_hamburg_cologne():
@@ -171,6 +175,15 @@ def test_price_history_regional_atl_separation():
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
+            verification_evidence=build_store_verification_evidence(
+                store_id="edeka_berlin_1",
+                retailer_slug="edeka",
+                store_address="Invalidenstraße 100, 10115 Berlin",
+                requested_plz="10115",
+                store_name="EDEKA Berlin",
+                metadata_source="edeka_official_market_api",
+                verification_method="store_direct_api",
+            ),
         )
 
         # Record offer for Barilla in Munich 80331 at 0.79 EUR (cheaper in Munich)
@@ -200,6 +213,15 @@ def test_price_history_regional_atl_separation():
             source_provider="edeka-official",
             region_verified=True,
             verification_method="store_direct_api",
+            verification_evidence=build_store_verification_evidence(
+                store_id="edeka_munich_1",
+                retailer_slug="edeka",
+                store_address="Marienplatz 1, 80331 München",
+                requested_plz="80331",
+                store_name="EDEKA Munich",
+                metadata_source="edeka_official_market_api",
+                verification_method="store_direct_api",
+            ),
         )
 
         service.record_offers([offer_berlin], zip_code="10115", recorded_at="2026-05-25T10:00:00")

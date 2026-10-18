@@ -273,6 +273,7 @@ class KauflandProvider(OfferProvider):
                 "matched_plz": clean_zip,
                 "requested_plz": clean_zip,
                 "verification_method": verification_method,
+                "metadata_source": "kaufland_official_store_api",
             }
 
         return Offer(
