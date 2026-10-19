@@ -1185,15 +1185,26 @@ class PriceHistoryService:
 
         Transaction Contract:
         - Atomicity: The entire operation (campaign registry restoration, text cleanup with
-          conservative deduplication, and observation demotion) is guarded by a named
-          SQLite savepoint ('revalidate_historical_records').
+          conservative deduplication, and observation demotion) is guarded by both an in-memory
+          transaction context manager ('campaign_registry_transaction') and a named SQLite
+          savepoint ('revalidate_historical_records').
         - Rollback Guarantee: If any stage fails (campaign restoration, text cleanup, or
           provenance validation), all changes made during the entire operation are rolled
-          back to the savepoint before releasing it, ensuring no partial updates or partial
-          deletes remain, and leaving the caller's outer transaction intact.
+          back:
+          * In-memory campaign registries are restored to their pre-call snapshot with zero
+            partially restored or inconsistent entries.
+          * SQLite changes are rolled back to the savepoint before releasing it, ensuring no
+            partial updates or partial deletes remain, leaving the caller's outer transaction intact.
         - Idempotency: Running repeated revalidations produces consistent results with 0
           unnecessary updates or deletions.
         """
+        from app.providers.marktguru import campaign_registry_transaction
+
+        with campaign_registry_transaction():
+            return PriceHistoryService._do_revalidate_historical_records_conn(conn)
+
+    @staticmethod
+    def _do_revalidate_historical_records_conn(conn: sqlite3.Connection) -> int:
         try:
             conn.execute("SAVEPOINT revalidate_historical_records")
         except Exception as exc:
@@ -1394,13 +1405,17 @@ class PriceHistoryService:
                             if not c_source_url or c_source_url != u_source_url:
                                 continue
 
-                            # 4. Scope-specific identity matching
+                            # 4. Provider identity check:
+                            # If provider identity is missing on either side or differs, preserve the record
+                            if bool(u_provider) != bool(c_provider) or (u_provider and c_provider and u_provider != c_provider):
+                                continue
+
+                            # 5. Scope-specific identity matching
                             if u_scope == "store":
-                                if c_store_id != u_store_id or c_zip != u_zip:
+                                if not c_store_id or c_store_id != u_store_id or not c_zip or c_zip != u_zip:
                                     continue
-                                if u_region_id and c_region_id and u_region_id != c_region_id:
-                                    continue
-                                if u_provider and c_provider and u_provider != c_provider:
+                                # If campaign identity is missing on either side or differs, preserve record
+                                if bool(u_region_id) != bool(c_region_id) or (u_region_id and c_region_id and u_region_id != c_region_id):
                                     continue
                                 is_confident_duplicate = True
                                 break
@@ -1408,17 +1423,13 @@ class PriceHistoryService:
                             elif u_scope == "region":
                                 if not c_region_id or c_region_id != u_region_id:
                                     continue
-                                if c_zip != u_zip:
-                                    continue
-                                if u_provider and c_provider and u_provider != c_provider:
+                                if not c_zip or c_zip != u_zip:
                                     continue
                                 is_confident_duplicate = True
                                 break
 
                             elif u_scope == "nationwide":
                                 if not c_region_id or c_region_id != u_region_id:
-                                    continue
-                                if u_provider and c_provider and u_provider != c_provider:
                                     continue
                                 is_confident_duplicate = True
                                 break

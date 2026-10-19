@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 import os
 import re
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -753,15 +756,92 @@ _VERIFIED_NATIONWIDE_REGISTRY: dict[str, dict[str, Any]] = {}
 VERIFIED_CAMPAIGN_REGISTRY = MappingProxyType(_VERIFIED_CAMPAIGN_REGISTRY)
 VERIFIED_NATIONWIDE_REGISTRY = MappingProxyType(_VERIFIED_NATIONWIDE_REGISTRY)
 
+_REGISTRY_LOCK = threading.RLock()
+_stage_state = threading.local()
+
+
+def snapshot_campaign_registries() -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    Returns an independent deep snapshot of in-memory campaign registries.
+    """
+    with _REGISTRY_LOCK:
+        return (
+            copy.deepcopy(_VERIFIED_CAMPAIGN_REGISTRY),
+            copy.deepcopy(_VERIFIED_NATIONWIDE_REGISTRY),
+        )
+
+
+def restore_campaign_registries(snapshot: tuple[dict[str, Any], dict[str, Any]]) -> None:
+    """
+    Restores in-memory campaign registries from a previous snapshot under lock.
+    """
+    with _REGISTRY_LOCK:
+        camp_snap, nat_snap = snapshot
+        _VERIFIED_CAMPAIGN_REGISTRY.clear()
+        _VERIFIED_CAMPAIGN_REGISTRY.update(copy.deepcopy(camp_snap))
+        _VERIFIED_NATIONWIDE_REGISTRY.clear()
+        _VERIFIED_NATIONWIDE_REGISTRY.update(copy.deepcopy(nat_snap))
+
+
+@contextmanager
+def campaign_registry_transaction():
+    """
+    Transactional context manager for in-memory campaign registry changes.
+
+    1. Takes a thread-safe snapshot before mutations.
+    2. Stages all validated campaign additions into a thread-local staging layer.
+       Read operations during the transaction check staged additions before base registries.
+    3. On successful block completion, publishes staged changes atomically to the registries.
+    4. On exception or failure, discards all staged changes and restores registries to pre-call snapshot.
+    """
+    with _REGISTRY_LOCK:
+        camp_snapshot = copy.deepcopy(_VERIFIED_CAMPAIGN_REGISTRY)
+        nat_snapshot = copy.deepcopy(_VERIFIED_NATIONWIDE_REGISTRY)
+
+        prev_staged_camp = getattr(_stage_state, "staged_campaigns", None)
+        prev_staged_nat = getattr(_stage_state, "staged_nationwide", None)
+
+        staged_camp: dict[str, dict[str, Any]] = {}
+        staged_nat: dict[str, dict[str, Any]] = {}
+
+        _stage_state.staged_campaigns = staged_camp
+        _stage_state.staged_nationwide = staged_nat
+
+        committed = False
+        try:
+            yield
+            _VERIFIED_CAMPAIGN_REGISTRY.update(staged_camp)
+            _VERIFIED_NATIONWIDE_REGISTRY.update(staged_nat)
+            committed = True
+        finally:
+            _stage_state.staged_campaigns = prev_staged_camp
+            _stage_state.staged_nationwide = prev_staged_nat
+
+            if not committed:
+                _VERIFIED_CAMPAIGN_REGISTRY.clear()
+                _VERIFIED_CAMPAIGN_REGISTRY.update(camp_snapshot)
+                _VERIFIED_NATIONWIDE_REGISTRY.clear()
+                _VERIFIED_NATIONWIDE_REGISTRY.update(nat_snapshot)
+
 
 def _purge_nationwide_campaign(clean_id: str) -> None:
-    for k in (clean_id, f"national_flyer:{clean_id}", f"national_campaign:{clean_id}"):
-        _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+    with _REGISTRY_LOCK:
+        staged = getattr(_stage_state, "staged_nationwide", None)
+        if staged is not None:
+            for k in (clean_id, f"national_flyer:{clean_id}", f"national_campaign:{clean_id}"):
+                staged.pop(k, None)
+        for k in (clean_id, f"national_flyer:{clean_id}", f"national_campaign:{clean_id}"):
+            _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
 
 
 def _purge_regional_campaign(clean_id: str) -> None:
-    for k in (clean_id, f"flyer:{clean_id}", f"campaign:{clean_id}"):
-        _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+    with _REGISTRY_LOCK:
+        staged = getattr(_stage_state, "staged_campaigns", None)
+        if staged is not None:
+            for k in (clean_id, f"flyer:{clean_id}", f"campaign:{clean_id}"):
+                staged.pop(k, None)
+        for k in (clean_id, f"flyer:{clean_id}", f"campaign:{clean_id}"):
+            _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
 
 
 def register_verified_campaign(
@@ -780,9 +860,12 @@ def register_verified_campaign(
 
     norm_id = str(campaign_id).strip().casefold()
     clean_id = norm_id.removeprefix("flyer:").removeprefix("campaign:")
-    _VERIFIED_CAMPAIGN_REGISTRY[norm_id] = validated
-    _VERIFIED_CAMPAIGN_REGISTRY[clean_id] = validated
-    _VERIFIED_CAMPAIGN_REGISTRY[f"flyer:{clean_id}"] = validated
+    with _REGISTRY_LOCK:
+        staged = getattr(_stage_state, "staged_campaigns", None)
+        target = staged if staged is not None else _VERIFIED_CAMPAIGN_REGISTRY
+        target[norm_id] = validated
+        target[clean_id] = validated
+        target[f"flyer:{clean_id}"] = validated
     return True
 
 
@@ -801,9 +884,12 @@ def register_verified_nationwide_campaign(
 
     norm_id = str(campaign_id).strip().casefold()
     clean_id = norm_id.removeprefix("national_flyer:").removeprefix("national_campaign:")
-    _VERIFIED_NATIONWIDE_REGISTRY[norm_id] = validated
-    _VERIFIED_NATIONWIDE_REGISTRY[clean_id] = validated
-    _VERIFIED_NATIONWIDE_REGISTRY[f"national_flyer:{clean_id}"] = validated
+    with _REGISTRY_LOCK:
+        staged = getattr(_stage_state, "staged_nationwide", None)
+        target = staged if staged is not None else _VERIFIED_NATIONWIDE_REGISTRY
+        target[norm_id] = validated
+        target[clean_id] = validated
+        target[f"national_flyer:{clean_id}"] = validated
     return True
 
 
@@ -831,10 +917,15 @@ def get_verified_campaign_plzs(campaign_or_region_id: str | None) -> set[str] | 
     # 2. Verified campaign distribution manifest registry
     clean_id = key_lower.removeprefix("flyer:").removeprefix("campaign:")
     ev_data = None
-    for lookup in (key, key_lower, clean_id):
-        if lookup in _VERIFIED_CAMPAIGN_REGISTRY:
-            ev_data = _VERIFIED_CAMPAIGN_REGISTRY[lookup]
-            break
+    with _REGISTRY_LOCK:
+        staged = getattr(_stage_state, "staged_campaigns", None)
+        for lookup in (key, key_lower, clean_id):
+            if staged is not None and lookup in staged:
+                ev_data = staged[lookup]
+                break
+            if lookup in _VERIFIED_CAMPAIGN_REGISTRY:
+                ev_data = _VERIFIED_CAMPAIGN_REGISTRY[lookup]
+                break
 
     if not ev_data or not isinstance(ev_data, dict):
         return None
@@ -873,7 +964,11 @@ def is_verified_nationwide_campaign(campaign_or_flyer_id: str | None) -> bool:
     key = str(campaign_or_flyer_id).strip().casefold()
     clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
 
-    ev_data = _VERIFIED_NATIONWIDE_REGISTRY.get(key) or _VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
+    with _REGISTRY_LOCK:
+        staged = getattr(_stage_state, "staged_nationwide", None)
+        ev_data = (
+            (staged.get(key) or staged.get(clean_id)) if staged is not None else None
+        ) or _VERIFIED_NATIONWIDE_REGISTRY.get(key) or _VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
     if not ev_data:
         return False
 
@@ -907,8 +1002,12 @@ def get_verified_nationwide_evidence(campaign_id: str | None) -> dict[str, Any] 
         return None
     key = str(campaign_id).strip().casefold()
     clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
-    data = _VERIFIED_NATIONWIDE_REGISTRY.get(key) or _VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
-    return dict(data) if data else None
+    with _REGISTRY_LOCK:
+        staged = getattr(_stage_state, "staged_nationwide", None)
+        data = (
+            (staged.get(key) or staged.get(clean_id)) if staged is not None else None
+        ) or _VERIFIED_NATIONWIDE_REGISTRY.get(key) or _VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
+        return dict(data) if data else None
 
 
 def get_verified_campaign_evidence(campaign_id: str | None) -> dict[str, Any] | None:
@@ -919,18 +1018,29 @@ def get_verified_campaign_evidence(campaign_id: str | None) -> dict[str, Any] | 
         return None
     key = str(campaign_id).strip().casefold()
     clean_id = key.removeprefix("flyer:").removeprefix("campaign:")
-    data = _VERIFIED_CAMPAIGN_REGISTRY.get(key) or _VERIFIED_CAMPAIGN_REGISTRY.get(clean_id)
-    return dict(data) if data else None
+    with _REGISTRY_LOCK:
+        staged = getattr(_stage_state, "staged_campaigns", None)
+        data = (
+            (staged.get(key) or staged.get(clean_id)) if staged is not None else None
+        ) or _VERIFIED_CAMPAIGN_REGISTRY.get(key) or _VERIFIED_CAMPAIGN_REGISTRY.get(clean_id)
+        return dict(data) if data else None
 
 
 def clear_campaign_registries() -> None:
     """
     Clears in-memory dynamic campaign registries for test isolation and restart simulation.
     """
-    _VERIFIED_CAMPAIGN_REGISTRY.clear()
-    _VERIFIED_NATIONWIDE_REGISTRY.clear()
-    _DYNAMIC_INGESTION_CATALOG.clear()
-    _DYNAMIC_APPROVED_ROOTS.clear()
+    with _REGISTRY_LOCK:
+        staged_camp = getattr(_stage_state, "staged_campaigns", None)
+        if staged_camp is not None:
+            staged_camp.clear()
+        staged_nat = getattr(_stage_state, "staged_nationwide", None)
+        if staged_nat is not None:
+            staged_nat.clear()
+        _VERIFIED_CAMPAIGN_REGISTRY.clear()
+        _VERIFIED_NATIONWIDE_REGISTRY.clear()
+        _DYNAMIC_INGESTION_CATALOG.clear()
+        _DYNAMIC_APPROVED_ROOTS.clear()
 
 
 def _extract_verified_campaign_plzs(flyer_data: dict, flyer_id: str | None) -> tuple[set[str] | None, str | None]:

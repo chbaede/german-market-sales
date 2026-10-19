@@ -6068,6 +6068,327 @@ def test_revalidation_savepoint_atomicity_and_stage1_failure_rollback(tmp_path, 
         conn.execute("RELEASE SAVEPOINT test_caller_sp")
 
 
+def test_partial_progress_campaign_registry_failure_restores_database_and_memory(tmp_path, monkeypatch):
+    """
+    Requirement 3:
+    - One campaign registers successfully, then a later registration fails.
+    - Database is fully restored to pre-call state.
+    - In-memory campaign registries are also restored (camp_1 is not left registered).
+    - Caller's connection and existing outer transaction remain usable.
+    - Successful retry works, and repeated successful runs are idempotent.
+    """
+    import app.providers.marktguru as mg_mod
+    mg_mod.clear_campaign_registries()
+    mg_mod.clear_dynamic_approved_roots()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="test_partial_camp.db")
+
+    art_file_1 = tmp_path / "art_nat_1.json"
+    art_file_1.write_text(
+        json.dumps({
+            "campaign_id": "nat_1",
+            "source_url": "https://edeka.de/nat1",
+            "scope": "nationwide",
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+        }),
+        encoding="utf-8",
+    )
+    mg_mod.ingest_trusted_evidence_artifact(art_file_1)
+
+    art_file_2 = tmp_path / "art_nat_2.json"
+    art_file_2.write_text(
+        json.dumps({
+            "campaign_id": "nat_2",
+            "source_url": "https://edeka.de/nat2",
+            "scope": "nationwide",
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+        }),
+        encoding="utf-8",
+    )
+    mg_mod.ingest_trusted_evidence_artifact(art_file_2)
+
+    valid_ev = {
+        "campaign_id": "nat_1",
+        "retailer": "edeka",
+        "campaign_title": "Nationwide Promo",
+        "scope": "nationwide",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://edeka.de/nat1",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_nat1",
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_file_1),
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+    valid_ev_2 = dict(valid_ev, campaign_id="nat_2", source_url="https://edeka.de/nat2", source_record_id="rec_nat2", evidence_artifact_path=str(art_file_2))
+
+    with service._get_connection() as conn:
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
+            VALUES (1, 'edeka', 'EDEKA', 'butter-$#2028;1', 'Butter$#2028;1', 1.49, '2026-06-01T10:00:00', '10115')
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS verified_campaign_registry (
+                campaign_id TEXT PRIMARY KEY,
+                scope_type TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT INTO verified_campaign_registry (campaign_id, scope_type, evidence_json, created_at)
+            VALUES ('national_campaign:nat_1', 'nationwide', ?, '2026-06-01T10:00:00')
+        """, (json.dumps(valid_ev),))
+        conn.execute("""
+            INSERT INTO verified_campaign_registry (campaign_id, scope_type, evidence_json, created_at)
+            VALUES ('national_campaign:nat_2', 'nationwide', ?, '2026-06-01T10:00:00')
+        """, (json.dumps(valid_ev_2),))
+        conn.commit()
+
+        # Pre-call registry state
+        assert "nat_1" not in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+        assert "nat_2" not in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+
+        # Setup monkeypatch: nat_1 succeeds, nat_2 raises exception
+        orig_reg = mg_mod.register_verified_nationwide_campaign
+        def flaky_register(campaign_id, evidence=None):
+            if "nat_2" in str(campaign_id):
+                raise RuntimeError("Simulated crash on nat_2 registration!")
+            return orig_reg(campaign_id, evidence)
+
+        monkeypatch.setattr(mg_mod, "register_verified_nationwide_campaign", flaky_register)
+
+        with pytest.raises(RuntimeError, match="Simulated crash on nat_2"):
+            service._revalidate_historical_records_conn(conn)
+
+        # 1. Verify in-memory registries are restored: nat_1 must NOT be registered!
+        assert "nat_1" not in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+        assert "national_campaign:nat_1" not in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+        assert "nat_2" not in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+
+        # 2. Verify database is restored
+        row = conn.execute("SELECT id, product_key, title FROM price_history WHERE id = 1").fetchone()
+        assert row["title"] == "Butter$#2028;1"
+
+        # 3. Verify caller's connection and existing outer transaction remain usable
+        conn.execute("SAVEPOINT caller_tx")
+        conn.execute("INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code) VALUES (99, 'edeka', 'EDEKA', 'test', 'Test', 1.0, '2026-06-01T10:00:00', '10115')")
+        conn.execute("ROLLBACK TO SAVEPOINT caller_tx")
+        conn.execute("RELEASE SAVEPOINT caller_tx")
+
+        # 4. Successful retry works after fixing the flaky condition
+        monkeypatch.setattr(mg_mod, "register_verified_nationwide_campaign", orig_reg)
+        demoted = service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        assert "nat_1" in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+        assert "nat_2" in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+
+        # 5. Repeated runs are idempotent
+        demoted2 = service._revalidate_historical_records_conn(conn)
+        assert demoted2 == 0
+
+
+def test_partial_progress_provenance_failure_rolls_back_cleanup_and_registries(tmp_path, monkeypatch):
+    """
+    Requirement 3:
+    - Text cleanup modifies or deletes a candidate row in Stage 2,
+      then Stage 3 provenance validation raises an exception.
+    - Database is fully restored to its pre-call state (deleted row restored, modified row restored).
+    - In-memory campaign registries restored to pre-call state.
+    - Caller connection and outer transaction remain usable.
+    - Successful retry works, and repeated successful runs are idempotent.
+    """
+    import app.providers.marktguru as mg_mod
+    mg_mod.clear_campaign_registries()
+    mg_mod.clear_dynamic_approved_roots()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="test_provenance_fail.db")
+    butter_clean_key = normalize_product_key("Butter 250g")
+
+    art_file_stage3 = tmp_path / "art_stage3.json"
+    art_file_stage3.write_text(
+        json.dumps({
+            "campaign_id": "nat_stage3",
+            "source_url": "https://edeka.de/nat3",
+            "scope": "nationwide",
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+        }),
+        encoding="utf-8",
+    )
+    mg_mod.ingest_trusted_evidence_artifact(art_file_stage3)
+
+    valid_ev = {
+        "campaign_id": "nat_stage3",
+        "retailer": "edeka",
+        "campaign_title": "Nationwide Stage 3",
+        "scope": "nationwide",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://edeka.de/nat3",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_nat3",
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_file_stage3),
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    with service._get_connection() as conn:
+        # Pre-seed campaign in verified_campaign_registry
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS verified_campaign_registry (
+                campaign_id TEXT PRIMARY KEY,
+                scope_type TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT INTO verified_campaign_registry (campaign_id, scope_type, evidence_json, created_at)
+            VALUES ('national_campaign:nat_stage3', 'nationwide', ?, '2026-06-01T10:00:00')
+        """, (json.dumps(valid_ev),))
+
+        # Row 1: Corrupted row with $#2028; that would be pruned because row 2 exists
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
+            VALUES (1, 'edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/butter')
+        """)
+        # Row 2: Clean candidate row
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
+            VALUES (2, 'edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/butter')
+        """, (butter_clean_key,))
+        # Row 3: A row marked region_verified = 1 that will trigger provenance validation in Stage 3
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, region_verified, verification_method)
+            VALUES (3, 'edeka', 'EDEKA', 'kaese-100g', 'Kaese 100g', 2.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/kaese', 1, 'official_store_api')
+        """)
+        conn.commit()
+
+        # Monkeypatch validate_observation_provenance to raise an exception during Stage 3
+        import app.services.price_history as ph_mod
+        orig_validate = ph_mod.validate_observation_provenance
+        def failing_validate(*args, **kwargs):
+            raise RuntimeError("Stage 3 Provenance Failure!")
+
+        monkeypatch.setattr(ph_mod, "validate_observation_provenance", failing_validate)
+
+        with pytest.raises(RuntimeError, match="Stage 3 Provenance Failure"):
+            service._revalidate_historical_records_conn(conn)
+
+        # 1. Verify database is fully restored to pre-call state:
+        # Row 1 must still exist and still have corrupted text!
+        r1 = conn.execute("SELECT id, product_key, title FROM price_history WHERE id = 1").fetchone()
+        assert r1 is not None, "Row 1 was pruned despite rollback!"
+        assert r1["title"] == "Butter$#2028;250g"
+        assert r1["product_key"] == "butter-$#2028;250g"
+
+        r2 = conn.execute("SELECT id, product_key, title FROM price_history WHERE id = 2").fetchone()
+        assert r2 is not None
+
+        r3 = conn.execute("SELECT id, region_verified FROM price_history WHERE id = 3").fetchone()
+        assert r3["region_verified"] == 1
+
+        # 2. Verify in-memory campaign registry was restored: nat_stage3 must NOT be registered!
+        assert "nat_stage3" not in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+
+        # 3. Caller connection and transaction usable
+        conn.execute("SAVEPOINT test_sp")
+        conn.execute("RELEASE SAVEPOINT test_sp")
+
+        # 4. Successful retry works after fixing failure
+        monkeypatch.setattr(ph_mod, "validate_observation_provenance", orig_validate)
+        service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        # After successful revalidation:
+        # Row 1 pruned as duplicate
+        assert conn.execute("SELECT id FROM price_history WHERE id = 1").fetchone() is None
+        # nat_stage3 registered
+        assert "nat_stage3" in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+
+        # 5. Repeated run is idempotent
+        demoted_again = service._revalidate_historical_records_conn(conn)
+        assert demoted_again == 0
+
+
+def test_conservative_deduplication_missing_provider_or_campaign_on_either_side(tmp_path):
+    """
+    Requirement 2:
+    - If provider or campaign identity is missing on either side, preserve the record.
+    - Test store, regional, and nationwide scopes where provider is present on one row but missing on the other.
+    - Test store scope where campaign identity is present on one row but missing on the other.
+    - Verify all rows survive and corrupted titles are safely updated non-destructively.
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="test_missing_identities.db")
+    butter_key = normalize_product_key("Butter 250g")
+
+    with service._get_connection() as conn:
+        # 1. Store: Provider present on row 1, missing on row 2
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_provider)
+            VALUES (1, 'edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'store_1', 'store', 'https://edeka.de/butter', 'edeka_api')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_provider)
+            VALUES (2, 'edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'store_1', 'store', 'https://edeka.de/butter', NULL)
+        """, (butter_key,))
+
+        # 2. Store: Campaign ID present on row 3, missing on row 4
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (3, 'edeka', 'EDEKA', 'milch-$#2028;1l', 'Milch$#2028;1L', 0.99, '2026-06-01T10:00:00', '10115', 'store_1', 'store', 'https://edeka.de/milch', 'promo_store_1')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (4, 'edeka', 'EDEKA', ?, 'Milch 1L', 0.99, '2026-06-01T10:00:00', '10115', 'store_1', 'store', 'https://edeka.de/milch', NULL)
+        """, (normalize_product_key("Milch 1L"),))
+
+        # 3. Region: Provider present on row 5, missing on row 6
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, scope_type, source_region_id, source_url, source_provider)
+            VALUES (5, 'edeka', 'EDEKA', 'kaese-$#2028;200g', 'Kaese$#2028;200g', 2.49, '2026-06-01T10:00:00', '10115', 'region', 'reg_camp_1', 'https://edeka.de/kaese', 'marktguru')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, scope_type, source_region_id, source_url, source_provider)
+            VALUES (6, 'edeka', 'EDEKA', ?, 'Kaese 200g', 2.49, '2026-06-01T10:00:00', '10115', 'region', 'reg_camp_1', 'https://edeka.de/kaese', NULL)
+        """, (normalize_product_key("Kaese 200g"),))
+
+        # 4. Nationwide: Provider present on row 7, missing on row 8
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, source_provider)
+            VALUES (7, 'edeka', 'EDEKA', 'quark-$#2028;250g', 'Quark$#2028;250g', 0.89, '2026-06-01T10:00:00', 'nationwide', 'national_campaign:nat_p', 'https://edeka.de/quark', 'marktguru')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, source_provider)
+            VALUES (8, 'edeka', 'EDEKA', ?, 'Quark 250g', 0.89, '2026-06-01T10:00:00', 'nationwide', 'national_campaign:nat_p', 'https://edeka.de/quark', NULL)
+        """, (normalize_product_key("Quark 250g"),))
+
+        conn.commit()
+
+        service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        # All 8 rows must survive because identity is ambiguous
+        for row_id in range(1, 9):
+            r = conn.execute("SELECT id, title, product_key FROM price_history WHERE id = ?", (row_id,)).fetchone()
+            assert r is not None, f"Row {row_id} was improperly pruned!"
+            assert "$#" not in r["title"]
+            assert "$#" not in r["product_key"]
+
+
+
 
 
 
