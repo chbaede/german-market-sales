@@ -5541,12 +5541,12 @@ def test_database_cleanup_transactional_savepoint_and_collision_handling(tmp_pat
         # 2. An existing cleaned record for the SAME store_id edeka_10115 at 10115
         # 3. A record with a legitimate year 2028
         conn.execute("""
-            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
-            VALUES ('edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de')
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES ('edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de', 'store_camp_10115')
         """)
         conn.execute("""
-            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
-            VALUES ('edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de')
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES ('edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de', 'store_camp_10115')
         """, (butter_clean_key,))
         conn.execute("""
             INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
@@ -6261,13 +6261,13 @@ def test_partial_progress_provenance_failure_rolls_back_cleanup_and_registries(t
 
         # Row 1: Corrupted row with $#2028; that would be pruned because row 2 exists
         conn.execute("""
-            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
-            VALUES (1, 'edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/butter')
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (1, 'edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/butter', 'store_camp_10115')
         """)
         # Row 2: Clean candidate row
         conn.execute("""
-            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
-            VALUES (2, 'edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/butter')
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (2, 'edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/butter', 'store_camp_10115')
         """, (butter_clean_key,))
         # Row 3: A row marked region_verified = 1 that will trigger provenance validation in Stage 3
         conn.execute("""
@@ -6386,6 +6386,264 @@ def test_conservative_deduplication_missing_provider_or_campaign_on_either_side(
             assert r is not None, f"Row {row_id} was improperly pruned!"
             assert "$#" not in r["title"]
             assert "$#" not in r["product_key"]
+
+
+def test_store_scope_deduplication_campaign_identity_policy(tmp_path):
+    """
+    Policy Enforcement: Campaign identity (source_region_id) is mandatory
+    for destructive deduplication in store scope.
+
+    Cases evaluated:
+    - Case 1: Both source_region_id missing (NULL/empty) -> both survive.
+    - Case 2: Row 1 has campaign ID, Row 2 has NULL -> both survive.
+    - Case 3: Row 1 has NULL, Row 2 has campaign ID -> both survive.
+    - Case 4: Row 1 has 'camp1', Row 2 has 'camp2' (conflicting) -> both survive.
+    - Case 5: Both have matching non-empty 'camp1' -> duplicate pruned.
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="test_store_dedup_policy.db")
+    butter_clean = normalize_product_key("Butter 250g")
+
+    with service._get_connection() as conn:
+        # Case 1: Both missing source_region_id (IDs 101, 102)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (101, 'edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/b', NULL)
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (102, 'edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/b', NULL)
+        """, (butter_clean,))
+
+        # Case 2: Candidate 201 has camp1, existing 202 has NULL
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (201, 'edeka', 'EDEKA', 'milch-$#2028;1l', 'Milch$#2028;1L', 1.19, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/m', 'camp1')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (202, 'edeka', 'EDEKA', ?, 'Milch 1L', 1.19, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/m', NULL)
+        """, (normalize_product_key("Milch 1L"),))
+
+        # Case 3: Candidate 301 has NULL, existing 302 has camp1
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (301, 'edeka', 'EDEKA', 'brot-$#2028;500g', 'Brot$#2028;500g', 2.29, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/br', NULL)
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (302, 'edeka', 'EDEKA', ?, 'Brot 500g', 2.29, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/br', 'camp1')
+        """, (normalize_product_key("Brot 500g"),))
+
+        # Case 4: Candidate 401 has camp1, existing 402 has camp2 (conflicting)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (401, 'edeka', 'EDEKA', 'kaese-$#2028;150g', 'Kaese$#2028;150g', 2.49, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/k', 'camp1')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (402, 'edeka', 'EDEKA', ?, 'Kaese 150g', 2.49, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/k', 'camp2')
+        """, (normalize_product_key("Kaese 150g"),))
+
+        # Case 5: Candidate 501 has camp1, existing 502 has matching camp1 -> confident duplicate pruned!
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (501, 'edeka', 'EDEKA', 'joghurt-$#2028;500g', 'Joghurt$#2028;500g', 0.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/j', 'camp1')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (502, 'edeka', 'EDEKA', ?, 'Joghurt 500g', 0.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de/j', 'camp1')
+        """, (normalize_product_key("Joghurt 500g"),))
+
+        conn.commit()
+
+        service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        # Case 1 verification: Both 101 and 102 must survive
+        r101 = conn.execute("SELECT id, title, product_key FROM price_history WHERE id = 101").fetchone()
+        r102 = conn.execute("SELECT id, title, product_key FROM price_history WHERE id = 102").fetchone()
+        assert r101 is not None, "Row 101 was improperly pruned when both campaign IDs were missing!"
+        assert r102 is not None, "Row 102 disappeared!"
+        assert r101["title"] == "Butter 250g"
+        assert r101["product_key"] == butter_clean
+
+        # Case 2 verification: Both 201 and 202 must survive
+        assert conn.execute("SELECT id FROM price_history WHERE id = 201").fetchone() is not None
+        assert conn.execute("SELECT id FROM price_history WHERE id = 202").fetchone() is not None
+
+        # Case 3 verification: Both 301 and 302 must survive
+        assert conn.execute("SELECT id FROM price_history WHERE id = 301").fetchone() is not None
+        assert conn.execute("SELECT id FROM price_history WHERE id = 302").fetchone() is not None
+
+        # Case 4 verification: Both 401 and 402 must survive
+        assert conn.execute("SELECT id FROM price_history WHERE id = 401").fetchone() is not None
+        assert conn.execute("SELECT id FROM price_history WHERE id = 402").fetchone() is not None
+
+        # Case 5 verification: 501 is confident duplicate and MUST be pruned, 502 survives
+        assert conn.execute("SELECT id FROM price_history WHERE id = 501").fetchone() is None, "Row 501 was not pruned despite identical confident store identity!"
+        assert conn.execute("SELECT id FROM price_history WHERE id = 502").fetchone() is not None
+
+
+def test_registry_transaction_atomicity_and_direct_concurrent_reads(tmp_path):
+    """
+    Requirement 2: Audit registry transaction atomicity.
+    - Purges during transaction do not expose partially updated state to concurrent readers.
+    - Readers in other threads cannot observe partial publication of staged additions.
+    - Direct reads on VERIFIED_CAMPAIGN_REGISTRY and VERIFIED_NATIONWIDE_REGISTRY in the
+      transaction thread observe staged state and staged purges.
+    - Transaction rollback completely restores pre-call state across all threads.
+    - Nested transactions merge into outer staging without leaking to concurrent threads.
+    """
+    import threading
+    import app.providers.marktguru as mg_mod
+
+    mg_mod.clear_campaign_registries()
+    mg_mod.clear_dynamic_approved_roots()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    # 1. Create and ingest initial committed campaign
+    art_initial = tmp_path / "art_initial.json"
+    art_initial.write_text(
+        json.dumps({
+            "campaign_id": "initial_camp",
+            "source_url": "https://www.marktguru.de/leaflets/init",
+            "scope": "region",
+            "covered_plzs": ["10115", "10117"],
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_campaign_distribution_manifest",
+        }),
+        encoding="utf-8",
+    )
+    mg_mod.ingest_trusted_evidence_artifact(art_initial)
+
+    ev_initial = {
+        "campaign_id": "initial_camp",
+        "retailer": "edeka",
+        "campaign_title": "Initial Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/init",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_init",
+        "covered_plzs": ["10115", "10117"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_initial),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+    assert mg_mod.register_verified_campaign("initial_camp", ["10115", "10117"], ev_initial)
+
+    # Verify committed state directly and via public proxy
+    assert "initial_camp" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY["initial_camp"]["campaign_id"] == "initial_camp"
+    assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY.get("initial_camp") is not None
+
+    # Setup artifact for staged campaign
+    art_staged = tmp_path / "art_staged.json"
+    art_staged.write_text(
+        json.dumps({
+            "campaign_id": "staged_camp",
+            "source_url": "https://www.marktguru.de/leaflets/staged",
+            "scope": "region",
+            "covered_plzs": ["10115"],
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_campaign_distribution_manifest",
+        }),
+        encoding="utf-8",
+    )
+    mg_mod.ingest_trusted_evidence_artifact(art_staged)
+
+    ev_staged = {
+        "campaign_id": "staged_camp",
+        "retailer": "edeka",
+        "campaign_title": "Staged Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/staged",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_staged",
+        "covered_plzs": ["10115"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_staged),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    concurrent_sees_staged = []
+    concurrent_sees_initial_during_purge = []
+
+    def check_concurrent():
+        # A concurrent reader thread must NOT see staged addition and MUST still see initial_camp
+        has_staged = "staged_camp" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY or mg_mod.VERIFIED_CAMPAIGN_REGISTRY.get("staged_camp") is not None
+        concurrent_sees_staged.append(has_staged)
+        has_initial = "initial_camp" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY and mg_mod.VERIFIED_CAMPAIGN_REGISTRY.get("initial_camp") is not None
+        concurrent_sees_initial_during_purge.append(has_initial)
+
+    # 2. Test Transaction Rollback & Concurrency Isolation
+    try:
+        with mg_mod.campaign_registry_transaction():
+            # In transaction thread: stage a new campaign
+            assert mg_mod.register_verified_campaign("staged_camp", ["10115"], ev_staged)
+
+            # Purge the initial campaign
+            mg_mod._purge_regional_campaign("initial_camp")
+
+            # In transaction thread:
+            # - staged_camp MUST be visible
+            assert "staged_camp" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY["staged_camp"]["campaign_id"] == "staged_camp"
+            assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY.get("staged_camp") is not None
+
+            # - initial_camp MUST NOT be visible (purged)
+            assert "initial_camp" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY.get("initial_camp") is None
+            with pytest.raises(KeyError):
+                _ = mg_mod.VERIFIED_CAMPAIGN_REGISTRY["initial_camp"]
+
+            # Run concurrent thread inspection
+            t = threading.Thread(target=check_concurrent)
+            t.start()
+            t.join()
+
+            # Now raise an exception to force rollback
+            raise RuntimeError("Forced Rollback Test")
+    except RuntimeError as e:
+        assert "Forced Rollback Test" in str(e)
+
+    # Verify concurrent thread did not observe uncommitted changes
+    assert concurrent_sees_staged == [False], "Concurrent thread observed uncommitted staged addition!"
+    assert concurrent_sees_initial_during_purge == [True], "Concurrent thread observed uncommitted purge!"
+
+    # Verify that rollback restored pre-call state completely
+    assert "initial_camp" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY["initial_camp"]["campaign_id"] == "initial_camp"
+    assert "staged_camp" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY.get("staged_camp") is None
+
+    # 3. Test Successful Transaction Commit (including nested transaction)
+    with mg_mod.campaign_registry_transaction():
+        assert mg_mod.register_verified_campaign("staged_camp", ["10115"], ev_staged)
+
+        # Nested transaction
+        with mg_mod.campaign_registry_transaction():
+            mg_mod._purge_regional_campaign("initial_camp")
+            assert "initial_camp" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+        # Outer transaction still sees purge from inner transaction
+        assert "initial_camp" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        assert "staged_camp" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+    # After outermost commit:
+    # initial_camp is purged, staged_camp is published
+    assert "initial_camp" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY.get("initial_camp") is None
+    assert "staged_camp" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY["staged_camp"]["campaign_id"] == "staged_camp"
+
 
 
 

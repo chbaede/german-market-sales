@@ -1330,7 +1330,8 @@ class PriceHistoryService:
                     #    - Non-empty, matching store_id on both rows
                     #    - Non-empty, matching zip_code on both rows
                     #    - Non-empty, matching source_url on both rows
-                    #    - Non-conflicting source_region_id (if present on either)
+                    #    - Mandatory campaign identity: non-empty, matching source_region_id on both rows
+                    #      (If campaign identity is missing on either record or conflicting, both observations are preserved)
                     #    - Non-conflicting source_provider (if present on either)
                     #    - Verification protection: c_verified >= u_verified (never prune verified for unverified)
                     #
@@ -1361,11 +1362,11 @@ class PriceHistoryService:
                     u_verified = int(u_row["region_verified"] or 0) if has_region_verified else 0
                     u_source_url = str(u_row["source_url"] or "").strip() if has_source_url else ""
 
-                    # Missing source_url means observation identity cannot be established confidently
-                    can_evaluate_duplicate = bool(u_source_url) and (
+                    # Missing source_url or missing campaign identity means observation identity cannot be established confidently
+                    can_evaluate_duplicate = bool(u_source_url) and bool(u_region_id) and (
                         (u_scope == "store" and bool(u_store_id) and bool(u_zip))
-                        or (u_scope == "region" and bool(u_region_id) and bool(u_zip))
-                        or (u_scope == "nationwide" and bool(u_region_id))
+                        or (u_scope == "region" and bool(u_zip))
+                        or (u_scope == "nationwide")
                     )
 
                     if can_evaluate_duplicate:
@@ -1414,8 +1415,9 @@ class PriceHistoryService:
                             if u_scope == "store":
                                 if not c_store_id or c_store_id != u_store_id or not c_zip or c_zip != u_zip:
                                     continue
-                                # If campaign identity is missing on either side or differs, preserve record
-                                if bool(u_region_id) != bool(c_region_id) or (u_region_id and c_region_id and u_region_id != c_region_id):
+                                # Policy: Campaign identity (source_region_id) is mandatory for store-scope deduplication.
+                                # If missing on either record or conflicting, preserve both observations non-destructively.
+                                if not c_region_id or c_region_id != u_region_id:
                                     continue
                                 is_confident_duplicate = True
                                 break

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -752,12 +753,113 @@ def validate_regional_campaign_evidence(
 _VERIFIED_CAMPAIGN_REGISTRY: dict[str, dict[str, Any]] = {}
 _VERIFIED_NATIONWIDE_REGISTRY: dict[str, dict[str, Any]] = {}
 
-# Read-only public mappings preventing callers from bypassing validation
-VERIFIED_CAMPAIGN_REGISTRY = MappingProxyType(_VERIFIED_CAMPAIGN_REGISTRY)
-VERIFIED_NATIONWIDE_REGISTRY = MappingProxyType(_VERIFIED_NATIONWIDE_REGISTRY)
-
 _REGISTRY_LOCK = threading.RLock()
 _stage_state = threading.local()
+
+
+class _ThreadSafeRegistryProxy(Mapping):
+    """
+    Thread-safe, read-only mapping proxy over internal campaign registries.
+    - Read operations during an active campaign_registry_transaction check the
+      calling thread's staged additions and staged purges before falling back
+      to the published base registry.
+    - Concurrent reader threads observe the committed registry without seeing
+      partial staging or uncommitted purges.
+    - Prevents arbitrary caller mutation (read-only mapping).
+    """
+
+    def __init__(self, registry: dict[str, dict[str, Any]], stage_attr: str, purge_attr: str):
+        self._registry = registry
+        self._stage_attr = stage_attr
+        self._purge_attr = purge_attr
+
+    def __getitem__(self, key: str) -> dict[str, Any]:
+        with _REGISTRY_LOCK:
+            purged = getattr(_stage_state, self._purge_attr, None)
+            norm_k = str(key).strip().casefold()
+            clean_k = norm_k.removeprefix("national_flyer:").removeprefix("national_campaign:").removeprefix("flyer:").removeprefix("campaign:")
+            if purged:
+                for k in (key, norm_k, clean_k):
+                    if k in purged:
+                        raise KeyError(key)
+            staged = getattr(_stage_state, self._stage_attr, None)
+            if staged:
+                for k in (key, norm_k, clean_k):
+                    if k in staged:
+                        return staged[k]
+            for k in (key, norm_k, clean_k):
+                if k in self._registry:
+                    return self._registry[k]
+            raise KeyError(key)
+
+    def __iter__(self):
+        with _REGISTRY_LOCK:
+            staged = getattr(_stage_state, self._stage_attr, None)
+            purged = getattr(_stage_state, self._purge_attr, None)
+            keys = set(self._registry.keys())
+            if purged:
+                keys -= set(purged)
+            if staged:
+                keys |= set(staged.keys())
+            return iter(keys)
+
+    def __len__(self) -> int:
+        with _REGISTRY_LOCK:
+            staged = getattr(_stage_state, self._stage_attr, None)
+            purged = getattr(_stage_state, self._purge_attr, None)
+            keys = set(self._registry.keys())
+            if purged:
+                keys -= set(purged)
+            if staged:
+                keys |= set(staged.keys())
+            return len(keys)
+
+    def __contains__(self, key: object) -> bool:
+        with _REGISTRY_LOCK:
+            purged = getattr(_stage_state, self._purge_attr, None)
+            norm_k = str(key).strip().casefold()
+            clean_k = norm_k.removeprefix("national_flyer:").removeprefix("national_campaign:").removeprefix("flyer:").removeprefix("campaign:")
+            if purged:
+                for k in (key, norm_k, clean_k):
+                    if k in purged:
+                        return False
+            staged = getattr(_stage_state, self._stage_attr, None)
+            if staged:
+                for k in (key, norm_k, clean_k):
+                    if k in staged:
+                        return True
+            return (
+                key in self._registry
+                or norm_k in self._registry
+                or clean_k in self._registry
+            )
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __repr__(self) -> str:
+        with _REGISTRY_LOCK:
+            staged = getattr(_stage_state, self._stage_attr, None)
+            purged = getattr(_stage_state, self._purge_attr, None)
+            d = dict(self._registry)
+            if purged:
+                for k in purged:
+                    d.pop(k, None)
+            if staged:
+                d.update(staged)
+            return f"mappingproxy({d!r})"
+
+
+# Read-only public mappings preventing callers from bypassing validation
+VERIFIED_CAMPAIGN_REGISTRY = _ThreadSafeRegistryProxy(
+    _VERIFIED_CAMPAIGN_REGISTRY, "staged_campaigns", "purged_campaigns"
+)
+VERIFIED_NATIONWIDE_REGISTRY = _ThreadSafeRegistryProxy(
+    _VERIFIED_NATIONWIDE_REGISTRY, "staged_nationwide", "purged_nationwide"
+)
 
 
 def snapshot_campaign_registries() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -790,34 +892,64 @@ def campaign_registry_transaction():
 
     1. Takes a thread-safe snapshot before mutations.
     2. Stages all validated campaign additions into a thread-local staging layer.
-       Read operations during the transaction check staged additions before base registries.
-    3. On successful block completion, publishes staged changes atomically to the registries.
-    4. On exception or failure, discards all staged changes and restores registries to pre-call snapshot.
+       Purges during the transaction are also staged without mutating base registries.
+       Read operations during the transaction check staged additions/purges before base registries.
+    3. On successful block completion, publishes staged changes atomically under lock.
+    4. On exception or failure, discards all staged additions and purges, restoring registries
+       to the exact pre-call snapshot.
     """
     with _REGISTRY_LOCK:
         camp_snapshot = copy.deepcopy(_VERIFIED_CAMPAIGN_REGISTRY)
         nat_snapshot = copy.deepcopy(_VERIFIED_NATIONWIDE_REGISTRY)
 
-        prev_staged_camp = getattr(_stage_state, "staged_campaigns", None)
-        prev_staged_nat = getattr(_stage_state, "staged_nationwide", None)
+    prev_staged_camp = getattr(_stage_state, "staged_campaigns", None)
+    prev_staged_nat = getattr(_stage_state, "staged_nationwide", None)
+    prev_purged_camp = getattr(_stage_state, "purged_campaigns", None)
+    prev_purged_nat = getattr(_stage_state, "purged_nationwide", None)
 
-        staged_camp: dict[str, dict[str, Any]] = {}
-        staged_nat: dict[str, dict[str, Any]] = {}
+    staged_camp: dict[str, dict[str, Any]] = {}
+    staged_nat: dict[str, dict[str, Any]] = {}
+    purged_camp: set[str] = set()
+    purged_nat: set[str] = set()
 
-        _stage_state.staged_campaigns = staged_camp
-        _stage_state.staged_nationwide = staged_nat
+    _stage_state.staged_campaigns = staged_camp
+    _stage_state.staged_nationwide = staged_nat
+    _stage_state.purged_campaigns = purged_camp
+    _stage_state.purged_nationwide = purged_nat
 
-        committed = False
-        try:
-            yield
-            _VERIFIED_CAMPAIGN_REGISTRY.update(staged_camp)
-            _VERIFIED_NATIONWIDE_REGISTRY.update(staged_nat)
+    committed = False
+    try:
+        yield
+        with _REGISTRY_LOCK:
+            if prev_staged_camp is not None:
+                # In a nested transaction: merge into outer staging layer
+                if prev_purged_camp is not None:
+                    for k in purged_camp:
+                        prev_staged_camp.pop(k, None)
+                        prev_purged_camp.add(k)
+                if prev_purged_nat is not None:
+                    for k in purged_nat:
+                        prev_staged_nat.pop(k, None)
+                        prev_purged_nat.add(k)
+                prev_staged_camp.update(staged_camp)
+                prev_staged_nat.update(staged_nat)
+            else:
+                # Outermost transaction: apply all purges and additions atomically
+                for k in purged_camp:
+                    _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+                for k in purged_nat:
+                    _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+                _VERIFIED_CAMPAIGN_REGISTRY.update(staged_camp)
+                _VERIFIED_NATIONWIDE_REGISTRY.update(staged_nat)
             committed = True
-        finally:
-            _stage_state.staged_campaigns = prev_staged_camp
-            _stage_state.staged_nationwide = prev_staged_nat
+    finally:
+        _stage_state.staged_campaigns = prev_staged_camp
+        _stage_state.staged_nationwide = prev_staged_nat
+        _stage_state.purged_campaigns = prev_purged_camp
+        _stage_state.purged_nationwide = prev_purged_nat
 
-            if not committed:
+        if not committed and prev_staged_camp is None:
+            with _REGISTRY_LOCK:
                 _VERIFIED_CAMPAIGN_REGISTRY.clear()
                 _VERIFIED_CAMPAIGN_REGISTRY.update(camp_snapshot)
                 _VERIFIED_NATIONWIDE_REGISTRY.clear()
@@ -826,22 +958,30 @@ def campaign_registry_transaction():
 
 def _purge_nationwide_campaign(clean_id: str) -> None:
     with _REGISTRY_LOCK:
+        keys_to_purge = (clean_id, f"national_flyer:{clean_id}", f"national_campaign:{clean_id}")
         staged = getattr(_stage_state, "staged_nationwide", None)
-        if staged is not None:
-            for k in (clean_id, f"national_flyer:{clean_id}", f"national_campaign:{clean_id}"):
+        purged = getattr(_stage_state, "purged_nationwide", None)
+        if staged is not None and purged is not None:
+            for k in keys_to_purge:
                 staged.pop(k, None)
-        for k in (clean_id, f"national_flyer:{clean_id}", f"national_campaign:{clean_id}"):
-            _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+                purged.add(k)
+        else:
+            for k in keys_to_purge:
+                _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
 
 
 def _purge_regional_campaign(clean_id: str) -> None:
     with _REGISTRY_LOCK:
+        keys_to_purge = (clean_id, f"flyer:{clean_id}", f"campaign:{clean_id}")
         staged = getattr(_stage_state, "staged_campaigns", None)
-        if staged is not None:
-            for k in (clean_id, f"flyer:{clean_id}", f"campaign:{clean_id}"):
+        purged = getattr(_stage_state, "purged_campaigns", None)
+        if staged is not None and purged is not None:
+            for k in keys_to_purge:
                 staged.pop(k, None)
-        for k in (clean_id, f"flyer:{clean_id}", f"campaign:{clean_id}"):
-            _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+                purged.add(k)
+        else:
+            for k in keys_to_purge:
+                _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
 
 
 def register_verified_campaign(
@@ -862,10 +1002,19 @@ def register_verified_campaign(
     clean_id = norm_id.removeprefix("flyer:").removeprefix("campaign:")
     with _REGISTRY_LOCK:
         staged = getattr(_stage_state, "staged_campaigns", None)
-        target = staged if staged is not None else _VERIFIED_CAMPAIGN_REGISTRY
-        target[norm_id] = validated
-        target[clean_id] = validated
-        target[f"flyer:{clean_id}"] = validated
+        purged = getattr(_stage_state, "purged_campaigns", None)
+        if staged is not None:
+            if purged is not None:
+                purged.discard(norm_id)
+                purged.discard(clean_id)
+                purged.discard(f"flyer:{clean_id}")
+            staged[norm_id] = validated
+            staged[clean_id] = validated
+            staged[f"flyer:{clean_id}"] = validated
+        else:
+            _VERIFIED_CAMPAIGN_REGISTRY[norm_id] = validated
+            _VERIFIED_CAMPAIGN_REGISTRY[clean_id] = validated
+            _VERIFIED_CAMPAIGN_REGISTRY[f"flyer:{clean_id}"] = validated
     return True
 
 
@@ -886,10 +1035,19 @@ def register_verified_nationwide_campaign(
     clean_id = norm_id.removeprefix("national_flyer:").removeprefix("national_campaign:")
     with _REGISTRY_LOCK:
         staged = getattr(_stage_state, "staged_nationwide", None)
-        target = staged if staged is not None else _VERIFIED_NATIONWIDE_REGISTRY
-        target[norm_id] = validated
-        target[clean_id] = validated
-        target[f"national_flyer:{clean_id}"] = validated
+        purged = getattr(_stage_state, "purged_nationwide", None)
+        if staged is not None:
+            if purged is not None:
+                purged.discard(norm_id)
+                purged.discard(clean_id)
+                purged.discard(f"national_flyer:{clean_id}")
+            staged[norm_id] = validated
+            staged[clean_id] = validated
+            staged[f"national_flyer:{clean_id}"] = validated
+        else:
+            _VERIFIED_NATIONWIDE_REGISTRY[norm_id] = validated
+            _VERIFIED_NATIONWIDE_REGISTRY[clean_id] = validated
+            _VERIFIED_NATIONWIDE_REGISTRY[f"national_flyer:{clean_id}"] = validated
     return True
 
 
@@ -918,13 +1076,9 @@ def get_verified_campaign_plzs(campaign_or_region_id: str | None) -> set[str] | 
     clean_id = key_lower.removeprefix("flyer:").removeprefix("campaign:")
     ev_data = None
     with _REGISTRY_LOCK:
-        staged = getattr(_stage_state, "staged_campaigns", None)
         for lookup in (key, key_lower, clean_id):
-            if staged is not None and lookup in staged:
-                ev_data = staged[lookup]
-                break
-            if lookup in _VERIFIED_CAMPAIGN_REGISTRY:
-                ev_data = _VERIFIED_CAMPAIGN_REGISTRY[lookup]
+            if lookup in VERIFIED_CAMPAIGN_REGISTRY:
+                ev_data = VERIFIED_CAMPAIGN_REGISTRY[lookup]
                 break
 
     if not ev_data or not isinstance(ev_data, dict):
@@ -965,10 +1119,7 @@ def is_verified_nationwide_campaign(campaign_or_flyer_id: str | None) -> bool:
     clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
 
     with _REGISTRY_LOCK:
-        staged = getattr(_stage_state, "staged_nationwide", None)
-        ev_data = (
-            (staged.get(key) or staged.get(clean_id)) if staged is not None else None
-        ) or _VERIFIED_NATIONWIDE_REGISTRY.get(key) or _VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
+        ev_data = VERIFIED_NATIONWIDE_REGISTRY.get(key) or VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
     if not ev_data:
         return False
 
@@ -1003,10 +1154,7 @@ def get_verified_nationwide_evidence(campaign_id: str | None) -> dict[str, Any] 
     key = str(campaign_id).strip().casefold()
     clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
     with _REGISTRY_LOCK:
-        staged = getattr(_stage_state, "staged_nationwide", None)
-        data = (
-            (staged.get(key) or staged.get(clean_id)) if staged is not None else None
-        ) or _VERIFIED_NATIONWIDE_REGISTRY.get(key) or _VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
+        data = VERIFIED_NATIONWIDE_REGISTRY.get(key) or VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
         return dict(data) if data else None
 
 
@@ -1019,10 +1167,7 @@ def get_verified_campaign_evidence(campaign_id: str | None) -> dict[str, Any] | 
     key = str(campaign_id).strip().casefold()
     clean_id = key.removeprefix("flyer:").removeprefix("campaign:")
     with _REGISTRY_LOCK:
-        staged = getattr(_stage_state, "staged_campaigns", None)
-        data = (
-            (staged.get(key) or staged.get(clean_id)) if staged is not None else None
-        ) or _VERIFIED_CAMPAIGN_REGISTRY.get(key) or _VERIFIED_CAMPAIGN_REGISTRY.get(clean_id)
+        data = VERIFIED_CAMPAIGN_REGISTRY.get(key) or VERIFIED_CAMPAIGN_REGISTRY.get(clean_id)
         return dict(data) if data else None
 
 
@@ -1037,6 +1182,12 @@ def clear_campaign_registries() -> None:
         staged_nat = getattr(_stage_state, "staged_nationwide", None)
         if staged_nat is not None:
             staged_nat.clear()
+        purged_camp = getattr(_stage_state, "purged_campaigns", None)
+        if purged_camp is not None:
+            purged_camp.clear()
+        purged_nat = getattr(_stage_state, "purged_nationwide", None)
+        if purged_nat is not None:
+            purged_nat.clear()
         _VERIFIED_CAMPAIGN_REGISTRY.clear()
         _VERIFIED_NATIONWIDE_REGISTRY.clear()
         _DYNAMIC_INGESTION_CATALOG.clear()
