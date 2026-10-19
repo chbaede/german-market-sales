@@ -5541,16 +5541,16 @@ def test_database_cleanup_transactional_savepoint_and_collision_handling(tmp_pat
         # 2. An existing cleaned record for the SAME store_id edeka_10115 at 10115
         # 3. A record with a legitimate year 2028
         conn.execute("""
-            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
-            VALUES ('edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store')
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
+            VALUES ('edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de')
         """)
         conn.execute("""
-            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
-            VALUES ('edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store')
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
+            VALUES ('edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de')
         """, (butter_clean_key,))
         conn.execute("""
-            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
-            VALUES ('edeka', 'EDEKA', 'wandkalender-2028', 'Wandkalender 2028', 9.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store')
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
+            VALUES ('edeka', 'EDEKA', 'wandkalender-2028', 'Wandkalender 2028', 9.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store', 'https://edeka.de')
         """)
         conn.commit()
 
@@ -5839,6 +5839,233 @@ def test_historical_cleanup_transaction_rollback_on_midway_failure(tmp_path, mon
         # Verify savepoint stack is completely clean by issuing a new savepoint
         conn.execute("SAVEPOINT test_can_create_new_savepoint")
         conn.execute("RELEASE SAVEPOINT test_can_create_new_savepoint")
+
+
+def test_nationwide_deduplication_requires_matching_campaign_id(tmp_path):
+    """
+    Requirement 1:
+    - In app/services/price_history.py, nationwide collision check requires matching non-empty source_region_id.
+    - Do not treat records from different nationwide campaigns as duplicates merely because product key,
+      retailer, timestamp, and price match.
+    - Require matching, non-empty campaign identity before deleting a nationwide record.
+    - If campaign identity is missing or ambiguous, preserve the row and update it non-destructively.
+    - Add regression tests with two different nationwide campaign IDs, identical prices and timestamps,
+      and missing or identical source URLs.
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="test_nationwide_dedup.db")
+    butter_clean_key = normalize_product_key("Butter 250g")
+
+    with service._get_connection() as conn:
+        # Case 1: Two different nationwide campaigns with identical source URLs, timestamps, prices
+        # Both must survive (one updated non-destructively, one unchanged)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (1, 'edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', 'nationwide', 'nat_camp_A', 'https://edeka.de/nat', 0, 'unverified_legacy')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (2, 'edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', 'nationwide', 'nat_camp_B', 'https://edeka.de/nat', 0, 'unverified_legacy')
+        """, (butter_clean_key,))
+
+        # Case 2: Two different nationwide campaigns with missing source URLs
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (3, 'kaufland', 'Kaufland', 'milch-$#2028;1l', 'Milch$#2028;1L', 0.99, '2026-06-01T10:00:00', 'nationwide', 'nat_camp_X', NULL, 0, 'unverified_legacy')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (4, 'kaufland', 'Kaufland', ?, 'Milch 1L', 0.99, '2026-06-01T10:00:00', 'nationwide', 'nat_camp_Y', NULL, 0, 'unverified_legacy')
+        """, (normalize_product_key("Milch 1L"),))
+
+        # Case 3: Missing/empty campaign identity on nationwide rows
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (5, 'edeka', 'EDEKA', 'kaese-$#2028;200g', 'Kaese$#2028;200g', 2.49, '2026-06-01T10:00:00', 'nationwide', NULL, 'https://edeka.de/kaese', 0, 'unverified_legacy')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (6, 'edeka', 'EDEKA', ?, 'Kaese 200g', 2.49, '2026-06-01T10:00:00', 'nationwide', '', 'https://edeka.de/kaese', 0, 'unverified_legacy')
+        """, (normalize_product_key("Kaese 200g"),))
+
+        # Case 4: Same nationwide campaign, but missing source_url on one of them
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (7, 'edeka', 'EDEKA', 'brot-$#2028;500g', 'Brot$#2028;500g', 1.79, '2026-06-01T10:00:00', 'nationwide', 'nat_camp_SAME', NULL, 0, 'unverified_legacy')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (8, 'edeka', 'EDEKA', ?, 'Brot 500g', 1.79, '2026-06-01T10:00:00', 'nationwide', 'nat_camp_SAME', 'https://edeka.de/brot', 0, 'unverified_legacy')
+        """, (normalize_product_key("Brot 500g"),))
+
+        # Case 5: Matching campaign identity, matching source_url, matching prices/dates -> duplicate safely pruned
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (9, 'edeka', 'EDEKA', 'quark-$#2028;250g', 'Quark$#2028;250g', 0.89, '2026-06-01T10:00:00', 'nationwide', 'nat_camp_PRUNE', 'https://edeka.de/quark', 0, 'unverified_legacy')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, scope_type, source_region_id, source_url, region_verified, verification_method)
+            VALUES (10, 'edeka', 'EDEKA', ?, 'Quark 250g', 0.89, '2026-06-01T10:00:00', 'nationwide', 'nat_camp_PRUNE', 'https://edeka.de/quark', 0, 'unverified_legacy')
+        """, (normalize_product_key("Quark 250g"),))
+
+        conn.commit()
+
+        service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        # Check results:
+        # Case 1: Both rows 1 & 2 survive
+        r1 = conn.execute("SELECT id, title, product_key FROM price_history WHERE id = 1").fetchone()
+        r2 = conn.execute("SELECT id, title, product_key FROM price_history WHERE id = 2").fetchone()
+        assert r1 is not None and r2 is not None
+        assert r1["title"] == "Butter 250g"
+        assert r1["product_key"] == butter_clean_key
+
+        # Case 2: Both rows 3 & 4 survive
+        r3 = conn.execute("SELECT id FROM price_history WHERE id = 3").fetchone()
+        r4 = conn.execute("SELECT id FROM price_history WHERE id = 4").fetchone()
+        assert r3 is not None and r4 is not None
+
+        # Case 3: Both rows 5 & 6 survive
+        r5 = conn.execute("SELECT id FROM price_history WHERE id = 5").fetchone()
+        r6 = conn.execute("SELECT id FROM price_history WHERE id = 6").fetchone()
+        assert r5 is not None and r6 is not None
+
+        # Case 4: Both rows 7 & 8 survive
+        r7 = conn.execute("SELECT id FROM price_history WHERE id = 7").fetchone()
+        r8 = conn.execute("SELECT id FROM price_history WHERE id = 8").fetchone()
+        assert r7 is not None and r8 is not None
+
+        # Case 5: Row 9 was deleted because row 10 is an exact confident duplicate
+        r9 = conn.execute("SELECT id FROM price_history WHERE id = 9").fetchone()
+        r10 = conn.execute("SELECT id FROM price_history WHERE id = 10").fetchone()
+        assert r9 is None
+        assert r10 is not None
+
+
+def test_conservative_deduplication_missing_source_url_conflicting_campaign_and_verification(tmp_path):
+    """
+    Requirement 2:
+    - Conservative deduplication:
+      - Preserve records whenever observation identity cannot be established confidently.
+      - Missing source URLs on same-store records: both survive non-destructively.
+      - Same-store records with different campaign identities or different providers: both survive non-destructively.
+      - Verified observation is never removed in favor of an unverified one.
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="test_conservative_dedup.db")
+    clean_key = normalize_product_key("Joghurt 500g")
+
+    with service._get_connection() as conn:
+        # Case A: Missing source URLs on same-store records
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
+            VALUES (1, 'edeka', 'EDEKA', 'joghurt-$#2028;500g', 'Joghurt$#2028;500g', 1.29, '2026-06-01T10:00:00', '10115', 'store_1', 'store', NULL)
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url)
+            VALUES (2, 'edeka', 'EDEKA', ?, 'Joghurt 500g', 1.29, '2026-06-01T10:00:00', '10115', 'store_1', 'store', NULL)
+        """, (clean_key,))
+
+        # Case B: Same-store records with different source_region_id
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (3, 'edeka', 'EDEKA', 'joghurt-$#2028;500g', 'Joghurt$#2028;500g', 1.29, '2026-06-01T11:00:00', '10115', 'store_1', 'store', 'https://edeka.de/offer', 'promo_A')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_region_id)
+            VALUES (4, 'edeka', 'EDEKA', ?, 'Joghurt 500g', 1.29, '2026-06-01T11:00:00', '10115', 'store_1', 'store', 'https://edeka.de/offer', 'promo_B')
+        """, (clean_key,))
+
+        # Case C: Same-store records with different source_provider
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_provider)
+            VALUES (5, 'edeka', 'EDEKA', 'joghurt-$#2028;500g', 'Joghurt$#2028;500g', 1.29, '2026-06-01T12:00:00', '10115', 'store_1', 'store', 'https://edeka.de/offer', 'edeka_api')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, source_provider)
+            VALUES (6, 'edeka', 'EDEKA', ?, 'Joghurt 500g', 1.29, '2026-06-01T12:00:00', '10115', 'store_1', 'store', 'https://edeka.de/offer', 'marktguru')
+        """, (clean_key,))
+
+        # Case D: Conflicting verification state: Corrupted row is verified (1), candidate row is unverified (0)
+        # Verified observation must NEVER be deleted in favor of unverified candidate!
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, region_verified, verification_method, store_name, store_address, verification_evidence)
+            VALUES (7, 'edeka', 'EDEKA', 'joghurt-$#2028;500g', 'Joghurt$#2028;500g', 1.29, '2026-06-01T13:00:00', '10115', 'store_1', 'store', 'https://edeka.de/offer', 1, 'official_store_api', 'EDEKA City', 'Chausseestr. 1, 10115 Berlin', '{"source":"official_store_api"}')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type, source_url, region_verified, verification_method)
+            VALUES (8, 'edeka', 'EDEKA', ?, 'Joghurt 500g', 1.29, '2026-06-01T13:00:00', '10115', 'store_1', 'store', 'https://edeka.de/offer', 0, 'unverified_legacy')
+        """, (clean_key,))
+
+        conn.commit()
+
+        service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        # Assertions
+        # Case A: Both survive
+        assert conn.execute("SELECT id FROM price_history WHERE id = 1").fetchone() is not None
+        assert conn.execute("SELECT id FROM price_history WHERE id = 2").fetchone() is not None
+
+        # Case B: Both survive
+        assert conn.execute("SELECT id FROM price_history WHERE id = 3").fetchone() is not None
+        assert conn.execute("SELECT id FROM price_history WHERE id = 4").fetchone() is not None
+
+        # Case C: Both survive
+        assert conn.execute("SELECT id FROM price_history WHERE id = 5").fetchone() is not None
+        assert conn.execute("SELECT id FROM price_history WHERE id = 6").fetchone() is not None
+
+        # Case D: Verified row 7 must NEVER be deleted!
+        r7 = conn.execute("SELECT id, title, product_key FROM price_history WHERE id = 7").fetchone()
+        r8 = conn.execute("SELECT id, title, product_key FROM price_history WHERE id = 8").fetchone()
+        assert r7 is not None, "Verified record was unexpectedly pruned!"
+        assert r8 is not None
+        assert r7["title"] == "Joghurt 500g"
+        assert r7["product_key"] == clean_key
+
+
+def test_revalidation_savepoint_atomicity_and_stage1_failure_rollback(tmp_path, monkeypatch):
+    """
+    Requirement 3:
+    - Atomicity across entire revalidation operation.
+    - If Stage 1 fails (e.g. error loading verified campaign registry), savepoint
+      revalidate_historical_records rolls back all changes.
+    - Caller's connection and existing transaction state remain healthy.
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="test_reval_atomicity.db")
+
+    with service._get_connection() as conn:
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
+            VALUES (1, 'edeka', 'EDEKA', 'butter-$#2028;1', 'Butter$#2028;1', 1.49, '2026-06-01T10:00:00', '10115')
+        """)
+        conn.commit()
+
+        # Monkeypatch Marktguru register function to simulate failure during Stage 1
+        import app.providers.marktguru as mg_mod
+        def broken_register(*args, **kwargs):
+            raise RuntimeError("Stage 1 Campaign Registry Crash!")
+
+        conn.execute("""
+            INSERT INTO verified_campaign_registry (campaign_id, scope_type, evidence_json, created_at)
+            VALUES ('nat_fail', 'nationwide', '{"type": "national"}', '2026-06-01T10:00:00')
+        """)
+        conn.commit()
+
+        monkeypatch.setattr(mg_mod, "register_verified_nationwide_campaign", broken_register)
+
+        with pytest.raises(RuntimeError, match="Stage 1 Campaign Registry Crash"):
+            service._revalidate_historical_records_conn(conn)
+
+        # Confirm rollback: DB is intact
+        row = conn.execute("SELECT id, product_key, title FROM price_history WHERE id = 1").fetchone()
+        assert row["title"] == "Butter$#2028;1"
+        assert row["product_key"] == "butter-$#2028;1"
+
+        # Confirm savepoint was released and connection can execute subsequent savepoints / transactions
+        conn.execute("SAVEPOINT test_caller_sp")
+        conn.execute("UPDATE price_history SET title = 'Test' WHERE id = 1")
+        conn.execute("ROLLBACK TO SAVEPOINT test_caller_sp")
+        conn.execute("RELEASE SAVEPOINT test_caller_sp")
 
 
 

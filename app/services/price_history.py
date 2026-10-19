@@ -1179,56 +1179,79 @@ class PriceHistoryService:
 
     @staticmethod
     def _revalidate_historical_records_conn(conn: sqlite3.Connection) -> int:
-        # 1. Reload verified campaigns from verified_campaign_registry table into Marktguru registries
+        """
+        Idempotently audits all historical rows in price_history against strict provenance
+        and sanitizes legacy text corruption.
+
+        Transaction Contract:
+        - Atomicity: The entire operation (campaign registry restoration, text cleanup with
+          conservative deduplication, and observation demotion) is guarded by a named
+          SQLite savepoint ('revalidate_historical_records').
+        - Rollback Guarantee: If any stage fails (campaign restoration, text cleanup, or
+          provenance validation), all changes made during the entire operation are rolled
+          back to the savepoint before releasing it, ensuring no partial updates or partial
+          deletes remain, and leaving the caller's outer transaction intact.
+        - Idempotency: Running repeated revalidations produces consistent results with 0
+          unnecessary updates or deletions.
+        """
         try:
-            v_rows = conn.execute("SELECT campaign_id, scope_type, evidence_json FROM verified_campaign_registry").fetchall()
-            from app.providers.marktguru import register_verified_campaign, register_verified_nationwide_campaign
-
-            for v_row in v_rows:
-                c_id = v_row["campaign_id"]
-                s_type = v_row["scope_type"]
-                try:
-                    ev_data = json.loads(v_row["evidence_json"])
-                except Exception as exc:
-                    logger.warning("Malformed JSON in verified_campaign_registry for campaign '%s': %s", c_id, exc)
-                    continue
-
-                if s_type == "nationwide":
-                    success = register_verified_nationwide_campaign(c_id, ev_data)
-                    if not success:
-                        logger.warning("Failed to restore verified nationwide campaign '%s': invalid evidence", c_id)
-                elif s_type == "region":
-                    plzs = ev_data.get("covered_plzs") or ev_data.get("validZipCodes") or []
-                    success = register_verified_campaign(c_id, plzs, ev_data)
-                    if not success:
-                        logger.warning("Failed to restore verified regional campaign '%s': invalid evidence", c_id)
-        except sqlite3.OperationalError as exc:
-            logger.debug("verified_campaign_registry table not available during revalidation: %s", exc)
+            conn.execute("SAVEPOINT revalidate_historical_records")
         except Exception as exc:
-            logger.warning("Unexpected error reading verified_campaign_registry: %s", exc)
-
-        # 2. Clean legacy corrupted titles or product keys (e.g. &#x2028;, $#2028;, \u2028)
-        cursor = conn.execute("PRAGMA table_info(price_history)")
-        col_names = {row["name"] for row in cursor.fetchall()}
-        has_store_id = "store_id" in col_names
-        has_zip_code = "zip_code" in col_names
-        has_scope_type = "scope_type" in col_names
-        has_source_region_id = "source_region_id" in col_names
-        has_region_verified = "region_verified" in col_names
-        has_source_url = "source_url" in col_names
-
-        cleaned_count = 0
-        pruned_count = 0
-        unclean_count = 0
+            logger.error("Failed to acquire savepoint revalidate_historical_records: %s", exc)
+            raise
 
         try:
-            conn.execute("SAVEPOINT text_cleanup")
+            # 1. Reload verified campaigns from verified_campaign_registry table into Marktguru registries
+            try:
+                v_rows = conn.execute("SELECT campaign_id, scope_type, evidence_json FROM verified_campaign_registry").fetchall()
+                from app.providers.marktguru import register_verified_campaign, register_verified_nationwide_campaign
+
+                for v_row in v_rows:
+                    c_id = v_row["campaign_id"]
+                    s_type = v_row["scope_type"]
+                    try:
+                        ev_data = json.loads(v_row["evidence_json"])
+                    except Exception as exc:
+                        logger.warning("Malformed JSON in verified_campaign_registry for campaign '%s': %s", c_id, exc)
+                        continue
+
+                    if s_type == "nationwide":
+                        success = register_verified_nationwide_campaign(c_id, ev_data)
+                        if not success:
+                            logger.warning("Failed to restore verified nationwide campaign '%s': invalid evidence", c_id)
+                    elif s_type == "region":
+                        plzs = ev_data.get("covered_plzs") or ev_data.get("validZipCodes") or []
+                        success = register_verified_campaign(c_id, plzs, ev_data)
+                        if not success:
+                            logger.warning("Failed to restore verified regional campaign '%s': invalid evidence", c_id)
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    logger.debug("verified_campaign_registry table not available during revalidation: %s", exc)
+                else:
+                    raise
+
+            # 2. Clean legacy corrupted titles or product keys (e.g. &#x2028;, $#2028;, \u2028)
+            cursor = conn.execute("PRAGMA table_info(price_history)")
+            col_names = {row["name"] for row in cursor.fetchall()}
+            has_store_id = "store_id" in col_names
+            has_zip_code = "zip_code" in col_names
+            has_scope_type = "scope_type" in col_names
+            has_source_region_id = "source_region_id" in col_names
+            has_source_provider = "source_provider" in col_names
+            has_region_verified = "region_verified" in col_names
+            has_source_url = "source_url" in col_names
+
+            cleaned_count = 0
+            pruned_count = 0
+            unclean_count = 0
+
             from app.providers.base import clean_text
 
             store_id_sel = "store_id" if has_store_id else "NULL as store_id"
             zip_sel = "zip_code" if has_zip_code else "NULL as zip_code"
             scope_sel = "scope_type" if has_scope_type else "NULL as scope_type"
             region_sel = "source_region_id" if has_source_region_id else "NULL as source_region_id"
+            provider_sel = "source_provider" if has_source_provider else "NULL as source_provider"
             verified_sel = "region_verified" if has_region_verified else "0 as region_verified"
             source_url_sel = "source_url" if has_source_url else "NULL as source_url"
 
@@ -1236,7 +1259,7 @@ class PriceHistoryService:
                 f"""
                 SELECT id, title, brand, product_key, retailer_slug, recorded_at, price,
                        {store_id_sel}, {zip_sel}, {scope_sel}, {region_sel},
-                       {verified_sel}, {source_url_sel}
+                       {provider_sel}, {verified_sel}, {source_url_sel}
                 FROM price_history
                 WHERE title LIKE '%&#x2028%'
                    OR title LIKE '%&#2028%'
@@ -1288,13 +1311,34 @@ class PriceHistoryService:
 
                 if cleaned_title != orig_title or new_key != orig_key:
                     # Determine whether an exact redundant duplicate clone of this observation
-                    # already exists under the cleaned product_key for the exact same store / scope / location.
+                    # already exists under the cleaned product_key for the exact same observation identity.
                     #
-                    # CRITICAL: Do NOT delete rows across different stores or regions!
-                    # Different store_ids, different zip_codes, or different scope identities
-                    # represent independent price observations and must always be preserved.
-                    # Non-destructive handling (UPDATE) is strictly preferred whenever duplicate
-                    # identity cannot be established with 100% certainty.
+                    # REQUIRED OBSERVATION IDENTITY RULES:
+                    # 1. Store Records:
+                    #    - Same retailer_slug, recorded_at, price, and cleaned product_key
+                    #    - Non-empty, matching store_id on both rows
+                    #    - Non-empty, matching zip_code on both rows
+                    #    - Non-empty, matching source_url on both rows
+                    #    - Non-conflicting source_region_id (if present on either)
+                    #    - Non-conflicting source_provider (if present on either)
+                    #    - Verification protection: c_verified >= u_verified (never prune verified for unverified)
+                    #
+                    # 2. Regional Records:
+                    #    - Same retailer_slug, recorded_at, price, and cleaned product_key
+                    #    - Non-empty, matching source_region_id (campaign / flyer ID) on both rows
+                    #    - Non-empty, matching zip_code on both rows
+                    #    - Non-empty, matching source_url on both rows
+                    #    - Non-conflicting source_provider (if present on either)
+                    #    - Verification protection: c_verified >= u_verified
+                    #
+                    # 3. Nationwide Records:
+                    #    - Same retailer_slug, recorded_at, price, and cleaned product_key
+                    #    - Non-empty, matching source_region_id (nationwide campaign ID) on both rows
+                    #    - Non-empty, matching source_url on both rows
+                    #    - Non-conflicting source_provider (if present on either)
+                    #    - Verification protection: c_verified >= u_verified
+                    #
+                    # If identity is missing, ambiguous, or unproven: PREFER NON-DESTRUCTIVE UPDATE!
 
                     is_confident_duplicate = False
 
@@ -1302,23 +1346,21 @@ class PriceHistoryService:
                     u_zip = str(u_row["zip_code"] or "").strip() if has_zip_code else ""
                     u_scope = str(u_row["scope_type"] or "").strip().lower() if has_scope_type else "unknown"
                     u_region_id = str(u_row["source_region_id"] or "").strip() if has_source_region_id else ""
+                    u_provider = str(u_row["source_provider"] or "").strip() if has_source_provider else ""
                     u_verified = int(u_row["region_verified"] or 0) if has_region_verified else 0
                     u_source_url = str(u_row["source_url"] or "").strip() if has_source_url else ""
 
-                    # Only evaluate duplication if we have confident geographic identity:
-                    # - Store scope with non-empty store_id and non-empty zip_code
-                    # - Region scope with non-empty source_region_id and non-empty zip_code
-                    # - Nationwide scope
-                    can_evaluate_duplicate = (
+                    # Missing source_url means observation identity cannot be established confidently
+                    can_evaluate_duplicate = bool(u_source_url) and (
                         (u_scope == "store" and bool(u_store_id) and bool(u_zip))
                         or (u_scope == "region" and bool(u_region_id) and bool(u_zip))
-                        or (u_scope == "nationwide")
+                        or (u_scope == "nationwide" and bool(u_region_id))
                     )
 
                     if can_evaluate_duplicate:
                         query_collision = f"""
                             SELECT id, {store_id_sel}, {zip_sel}, {scope_sel},
-                                   {region_sel}, {verified_sel}, {source_url_sel}
+                                   {region_sel}, {provider_sel}, {verified_sel}, {source_url_sel}
                             FROM price_history
                             WHERE product_key = ?
                               AND retailer_slug = ?
@@ -1336,30 +1378,50 @@ class PriceHistoryService:
                             c_zip = str(coll["zip_code"] or "").strip() if has_zip_code else ""
                             c_scope = str(coll["scope_type"] or "").strip().lower() if has_scope_type else "unknown"
                             c_region_id = str(coll["source_region_id"] or "").strip() if has_source_region_id else ""
+                            c_provider = str(coll["source_provider"] or "").strip() if has_source_provider else ""
                             c_verified = int(coll["region_verified"] or 0) if has_region_verified else 0
                             c_source_url = str(coll["source_url"] or "").strip() if has_source_url else ""
 
+                            # 1. Scope must strictly match
                             if c_scope != u_scope:
                                 continue
 
-                            # Never delete a verified observation in favor of an unverified one
+                            # 2. Never delete a verified observation in favor of an unverified one
                             if c_verified < u_verified:
                                 continue
 
+                            # 3. Source URL must be present and match on both
+                            if not c_source_url or c_source_url != u_source_url:
+                                continue
+
+                            # 4. Scope-specific identity matching
                             if u_scope == "store":
-                                if c_store_id == u_store_id and c_zip == u_zip:
-                                    if not (u_source_url and c_source_url and u_source_url != c_source_url):
-                                        is_confident_duplicate = True
-                                        break
+                                if c_store_id != u_store_id or c_zip != u_zip:
+                                    continue
+                                if u_region_id and c_region_id and u_region_id != c_region_id:
+                                    continue
+                                if u_provider and c_provider and u_provider != c_provider:
+                                    continue
+                                is_confident_duplicate = True
+                                break
+
                             elif u_scope == "region":
-                                if c_region_id == u_region_id and c_zip == u_zip:
-                                    if not (u_source_url and c_source_url and u_source_url != c_source_url):
-                                        is_confident_duplicate = True
-                                        break
+                                if not c_region_id or c_region_id != u_region_id:
+                                    continue
+                                if c_zip != u_zip:
+                                    continue
+                                if u_provider and c_provider and u_provider != c_provider:
+                                    continue
+                                is_confident_duplicate = True
+                                break
+
                             elif u_scope == "nationwide":
-                                if not (u_source_url and c_source_url and u_source_url != c_source_url):
-                                    is_confident_duplicate = True
-                                    break
+                                if not c_region_id or c_region_id != u_region_id:
+                                    continue
+                                if u_provider and c_provider and u_provider != c_provider:
+                                    continue
+                                is_confident_duplicate = True
+                                break
 
                     if is_confident_duplicate:
                         conn.execute("DELETE FROM price_history WHERE id = ?", (row_id,))
@@ -1371,7 +1433,6 @@ class PriceHistoryService:
                         )
                         cleaned_count += 1
 
-            conn.execute("RELEASE SAVEPOINT text_cleanup")
             if unclean_count > 0:
                 logger.info(
                     "Historical text cleanup completed: %d rows inspected, %d updated, %d pruned duplicates",
@@ -1379,75 +1440,75 @@ class PriceHistoryService:
                     cleaned_count,
                     pruned_count,
                 )
-        except Exception as exc:
-            try:
-                conn.execute("ROLLBACK TO SAVEPOINT text_cleanup")
-            except Exception as rb_exc:
-                logger.error("Failed to rollback savepoint text_cleanup: %s", rb_exc)
-            finally:
-                try:
-                    conn.execute("RELEASE SAVEPOINT text_cleanup")
-                except Exception:
-                    pass
-            logger.error(
-                "Historical text cleanup failed (%d rows inspected before failure, changes rolled back): %s",
-                unclean_count,
-                exc,
-            )
-            raise
 
-        store_addr_select = "store_address" if "store_address" in col_names else "NULL as store_address"
-        evidence_select = "verification_evidence" if "verification_evidence" in col_names else "NULL as verification_evidence"
+            # 3. Provenance validation and demotion
+            store_addr_select = "store_address" if "store_address" in col_names else "NULL as store_address"
+            evidence_select = "verification_evidence" if "verification_evidence" in col_names else "NULL as verification_evidence"
 
-        rows = conn.execute(
-            f"""
-            SELECT id, scope_type, region_verified, verification_method,
-                   store_id, store_name, {store_addr_select}, source_region_id, source_provider,
-                   source_url, zip_code, retailer_slug, {evidence_select}
-            FROM price_history
-            WHERE region_verified = 1
-            """
-        ).fetchall()
+            rows = conn.execute(
+                f"""
+                SELECT id, scope_type, region_verified, verification_method,
+                       store_id, store_name, {store_addr_select}, source_region_id, source_provider,
+                       source_url, zip_code, retailer_slug, {evidence_select}
+                FROM price_history
+                WHERE region_verified = 1
+                """
+            ).fetchall()
 
-        updates: list[tuple[str, int]] = []
-        for row in rows:
-            is_valid, norm_method, _ = validate_observation_provenance(
-                scope_type=row["scope_type"],
-                region_verified=row["region_verified"],
-                verification_method=row["verification_method"],
-                store_id=row["store_id"],
-                store_name=row["store_name"],
-                store_address=row["store_address"],
-                source_region_id=row["source_region_id"],
-                source_provider=row["source_provider"],
-                source_url=row["source_url"],
-                zip_code=row["zip_code"],
-                retailer_slug=row["retailer_slug"],
-                verification_evidence=row["verification_evidence"],
-            )
-            if not is_valid:
-                updates.append((norm_method, row["id"]))
+            updates: list[tuple[str, int]] = []
+            for row in rows:
+                is_valid, norm_method, _ = validate_observation_provenance(
+                    scope_type=row["scope_type"],
+                    region_verified=row["region_verified"],
+                    verification_method=row["verification_method"],
+                    store_id=row["store_id"],
+                    store_name=row["store_name"],
+                    store_address=row["store_address"],
+                    source_region_id=row["source_region_id"],
+                    source_provider=row["source_provider"],
+                    source_url=row["source_url"],
+                    zip_code=row["zip_code"],
+                    retailer_slug=row["retailer_slug"],
+                    verification_evidence=row["verification_evidence"],
+                )
+                if not is_valid:
+                    updates.append((norm_method, row["id"]))
 
-        if updates:
-            conn.executemany(
+            if updates:
+                conn.executemany(
+                    """
+                    UPDATE price_history
+                    SET region_verified = 0,
+                        verification_method = ?
+                    WHERE id = ?
+                    """,
+                    updates,
+                )
+
+            conn.execute(
                 """
                 UPDATE price_history
-                SET region_verified = 0,
-                    verification_method = ?
-                WHERE id = ?
-                """,
-                updates,
+                SET verification_method = 'unverified_legacy_unsubstantiated'
+                WHERE region_verified = 0
+                  AND (verification_method IS NULL OR TRIM(verification_method) = '')
+                """
             )
 
-        conn.execute(
-            """
-            UPDATE price_history
-            SET verification_method = 'unverified_legacy_unsubstantiated'
-            WHERE region_verified = 0
-              AND (verification_method IS NULL OR TRIM(verification_method) = '')
-            """
-        )
-        return len(updates)
+            conn.execute("RELEASE SAVEPOINT revalidate_historical_records")
+            return len(updates)
+
+        except Exception as exc:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT revalidate_historical_records")
+            except Exception as rb_exc:
+                logger.error("Failed to rollback savepoint revalidate_historical_records: %s", rb_exc)
+            finally:
+                try:
+                    conn.execute("RELEASE SAVEPOINT revalidate_historical_records")
+                except Exception:
+                    pass
+            logger.error("Historical revalidation failed; all changes rolled back: %s", exc)
+            raise
 
     def record_offers(
         self,
