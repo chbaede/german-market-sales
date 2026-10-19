@@ -1227,16 +1227,17 @@ class MarktguruProvider(OfferProvider):
         brand_data = item.get("brand") or {}
         unit = item.get("unit") or {}
         source_offer_id = int(item.get("id", 0))
-        title = product.get("name", "").strip()
-        brand = (brand_data.get("name") or "").strip() or None
+        from app.providers.base import clean_text
+
+        title = clean_text(product.get("name", ""))
+        brand = clean_text(brand_data.get("name")) or None
         if brand == NO_BRAND_NAME:
             brand = None
         price = parse_positive_float(item.get("price"))
         old_price = parse_positive_float(item.get("oldPrice"))
         unit_price = parse_positive_float(item.get("referencePrice"))
         discount_percent = compute_discount_percent(price, old_price)
-        description = (item.get("description") or "").strip()
-        from app.providers.base import clean_text
+        description = clean_text(item.get("description", ""))
         from app.services.location import get_coordinates_for_plz, haversine_distance_km, is_valid_coordinates
 
         branch_data = item.get("branch") if isinstance(item.get("branch"), dict) else {}

@@ -86,3 +86,78 @@ def test_kaufland_maps_current_and_next_offers_from_official_payload():
     assert next_offer.price == 1.99
     assert next_offer.discount_percent == 20.1
     assert next_offer.valid_from == "2026-06-04T00:00:00+02:00"
+
+
+def test_kaufland_sanitizes_html_line_separators_and_entities_in_title():
+    from app.models import Offer
+    from app.providers.base import clean_text
+    from app.services.price_history import normalize_product_key
+
+    # 1. clean_text replaces &#x2028;, $#2028;, $#x2028;, etc. with spaces
+    assert clean_text("VIP BY SID MAURER&#x2028;Herren-T-Shirt") == "VIP BY SID MAURER Herren-T-Shirt"
+    assert clean_text("VIP BY SID MAURER$#2028;Herren-T-Shirt") == "VIP BY SID MAURER Herren-T-Shirt"
+    assert clean_text("VIP BY SID MAURER$#x2028;Herren-T-Shirt") == "VIP BY SID MAURER Herren-T-Shirt"
+    assert clean_text("7 DAYS&#x2028;Croissants") == "7 DAYS Croissants"
+    assert clean_text("Adventskalender&#x2028;»PAW Patrol«") == "Adventskalender »PAW Patrol«"
+    assert clean_text("&amp;#x2028;VISS&#x2028;Scheuermilch") == "VISS Scheuermilch"
+    assert clean_text("Bio &amp; Regional &quot;Milch&quot;") == 'Bio & Regional "Milch"'
+
+    # 2. Offer dataclass cleans title automatically upon creation
+    offer = Offer(
+        id="test-1",
+        source_offer_id=1,
+        retailer="Kaufland",
+        retailer_slug="kaufland",
+        title="VIP BY SID MAURER&#x2028;Herren-T-Shirt",
+        brand=None,
+        category="nonfood",
+        price=4.99,
+        old_price=None,
+        unit_price=None,
+        unit=None,
+        discount_percent=None,
+        description="VISS&#x2028;Scheuermilch",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://kaufland.de",
+    )
+    assert offer.title == "VIP BY SID MAURER Herren-T-Shirt"
+    assert offer.description == "VISS Scheuermilch"
+
+    # 3. normalize_product_key does not include x2028 in product key
+    pkey = normalize_product_key("VIP BY SID MAURER&#x2028;Herren-T-Shirt")
+    assert "2028" not in pkey
+    assert pkey == "by-herren-maurer-sid-vip"
+
+    # 4. Parsing Kaufland payload with &#x2028; in title
+    payload = {
+        "component": "OfferTemplate",
+        "props": {
+            "offerData": {
+                "cycles": [
+                    {
+                        "categories": [
+                            {
+                                "name": "Textilien",
+                                "offers": [
+                                    {
+                                        "offerId": "ART.1188250",
+                                        "detailTitle": "VIP BY SID MAURER&#x2028;Herren-T-Shirt",
+                                        "price": "4.99",
+                                        "dateFrom": "2026-05-28",
+                                        "dateTo": "2026-06-03",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+    }
+    offers = KauflandProvider.offers_from_payload(payload, limit=5, today=date(2026, 5, 30))
+    assert len(offers) == 1
+    assert offers[0].title == "VIP BY SID MAURER Herren-T-Shirt"
+    assert "2028" not in offers[0].title
+

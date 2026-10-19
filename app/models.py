@@ -1,5 +1,7 @@
 from dataclasses import asdict, dataclass
 
+_clean_text_fn = None
+
 
 @dataclass(slots=True)
 class Offer:
@@ -46,6 +48,26 @@ class Offer:
     is_regional_all_time_low: bool = False
     national_all_time_low: float | None = None
     is_national_all_time_low: bool = False
+
+    def __post_init__(self):
+        global _clean_text_fn
+        if _clean_text_fn is None:
+            from app.providers.base import clean_text
+            _clean_text_fn = clean_text
+
+        if self.title:
+            self.title = _clean_text_fn(self.title)
+        if self.brand:
+            self.brand = _clean_text_fn(self.brand) or None
+        if self.description:
+            self.description = _clean_text_fn(self.description)
+        if self.store_name:
+            self.store_name = _clean_text_fn(self.store_name) or None
+        if self.store_address:
+            self.store_address = _clean_text_fn(self.store_address) or None
+        if self.product_key and any(m in self.product_key for m in ("2028", "2029", "&#", "$#")):
+            from app.services.price_history import normalize_product_key
+            self.product_key = normalize_product_key(self.title, self.brand)
 
     def to_dict(self) -> dict:
         return asdict(self)

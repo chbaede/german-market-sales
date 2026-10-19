@@ -87,7 +87,11 @@ def _extract_normalized_quantity(text: str) -> str | None:
 
 @lru_cache(maxsize=4096)
 def normalize_product_key(title: str, brand: str | None = None) -> str:
-    combined = f"{brand or ''} {title}".strip()
+    from app.providers.base import clean_text
+
+    clean_t = clean_text(title)
+    clean_b = clean_text(brand) if brand else ""
+    combined = f"{clean_b} {clean_t}".strip()
     norm_qty = _extract_normalized_quantity(combined)
     text = unicodedata.normalize("NFKD", combined)
     text = "".join(char for char in text if not unicodedata.combining(char))
@@ -1202,6 +1206,27 @@ class PriceHistoryService:
             logger.debug("verified_campaign_registry table not available during revalidation: %s", exc)
         except Exception as exc:
             logger.warning("Unexpected error reading verified_campaign_registry: %s", exc)
+
+        # 2. Clean legacy corrupted titles or product keys (e.g. &#x2028;, $#2028;, \u2028)
+        try:
+            from app.providers.base import clean_text
+
+            unclean_rows = conn.execute(
+                "SELECT id, title, brand, product_key FROM price_history "
+                "WHERE title LIKE '%&#%' OR title LIKE '%$#%' OR title LIKE '%\u2028%' OR product_key LIKE '%x2028%' OR product_key LIKE '%2029%'"
+            ).fetchall()
+            for u_row in unclean_rows:
+                row_id = u_row["id"]
+                orig_title = u_row["title"]
+                brand = u_row["brand"]
+                cleaned_title = clean_text(orig_title)
+                new_key = normalize_product_key(cleaned_title, brand)
+                conn.execute(
+                    "UPDATE price_history SET title = ?, product_key = ? WHERE id = ?",
+                    (cleaned_title, new_key, row_id),
+                )
+        except Exception as exc:
+            logger.warning("Error cleaning historical titles in price_history: %s", exc)
 
         cursor = conn.execute("PRAGMA table_info(price_history)")
         col_names = {row["name"] for row in cursor.fetchall()}

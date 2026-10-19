@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from app.models import Offer
-from app.providers.base import BERLIN_TZ, OfferProvider, compute_discount_percent
+from app.providers.base import BERLIN_TZ, OfferProvider, clean_text, compute_discount_percent
 from app.services.categories import categorize_offer
 
 
@@ -51,15 +51,15 @@ class DmProvider(OfferProvider):
         unit_price, unit = _parse_unit_price((tile.get("price") or {}).get("tileInfos") or [])
         discount_percent = compute_discount_percent(current_price, old_price)
 
-        title = (title_data.get("tileHeadline") or product.get("title") or "").strip()
-        brand = (brand_data.get("name") or product.get("brandName") or "").strip() or None
+        title = clean_text(title_data.get("tileHeadline") or product.get("title"))
+        brand = clean_text(brand_data.get("name") or product.get("brandName")) or None
         categories = ", ".join((tile.get("trackingData") or {}).get("categories") or [])
         eyecatchers = ", ".join(
             item.get("alt", "")
             for item in tile.get("eyecatchers") or []
             if item.get("alt")
         )
-        description = ". ".join(part for part in (categories, eyecatchers) if part)
+        description = clean_text(". ".join(part for part in (categories, eyecatchers) if part))
         image_url = _first_image(tile)
         dan = int(product.get("dan") or tile.get("dan") or 0)
         source_url = f"https://www.dm.de{tile.get('self')}" if tile.get("self") else cls.source_url
