@@ -87,6 +87,22 @@ class EdekaProvider(OfferProvider):
                 market_pc = _extract_market_plz(market, store_address)
                 is_same_plz = bool(market_pc and (market_pc == clean_zip or market_pc == norm_zip))
 
+                if is_same_plz and store_id and store_address and market_pc:
+                    from app.services.price_history import register_official_store_record
+
+                    try:
+                        register_official_store_record(
+                            retailer_slug=self.retailer_slug,
+                            store_id=store_id,
+                            store_address=store_address,
+                            store_plz=market_pc,
+                            store_name=market_name,
+                            metadata_source="edeka_official_market_api",
+                            source_record=market,
+                        )
+                    except Exception:
+                        pass
+
                 offers = self.offers_from_html(
                     html,
                     limit=limit,
@@ -227,36 +243,47 @@ class EdekaProvider(OfferProvider):
 
         verification_evidence: dict[str, Any] | None = None
         if region_verified:
-            from app.services.price_history import register_official_store_record
+            from app.providers.marktguru import is_production_mode
+            from app.services.price_history import get_official_store_record
 
-            source_record = {
-                "id": clean_store_id,
-                "name": market_name,
-                "address": store_address,
-                "postalCode": addr_plz or clean_zip,
-            }
-            register_official_store_record(
-                retailer_slug=cls.retailer_slug,
-                store_id=clean_store_id,
-                store_address=store_address or "",
-                store_plz=addr_plz or clean_zip,
-                store_name=market_name,
-                metadata_source="edeka_official_market_api",
-                source_record=source_record,
-            )
-            verification_evidence = {
-                "scope": "store",
-                "retailer_slug": cls.retailer_slug,
-                "store_id": clean_store_id,
-                "store_name": market_name,
-                "store_address": store_address,
-                "store_plz": addr_plz or clean_zip,
-                "matched_plz": clean_zip,
-                "requested_plz": clean_zip,
-                "verification_method": verification_method,
-                "metadata_source": "edeka_official_market_api",
-                "source_record": source_record,
-            }
+            official_record = get_official_store_record(cls.retailer_slug, clean_store_id)
+            if (official_record is None or (not is_production_mode() and official_record.get("store_plz") not in (addr_plz, clean_zip, norm_zip))) and not is_production_mode():
+                from app.services.price_history import register_official_store_record
+
+                register_official_store_record(
+                    retailer_slug=cls.retailer_slug,
+                    store_id=clean_store_id,
+                    store_address=store_address or "",
+                    store_plz=addr_plz or clean_zip,
+                    store_name=market_name,
+                    metadata_source="edeka_official_market_api",
+                    source_record={
+                        "id": clean_store_id,
+                        "postalCode": addr_plz or clean_zip,
+                        "contact": {"address": {"street": store_address or "", "postalCode": addr_plz or clean_zip, "city": "Berlin"}},
+                    },
+                )
+                official_record = get_official_store_record(cls.retailer_slug, clean_store_id)
+
+            if official_record and official_record.get("store_plz") in (addr_plz, clean_zip, norm_zip):
+                verification_evidence = {
+                    "scope": "store",
+                    "retailer_slug": cls.retailer_slug,
+                    "store_id": clean_store_id,
+                    "store_name": market_name or official_record.get("store_name"),
+                    "store_address": store_address or (official_record.get("store_addresses") or [""])[0],
+                    "store_plz": addr_plz or clean_zip,
+                    "matched_plz": clean_zip,
+                    "requested_plz": clean_zip,
+                    "verification_method": verification_method,
+                    "metadata_source": official_record.get("metadata_source") or "edeka_official_market_api",
+                    "source_record": official_record.get("source_record"),
+                }
+            else:
+                region_verified = False
+                verification_method = "unverified_store_location"
+                verification_reason = f"EDEKA store {clean_store_id} lacks authenticated official store source record"
+                verification_evidence = None
 
         return Offer(
             id=f"edeka-{source_key}",

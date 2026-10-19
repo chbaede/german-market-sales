@@ -381,6 +381,110 @@ def _normalize_address_for_comparison(addr: str | None) -> str:
     return " ".join(s.split())
 
 
+def validate_official_store_source_record(
+    *,
+    retailer_slug: str,
+    store_id: str,
+    store_address: str,
+    store_plz: str,
+    metadata_source: str,
+    source_record: Any,
+) -> tuple[bool, str]:
+    from app.providers.marktguru import is_production_mode
+
+    if source_record is None or not isinstance(source_record, dict):
+        return False, "Registration of official store record without verified provider source record is forbidden in production"
+
+    if not source_record:
+        return False, "Empty source_record dictionary"
+
+    clean_source = (metadata_source or "").strip()
+    if clean_source not in SUPPORTED_STORE_METADATA_SOURCES:
+        return False, f"Unsupported store metadata source '{clean_source}'"
+
+    clean_ret = (retailer_slug or "").strip().lower()
+    clean_id = str(store_id or "").strip()
+    clean_plz = str(store_plz or "").strip()
+
+    if clean_ret == "edeka":
+        if clean_source not in ("edeka_official_market_api", "edeka_official_store_api"):
+            return False, f"Mismatched metadata source '{clean_source}' for EDEKA"
+
+        raw_id = str(source_record.get("id") or source_record.get("marketId") or "").strip()
+        if not raw_id:
+            return False, "Missing store ID in EDEKA source record"
+        if raw_id != clean_id:
+            return False, f"Source record ID contradicts store_id: '{raw_id}' != '{clean_id}'"
+
+        addr_dict = None
+        if isinstance(source_record.get("contact"), dict) and isinstance(source_record["contact"].get("address"), dict):
+            addr_dict = source_record["contact"]["address"]
+        elif isinstance(source_record.get("address"), dict):
+            addr_dict = source_record["address"]
+        elif isinstance(source_record.get("businessAddress"), dict):
+            addr_dict = source_record["businessAddress"]
+
+        if is_production_mode() and addr_dict is None:
+            return False, "Caller-created source_record cannot pass production verification: missing raw EDEKA market API address structure"
+
+        if addr_dict is not None:
+            raw_street = str(addr_dict.get("street") or addr_dict.get("streetAddress") or "").strip()
+            raw_plz = str(addr_dict.get("postalCode") or addr_dict.get("zipCode") or "").strip()
+            raw_city = str(addr_dict.get("city") or addr_dict.get("location") or "").strip()
+            if not raw_street:
+                return False, "Missing street in EDEKA raw address"
+            if not raw_plz or len(raw_plz) != 5 or not raw_plz.isdigit():
+                return False, "Missing or invalid 5-digit postal code in EDEKA raw address"
+            if raw_plz != clean_plz:
+                return False, f"EDEKA raw address PLZ '{raw_plz}' contradicts store PLZ '{clean_plz}'"
+            if not raw_city:
+                return False, "Missing city in EDEKA raw address"
+        elif is_production_mode():
+            return False, "Missing address or postal code field in store record"
+
+        if is_production_mode():
+            has_edeka_marker = (
+                isinstance(source_record.get("url"), str)
+                or isinstance(source_record.get("isEdekaHomepageMarket"), bool)
+                or isinstance(source_record.get("coordinates"), dict)
+                or isinstance(source_record.get("distance"), (int, float))
+            )
+            if not has_edeka_marker:
+                return False, "Caller-created source_record cannot pass production verification: missing official EDEKA API provider indicators"
+
+    elif clean_ret == "kaufland":
+        if clean_source != "kaufland_official_store_api":
+            return False, f"Mismatched metadata source '{clean_source}' for Kaufland"
+
+        raw_id = str(source_record.get("n") or source_record.get("storeId") or "").strip()
+        if not raw_id:
+            return False, "Missing store ID in Kaufland source record"
+        if raw_id != clean_id:
+            return False, f"Source record ID contradicts store_id: '{raw_id}' != '{clean_id}'"
+
+        raw_sn = str(source_record.get("sn") or source_record.get("street") or "").strip()
+        raw_pc = str(source_record.get("pc") or source_record.get("postalCode") or "").strip()
+        raw_cn = str(source_record.get("cn") or source_record.get("city") or source_record.get("t") or "").strip()
+
+        if is_production_mode():
+            if not ("sn" in source_record and "pc" in source_record):
+                return False, "Caller-created source_record cannot pass production verification: missing raw Kaufland storefinder API fields"
+            if not raw_sn or not raw_pc or not raw_cn:
+                return False, "Missing street, city, or postal code in Kaufland raw store record"
+            if len(raw_pc) != 5 or not raw_pc.isdigit():
+                return False, "Missing or invalid 5-digit postal code in Kaufland raw store record"
+            if raw_pc != clean_plz:
+                return False, f"Kaufland raw store PLZ '{raw_pc}' contradicts store PLZ '{clean_plz}'"
+        else:
+            if raw_pc and raw_pc != clean_plz:
+                return False, f"Kaufland raw store PLZ '{raw_pc}' contradicts store PLZ '{clean_plz}'"
+    else:
+        if is_production_mode():
+            return False, f"Unsupported store retailer '{clean_ret}' in production"
+
+    return True, ""
+
+
 def register_official_store_record(
     *,
     retailer_slug: str,
@@ -397,33 +501,56 @@ def register_official_store_record(
     clean_plz = (store_plz or "").strip()
     clean_source = (metadata_source or "").strip()
 
+    from app.providers.marktguru import is_production_mode
+
     if not clean_retailer or not clean_store_id or not clean_address or not clean_plz:
+        if is_production_mode():
+            raise ValueError("Missing mandatory store identifier, address, or postal code")
         return False
     if clean_source not in SUPPORTED_STORE_METADATA_SOURCES:
+        if is_production_mode():
+            raise ValueError(f"Unsupported store metadata source '{clean_source}'")
         return False
 
     m_plz = re.search(r"\b(\d{5})\b", clean_address)
     if not m_plz or m_plz.group(1) != clean_plz:
+        if is_production_mode():
+            raise ValueError(f"Store address PLZ does not match store_plz '{clean_plz}'")
         return False
 
     from app.services.location import get_coordinates_for_plz
 
     if not get_coordinates_for_plz(clean_plz):
+        if is_production_mode():
+            raise ValueError(f"Invalid postal code without geographic coordinates '{clean_plz}'")
         return False
 
-    from app.providers.marktguru import is_production_mode
-
     if is_production_mode():
-        if not source_record or not isinstance(source_record, dict):
+        if source_record is None:
             raise PermissionError("Registration of official store record without verified provider source record is forbidden in production")
-        if clean_retailer == "edeka":
-            rec_id = str(source_record.get("id") or source_record.get("marketId") or "").strip()
-            if rec_id and rec_id != clean_store_id:
-                raise ValueError("Source record ID contradicts store_id")
-        elif clean_retailer == "kaufland":
-            rec_id = str(source_record.get("n") or source_record.get("storeId") or "").strip()
-            if rec_id and rec_id != clean_store_id:
-                raise ValueError("Source record ID contradicts store_id")
+        ok, err = validate_official_store_source_record(
+            retailer_slug=clean_retailer,
+            store_id=clean_store_id,
+            store_address=clean_address,
+            store_plz=clean_plz,
+            metadata_source=clean_source,
+            source_record=source_record,
+        )
+        if not ok:
+            if "Caller-created" in err or "forbidden" in err:
+                raise PermissionError(err)
+            raise ValueError(err)
+    elif source_record is not None:
+        ok, err = validate_official_store_source_record(
+            retailer_slug=clean_retailer,
+            store_id=clean_store_id,
+            store_address=clean_address,
+            store_plz=clean_plz,
+            metadata_source=clean_source,
+            source_record=source_record,
+        )
+        if not ok and clean_source not in ("edeka_official_store_api", "kaufland_official_store_api"):
+            raise ValueError(err)
 
     _OFFICIAL_STORE_REGISTRY[(clean_retailer, clean_store_id)] = {
         "retailer_slug": clean_retailer,
@@ -442,7 +569,10 @@ def get_official_store_record(retailer_slug: str, store_id: str) -> dict[str, An
     key = ((retailer_slug or "").strip().lower(), str(store_id or "").strip())
     if key in _OFFICIAL_STORE_REGISTRY:
         return dict(_OFFICIAL_STORE_REGISTRY[key])
-    if key in _PREAPPROVED_OFFICIAL_STORES:
+    from app.providers.marktguru import is_production_mode
+
+    # Test-only hardcoded stores must be completely unavailable in production mode!
+    if not is_production_mode() and key in _PREAPPROVED_OFFICIAL_STORES:
         return dict(_PREAPPROVED_OFFICIAL_STORES[key])
     return None
 

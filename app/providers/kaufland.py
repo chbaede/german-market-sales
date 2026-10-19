@@ -59,6 +59,22 @@ class KauflandProvider(OfferProvider):
         norm_zip = normalize_german_plz(clean_zip) or clean_zip
         is_same_plz = bool(store_plz and (store_plz == clean_zip or store_plz == norm_zip))
 
+        if is_same_plz and store and store_id and store_address and store_plz:
+            from app.services.price_history import register_official_store_record
+
+            try:
+                register_official_store_record(
+                    retailer_slug=self.retailer_slug,
+                    store_id=str(store_id).strip(),
+                    store_address=store_address,
+                    store_plz=store_plz,
+                    store_name=store_name,
+                    metadata_source="kaufland_official_store_api",
+                    source_record=store,
+                )
+            except Exception:
+                pass
+
         offers = self.offers_from_payload(
             payload,
             limit=limit,
@@ -263,36 +279,48 @@ class KauflandProvider(OfferProvider):
 
         verification_evidence: dict[str, Any] | None = None
         if region_verified:
-            from app.services.price_history import register_official_store_record
+            from app.providers.marktguru import is_production_mode
+            from app.services.price_history import get_official_store_record
 
-            source_record = {
-                "n": clean_store_id,
-                "cn": store_name,
-                "address": store_address,
-                "pc": addr_plz or clean_zip,
-            }
-            register_official_store_record(
-                retailer_slug=cls.retailer_slug,
-                store_id=clean_store_id,
-                store_address=store_address or "",
-                store_plz=addr_plz or clean_zip,
-                store_name=store_name,
-                metadata_source="kaufland_official_store_api",
-                source_record=source_record,
-            )
-            verification_evidence = {
-                "scope": "store",
-                "retailer_slug": cls.retailer_slug,
-                "store_id": clean_store_id,
-                "store_name": store_name,
-                "store_address": store_address,
-                "store_plz": addr_plz or clean_zip,
-                "matched_plz": clean_zip,
-                "requested_plz": clean_zip,
-                "verification_method": verification_method,
-                "metadata_source": "kaufland_official_store_api",
-                "source_record": source_record,
-            }
+            official_record = get_official_store_record(cls.retailer_slug, clean_store_id)
+            if (official_record is None or (not is_production_mode() and official_record.get("store_plz") not in (addr_plz, clean_zip, norm_zip))) and not is_production_mode():
+                from app.services.price_history import register_official_store_record
+
+                register_official_store_record(
+                    retailer_slug=cls.retailer_slug,
+                    store_id=clean_store_id,
+                    store_address=store_address or "",
+                    store_plz=addr_plz or clean_zip,
+                    store_name=store_name,
+                    metadata_source="kaufland_official_store_api",
+                    source_record={
+                        "n": clean_store_id,
+                        "pc": addr_plz or clean_zip,
+                        "sn": store_address or "",
+                        "cn": store_name or "Kaufland",
+                    },
+                )
+                official_record = get_official_store_record(cls.retailer_slug, clean_store_id)
+
+            if official_record and official_record.get("store_plz") in (addr_plz, clean_zip, norm_zip):
+                verification_evidence = {
+                    "scope": "store",
+                    "retailer_slug": cls.retailer_slug,
+                    "store_id": clean_store_id,
+                    "store_name": store_name or official_record.get("store_name"),
+                    "store_address": store_address or (official_record.get("store_addresses") or [""])[0],
+                    "store_plz": addr_plz or clean_zip,
+                    "matched_plz": clean_zip,
+                    "requested_plz": clean_zip,
+                    "verification_method": verification_method,
+                    "metadata_source": official_record.get("metadata_source") or "kaufland_official_store_api",
+                    "source_record": official_record.get("source_record"),
+                }
+            else:
+                region_verified = False
+                verification_method = "unverified_store_location"
+                verification_reason = f"Kaufland store {clean_store_id} lacks authenticated official store source record"
+                verification_evidence = None
 
         return Offer(
             id=f"kaufland-{source_key}",

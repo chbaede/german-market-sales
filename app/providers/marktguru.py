@@ -132,16 +132,9 @@ def is_approved_evidence_path(p: Path) -> bool:
 # Trusted evidence ingestion catalog storing cryptographic SHA-256 hashes of audited artifacts
 # Bound strictly to canonical relative paths under approved roots.
 _TRUSTED_INGESTION_CATALOG: dict[str, str] = {
-    # Production canonical paths under data/evidence
-    "data/evidence/700.json": "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f",
-    "data/evidence/901.json": "d34092378f01f4d1c8f33a7ea27fc82a807c9764bf5907a92bb9b0addd78b260",
-    "data/evidence/999.json": "a520655b8bf147ce323ff8f5fa7db13fda82c2bb496e4aacf8f271df19de9783",
-    "data/evidence/nat_proven_999.json": "545e5b5a6d37881ba6374343b2fd0640b7056ec8e792e7984ccff206acde5e03",
-    "data/evidence/nat_valid_606.json": "cbe3e61bf0a56ce2e19fd7f8963dd09fc4e0f5a31c31c0db0262a85a16659f15",
-    "data/evidence/reg_valid_101.json": "35a9cdb6d0a7b48f07d68b3598f486094f672bd5fd41adbe11cf0ce2bb28250c",
-    "data/evidence/restart_nat_707.json": "e9ebdc125bc55afa2da41eddf4875574aea158a41ab94ec5469fd7136dba8389",
-    "data/evidence/test_nat_15.json": "4144bfe24fb1c696cddc39229263501b3c26e1e4f6c1f5436a95c6463002a772",
-    # Test fixture paths under tests/fixtures/evidence
+    # Production canonical paths under data/evidence (genuine audited source evidence only)
+    "data/evidence/marktguru_de_nationwide_manifest.json": "01d806a1b814df93efe61dbcf46b6329145c0cc71ed1222ce84ca43d49f4b265",
+    # Test fixture paths under tests/fixtures/evidence (test execution only)
     "tests/fixtures/evidence/700.json": "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f",
     "tests/fixtures/evidence/901.json": "d34092378f01f4d1c8f33a7ea27fc82a807c9764bf5907a92bb9b0addd78b260",
     "tests/fixtures/evidence/999.json": "a520655b8bf147ce323ff8f5fa7db13fda82c2bb496e4aacf8f271df19de9783",
@@ -155,6 +148,34 @@ _TRUSTED_INGESTION_CATALOG: dict[str, str] = {
 _DYNAMIC_INGESTION_CATALOG: dict[str, str] = {}
 
 
+def is_synthetic_evidence_artifact(p: Path, content_dict: dict[str, Any] | None = None) -> bool:
+    name = p.name.lower()
+    synthetic_markers = (
+        "test",
+        "fixture",
+        "mock",
+        "dummy",
+        "sample",
+        "restart",
+        "nat_valid",
+        "reg_valid",
+        "nat_proven",
+        "700.json",
+        "901.json",
+        "999.json",
+    )
+    if any(marker in name for marker in synthetic_markers):
+        return True
+    if content_dict:
+        cid = str(content_dict.get("campaign_id") or "").lower()
+        if any(marker in cid for marker in ("test_", "mock_", "dummy_", "fake_", "sample_", "restart_", "valid_", "proven_")):
+            return True
+        lim = str(content_dict.get("limitations") or "").lower()
+        if any(lim.startswith(m) for m in ("audited nationwide", "persisted nationwide", "full national coverage")):
+            return True
+    return False
+
+
 def ingest_trusted_evidence_artifact(
     file_path: str | Path,
     expected_hash: str | None = None,
@@ -163,7 +184,7 @@ def ingest_trusted_evidence_artifact(
     Ingests and registers an evidence artifact in the trusted ingestion catalog.
     Validates origin directory, JSON structure, and SHA-256 cryptographic digest.
     In production mode, arbitrary evidence registration with caller-supplied hash is forbidden;
-    hashes must originate from the pre-approved manifest.
+    hashes must originate from the pre-approved manifest, and synthetic artifacts are rejected.
     """
     p = Path(file_path).resolve()
     if not p.is_file():
@@ -173,9 +194,12 @@ def ingest_trusted_evidence_artifact(
 
     content = p.read_bytes()
     try:
-        json.loads(content.decode("utf-8"))
+        artifact_json = json.loads(content.decode("utf-8"))
     except Exception as exc:
         raise ValueError(f"Evidence artifact '{p}' is not valid JSON: {exc}") from exc
+
+    if not isinstance(artifact_json, dict):
+        raise ValueError(f"Evidence artifact '{p}' must be a JSON object")
 
     calculated_hash = hashlib.sha256(content).hexdigest()
 
@@ -188,6 +212,8 @@ def ingest_trusted_evidence_artifact(
     manifest_hash = _TRUSTED_INGESTION_CATALOG.get(rel_to_project) if rel_to_project else None
 
     if is_production_mode():
+        if is_synthetic_evidence_artifact(p, artifact_json):
+            raise PermissionError(f"Synthetic campaign artifact '{p.name}' cannot be approved for production")
         if not manifest_hash:
             raise PermissionError(
                 f"Evidence artifact '{rel_to_project or p.name}' is not in the pre-approved trusted catalog; "
@@ -231,7 +257,8 @@ def clear_dynamic_ingestion_catalog() -> None:
 def validate_evidence_artifact_integrity(p: Path) -> tuple[bool, str, str | None]:
     """
     Validates that the artifact file exists, is located within an approved evidence root,
-    originates from a trusted ingestion record, and matches its recorded cryptographic digest.
+    originates from a trusted ingestion record, matches its recorded cryptographic digest,
+    and substantively substantiates its promotional coverage claims.
     Returns (is_valid, reason, sha256_hash).
     """
     try:
@@ -251,12 +278,19 @@ def validate_evidence_artifact_integrity(p: Path) -> tuple[bool, str, str | None
     except ValueError:
         pass
 
+    try:
+        artifact_raw = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"Failed to parse evidence artifact '{resolved.name}' JSON: {exc}", None
+
+    if not isinstance(artifact_raw, dict):
+        return False, f"Evidence artifact '{resolved.name}' is not a JSON object", None
+
     if is_production_mode():
-        # In production mode:
-        # Ignore dynamic ingestion catalog completely, require entry from pre-approved manifest.
+        if is_synthetic_evidence_artifact(resolved, artifact_raw):
+            return False, f"Synthetic campaign artifact '{resolved.name}' cannot be approved for production", None
         expected_hash = _TRUSTED_INGESTION_CATALOG.get(rel_to_project) if rel_to_project else None
     else:
-        # In test mode:
         expected_hash = (
             _DYNAMIC_INGESTION_CATALOG.get(str(resolved))
             or (rel_to_project and _DYNAMIC_INGESTION_CATALOG.get(rel_to_project))
@@ -273,6 +307,15 @@ def validate_evidence_artifact_integrity(p: Path) -> tuple[bool, str, str | None
 
     if actual_hash != expected_hash:
         return False, f"Evidence artifact '{resolved.name}' cryptographic digest mismatch (recorded: {expected_hash}, actual: {actual_hash})", None
+
+    # Substantive content validation: non-empty campaign_id, source_url, valid calendar date
+    if not str(artifact_raw.get("campaign_id") or "").strip():
+        return False, "Evidence artifact lacks required campaign_id", None
+    if not str(artifact_raw.get("source_url") or "").strip():
+        return False, "Evidence artifact lacks required source_url", None
+    vdate = str(artifact_raw.get("verification_date") or "").strip()
+    if not _is_valid_calendar_date(vdate):
+        return False, f"Evidence artifact has invalid verification_date '{vdate}'", None
 
     return True, "Artifact origin and cryptographic integrity verified", actual_hash
 

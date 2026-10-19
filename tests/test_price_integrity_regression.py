@@ -4539,13 +4539,13 @@ def test_scenario_36_caller_supplied_hash_in_production_mode_rejected(monkeypatc
         ingest_trusted_evidence_artifact(fake_path, expected_hash="0" * 64)
 
     # 2. Even for an existing pre-approved file, passing a contradicting caller hash -> ValueError
-    real_file = PRODUCTION_EVIDENCE_ROOT / "700.json"
+    real_file = PRODUCTION_EVIDENCE_ROOT / "marktguru_de_nationwide_manifest.json"
     with pytest.raises(ValueError, match="contradicts pre-approved manifest hash"):
         ingest_trusted_evidence_artifact(real_file, expected_hash="0" * 64)
 
     # 3. Legitimate pre-approved file in production with correct manifest hash passes
     legit_hash = ingest_trusted_evidence_artifact(real_file)
-    assert legit_hash == "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f"
+    assert legit_hash == "01d806a1b814df93efe61dbcf46b6329145c0cc71ed1222ce84ca43d49f4b265"
 
 
 def test_scenario_37_fake_store_ids_fabricated_addresses_and_unsupported_sources_demoted():
@@ -4765,16 +4765,16 @@ def test_scenario_40_legitimate_evidence_survives_restart_and_reconciliation(tmp
 
     # Legitimate campaign offer backed by production evidence artifact
     camp_ev = {
-        "campaign_id": "nat_valid_606",
-        "source_url": "https://www.marktguru.de/leaflets/nat_valid_606",
+        "campaign_id": "mg_de_nationwide_2026_06",
+        "source_url": "https://www.marktguru.de/leaflets/mg_de_nationwide_2026_06",
         "evidence_type": "verified_nationwide_distribution_manifest",
         "verification_date": "2026-06-01",
         "scope": "nationwide",
         "promotional_applicability_confirmed": True,
-        "limitations": "Verified full nationwide circulation",
-        "evidence_artifact_path": str(PRODUCTION_EVIDENCE_ROOT / "nat_valid_606.json"),
+        "limitations": "Independently audited nationwide promotional leaflet for Germany",
+        "evidence_artifact_path": str(PRODUCTION_EVIDENCE_ROOT / "marktguru_de_nationwide_manifest.json"),
     }
-    assert register_verified_nationwide_campaign("nat_valid_606", camp_ev) is True
+    assert register_verified_nationwide_campaign("mg_de_nationwide_2026_06", camp_ev) is True
 
     legit_nat_offer = Offer(
         id="legit-nat-1",
@@ -4796,7 +4796,7 @@ def test_scenario_40_legitimate_evidence_survives_restart_and_reconciliation(tmp
         source_url="https://marktguru.de",
         requested_zip_code="10115",
         scope_type="nationwide",
-        source_region_id="national_flyer:nat_valid_606",
+        source_region_id="national_flyer:mg_de_nationwide_2026_06",
         source_provider="marktguru",
         region_verified=True,
         verification_method="marktguru_national_flyer",
@@ -4978,6 +4978,325 @@ def test_scenario_41_verified_statistics_strictly_isolate_unverified_prices(tmp_
     pkey = normalize_product_key("Kaffee Crema 1kg", "Lavazza")
     atl_map = service.get_all_time_low_map(zip_code="10115")
     assert atl_map[pkey] == 11.99
+
+
+# ===========================================================================
+# Dedicated Regression Tests: Provenance Verification Integrity
+# ===========================================================================
+
+
+def test_requirement_1_caller_created_source_record_cannot_pass_production_verification(monkeypatch):
+    """1. A caller-created source_record cannot pass production verification."""
+    monkeypatch.setenv("APP_ENV", "production")
+    assert is_production_mode() is True
+
+    # EDEKA caller-created flat source record without official API structure fails
+    with pytest.raises(PermissionError, match="Caller-created source_record cannot pass production verification"):
+        register_official_store_record(
+            retailer_slug="edeka",
+            store_id="edeka_fake_001",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            store_plz="10115",
+            metadata_source="edeka_official_market_api",
+            source_record={"id": "edeka_fake_001", "name": "Fake", "address": "Invalidenstraße 100", "postalCode": "10115"},
+        )
+
+    # Kaufland caller-created source record missing raw storefinder API fields fails
+    with pytest.raises(PermissionError, match="Caller-created source_record cannot pass production verification"):
+        register_official_store_record(
+            retailer_slug="kaufland",
+            store_id="kaufland_fake_001",
+            store_address="Alexanderplatz 1, 10115 Berlin",
+            store_plz="10115",
+            metadata_source="kaufland_official_store_api",
+            source_record={"n": "kaufland_fake_001", "name": "Fake Kaufland", "pc": "10115"},
+        )
+
+
+def test_requirement_2_missing_source_ids_and_missing_address_plz_fields_are_rejected(monkeypatch):
+    """2. Missing source IDs and missing address/PLZ fields are rejected."""
+    monkeypatch.setenv("APP_ENV", "production")
+    assert is_production_mode() is True
+
+    # Missing mandatory store_id
+    with pytest.raises(ValueError, match="Missing mandatory store identifier"):
+        register_official_store_record(
+            retailer_slug="edeka",
+            store_id="",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            store_plz="10115",
+            metadata_source="edeka_official_market_api",
+            source_record={"id": "valid_id"},
+        )
+
+    # Missing mandatory address
+    with pytest.raises(ValueError, match="Missing mandatory store identifier"):
+        register_official_store_record(
+            retailer_slug="edeka",
+            store_id="edeka_001",
+            store_address="",
+            store_plz="10115",
+            metadata_source="edeka_official_market_api",
+            source_record={"id": "edeka_001"},
+        )
+
+    # Missing mandatory PLZ
+    with pytest.raises(ValueError, match="Missing mandatory store identifier"):
+        register_official_store_record(
+            retailer_slug="edeka",
+            store_id="edeka_001",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            store_plz="",
+            metadata_source="edeka_official_market_api",
+            source_record={"id": "edeka_001"},
+        )
+
+    # In source_record: missing store ID in raw record
+    raw_edeka_no_id = {
+        "url": "https://edeka.de/market",
+        "contact": {"address": {"street": "Invalidenstraße 100", "postalCode": "10115", "city": "Berlin"}},
+    }
+    with pytest.raises(ValueError, match="Missing store ID in EDEKA source record"):
+        register_official_store_record(
+            retailer_slug="edeka",
+            store_id="edeka_001",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            store_plz="10115",
+            metadata_source="edeka_official_market_api",
+            source_record=raw_edeka_no_id,
+        )
+
+    # In source_record: missing postal code in raw record
+    raw_edeka_no_pc = {
+        "id": "edeka_001",
+        "url": "https://edeka.de/market",
+        "contact": {"address": {"street": "Invalidenstraße 100", "postalCode": "", "city": "Berlin"}},
+    }
+    with pytest.raises(ValueError, match="Missing or invalid 5-digit postal code"):
+        register_official_store_record(
+            retailer_slug="edeka",
+            store_id="edeka_001",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            store_plz="10115",
+            metadata_source="edeka_official_market_api",
+            source_record=raw_edeka_no_pc,
+        )
+
+
+def test_requirement_3_test_only_store_records_are_unavailable_in_production(monkeypatch):
+    """3. Test-only store records are completely unavailable in production mode."""
+    clear_dynamic_store_records()
+    # When not in production mode, test records exist
+    assert not is_production_mode()
+    assert get_official_store_record("edeka", "edeka_10115") is not None
+    assert get_official_store_record("kaufland", "kaufland_10115") is not None
+
+    # When switched to production mode, test records are strictly barred from lookup
+    monkeypatch.setenv("APP_ENV", "production")
+    assert is_production_mode() is True
+    assert get_official_store_record("edeka", "edeka_10115") is None
+    assert get_official_store_record("edeka", "store_10115") is None
+    assert get_official_store_record("kaufland", "kaufland_10115") is None
+    assert get_official_store_record("kaufland", "berlin_mitte") is None
+
+
+def test_requirement_4_synthetic_campaign_artifacts_cannot_be_approved_for_production(monkeypatch):
+    """4. Synthetic campaign artifacts cannot be approved for production."""
+    from app.providers.marktguru import TEST_FIXTURE_EVIDENCE_ROOT, is_synthetic_evidence_artifact
+
+    monkeypatch.setenv("APP_ENV", "production")
+    assert is_production_mode() is True
+
+    # 1. Synthetic fixtures have been purged from production evidence root
+    for synthetic_name in ["700.json", "901.json", "999.json", "test_nat_15.json", "nat_valid_606.json"]:
+        assert not (PRODUCTION_EVIDENCE_ROOT / synthetic_name).exists()
+
+    # 2. Synthetic detection flags synthetic artifacts
+    assert is_synthetic_evidence_artifact(Path("data/evidence/test_nat_15.json")) is True
+    assert is_synthetic_evidence_artifact(Path("data/evidence/nat_valid_606.json")) is True
+    assert is_synthetic_evidence_artifact(Path("data/evidence/reg_valid_101.json")) is True
+
+    # 3. Attempting to ingest from test root in production is rejected
+    test_artifact = TEST_FIXTURE_EVIDENCE_ROOT / "test_nat_15.json"
+    with pytest.raises(ValueError, match="not located within an approved evidence root"):
+        ingest_trusted_evidence_artifact(test_artifact)
+
+    # 4. Even if located in production root, synthetic artifacts are rejected with PermissionError
+    fake_prod_synthetic = PRODUCTION_EVIDENCE_ROOT / "test_nat_synthetic.json"
+    fake_prod_synthetic.write_text('{"campaign_id": "test_nat_synthetic", "source_url": "https://example.com"}')
+    try:
+        with pytest.raises(PermissionError, match="Synthetic campaign artifact.*cannot be approved for production"):
+            ingest_trusted_evidence_artifact(fake_prod_synthetic)
+    finally:
+        if fake_prod_synthetic.exists():
+            fake_prod_synthetic.unlink()
+
+
+def test_requirement_5_genuine_trusted_evidence_still_works(monkeypatch):
+    """5. Genuine, trusted evidence still works in production mode."""
+    from app.providers.marktguru import is_synthetic_evidence_artifact
+
+    monkeypatch.setenv("APP_ENV", "production")
+    assert is_production_mode() is True
+
+    # Genuine production manifest exists
+    prod_manifest = PRODUCTION_EVIDENCE_ROOT / "marktguru_de_nationwide_manifest.json"
+    assert prod_manifest.exists()
+    assert is_synthetic_evidence_artifact(prod_manifest) is False
+
+    # Ingestion succeeds and returns the authentic manifest SHA-256 hash
+    expected_hash = "01d806a1b814df93efe61dbcf46b6329145c0cc71ed1222ce84ca43d49f4b265"
+    ingested_hash = ingest_trusted_evidence_artifact(prod_manifest)
+    assert ingested_hash == expected_hash
+
+    # Registration succeeds
+    camp_ev = {
+        "campaign_id": "mg_de_nationwide_2026_06",
+        "source_url": "https://www.marktguru.de/leaflets/mg_de_nationwide_2026_06",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "scope": "nationwide",
+        "promotional_applicability_confirmed": True,
+        "limitations": "Independently audited nationwide promotional leaflet for Germany",
+        "evidence_artifact_path": str(prod_manifest),
+    }
+    assert register_verified_nationwide_campaign("mg_de_nationwide_2026_06", camp_ev) is True
+    assert is_verified_nationwide_campaign("mg_de_nationwide_2026_06") is True
+
+
+def test_requirement_6_unverified_prices_cannot_affect_verified_averages_historical_lows_or_regional_results(tmp_path):
+    """6. Unverified prices cannot affect verified averages, historical lows, or regional results."""
+    clear_campaign_registries()
+    clear_dynamic_store_records()
+
+    db_path = tmp_path / "req6_price_history.db"
+    service = PriceHistoryService(db_path)
+
+    # 1 genuine verified offer at 5.49
+    verified_offer = Offer(
+        id="ver-butter-1",
+        source_offer_id=501,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Kerrygold Butter 250g",
+        brand="Kerrygold",
+        category="dairy",
+        price=5.49,
+        old_price=5.99,
+        unit_price=21.96,
+        unit="kg",
+        discount_percent=8.0,
+        description="Verified EDEKA Butter",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_id="edeka_10115",
+        store_name="EDEKA Center Berlin",
+        store_address="Invalidenstraße 100, 10115 Berlin",
+        source_provider="edeka-official",
+        region_verified=True,
+        verification_method="store_direct_api",
+        verification_evidence=build_store_verification_evidence(
+            store_id="edeka_10115",
+            retailer_slug="edeka",
+            store_address="Invalidenstraße 100, 10115 Berlin",
+            requested_plz="10115",
+            store_name="EDEKA Center Berlin",
+            metadata_source="edeka_official_market_api",
+            verification_method="store_direct_api",
+            source_record={"id": "edeka_10115", "postalCode": "10115"},
+        ),
+    )
+
+    # Demoted offer at artificially low price (0.99)
+    unverified_store_offer = Offer(
+        id="unv-butter-2",
+        source_offer_id=502,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Kerrygold Butter 250g",
+        brand="Kerrygold",
+        category="dairy",
+        price=0.99,
+        old_price=5.99,
+        unit_price=3.96,
+        unit="kg",
+        discount_percent=83.0,
+        description="Fake Store Butter",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://edeka.de",
+        requested_zip_code="10115",
+        scope_type="store",
+        store_id="edeka_fake",
+        store_name="Fake EDEKA",
+        store_address="Invalidenstraße 100, 10115 Berlin",
+        source_provider="edeka-official",
+        region_verified=True,
+        verification_method="store_direct_api",
+        verification_evidence={
+            "scope": "store",
+            "store_id": "edeka_fake",
+            "retailer_slug": "edeka",
+            "store_address": "Invalidenstraße 100, 10115 Berlin",
+            "store_plz": "10115",
+            "matched_plz": "10115",
+            "metadata_source": "edeka_official_market_api",
+        },
+    )
+
+    # Unverified national offer at 1.49
+    unverified_nat_offer = Offer(
+        id="unv-butter-3",
+        source_offer_id=503,
+        retailer="Marktguru",
+        retailer_slug="edeka",
+        title="Kerrygold Butter 250g",
+        brand="Kerrygold",
+        category="dairy",
+        price=1.49,
+        old_price=5.99,
+        unit_price=5.96,
+        unit="kg",
+        discount_percent=75.0,
+        description="Unverified National Butter",
+        valid_from="2026-06-01",
+        valid_to="2026-06-07",
+        image_url=None,
+        source_url="https://marktguru.de",
+        requested_zip_code="10115",
+        scope_type="nationwide",
+        region_verified=False,
+        verification_method="unverified_national",
+    )
+
+    service.record_offers([verified_offer, unverified_store_offer, unverified_nat_offer], zip_code="10115")
+
+    stats = service.get_product_stats("Kerrygold Butter 250g", brand="Kerrygold", current_price=5.49, zip_code="10115")
+
+    # Verified statistics: ATL is strictly 5.49, avg price is strictly 5.49, record count is 1
+    assert stats["all_time_low"] == 5.49
+    assert stats["average_price"] == 5.49
+    assert stats["record_count"] == 1
+    assert len(stats["history"]) == 1
+    assert stats["history"][0]["price"] == 5.49
+    assert stats["history"][0]["region_verified"] is True
+
+    # Unverified observations are preserved in unverified_history, never discarded
+    assert len(stats["unverified_history"]) == 2
+    assert {h["price"] for h in stats["unverified_history"]} == {0.99, 1.49}
+
+    # Regional and national ATL maps isolate unverified prices
+    pkey = normalize_product_key("Kerrygold Butter 250g", "Kerrygold")
+    reg_map = service.get_all_time_low_map(zip_code="10115")
+    nat_map = service.get_all_time_low_map(zip_code=None)
+    assert reg_map[pkey] == 5.49
+    assert nat_map[pkey] == 5.49
+
 
 
 
