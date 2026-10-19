@@ -5529,7 +5529,7 @@ def test_database_cleanup_transactional_savepoint_and_collision_handling(tmp_pat
     Historical database revalidation:
     - Cleans up corruption patterns safely
     - Protects legitimate model numbers (2028, 2029)
-    - Resolves product_key collisions transactionally via savepoint
+    - Resolves product_key collisions transactionally via savepoint when exact duplicate from same store exists
     """
     service = PriceHistoryService(cache_dir=tmp_path, db_name="test_cleanup.db")
 
@@ -5537,20 +5537,20 @@ def test_database_cleanup_transactional_savepoint_and_collision_handling(tmp_pat
 
     with service._get_connection() as conn:
         # Insert:
-        # 1. Corrupted title with $#2028;
-        # 2. An existing cleaned record that would collide with (1) once cleaned
+        # 1. Corrupted title with $#2028; for store_id edeka_10115 at 10115
+        # 2. An existing cleaned record for the SAME store_id edeka_10115 at 10115
         # 3. A record with a legitimate year 2028
         conn.execute("""
-            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
-            VALUES ('edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115')
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
+            VALUES ('edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store')
         """)
         conn.execute("""
-            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
-            VALUES ('edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115')
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
+            VALUES ('edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store')
         """, (butter_clean_key,))
         conn.execute("""
-            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
-            VALUES ('edeka', 'EDEKA', 'wandkalender-2028', 'Wandkalender 2028', 9.99, '2026-06-01T10:00:00', '10115')
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
+            VALUES ('edeka', 'EDEKA', 'wandkalender-2028', 'Wandkalender 2028', 9.99, '2026-06-01T10:00:00', '10115', 'edeka_10115', 'store')
         """)
         conn.commit()
 
@@ -5565,11 +5565,281 @@ def test_database_cleanup_transactional_savepoint_and_collision_handling(tmp_pat
     assert kalender_row["product_key"] == "wandkalender-2028"
     assert kalender_row["title"] == "Wandkalender 2028"
 
-    # Ensure collision was safely resolved (no duplicate or corrupted row)
+    # Ensure duplicate from the exact same store was safely resolved (no duplicate corrupted row)
     butter_rows = [r for r in rows if "Butter" in r["title"]]
     assert len(butter_rows) == 1
     assert butter_rows[0]["product_key"] == butter_clean_key
     assert butter_rows[0]["title"] == "Butter 250g"
+
+
+def test_historical_cleanup_preserves_records_from_different_stores_and_regions(tmp_path):
+    """
+    Requirement 1:
+    - Never delete rows across different stores or regions even if prices, timestamps, and keys match.
+    - Prefer non-destructive handling (UPDATE) when duplicate identity cannot be established confidently.
+    - Records from different stores, different postal codes, and different regions all survive cleanup.
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="multi_store_cleanup.db")
+    milk_key = normalize_product_key("Vollmilch 1L")
+    coffee_key = normalize_product_key("Kaffee Bohnen 500g")
+    bread_key = normalize_product_key("Bio Vollkornbrot 500g")
+
+    with service._get_connection() as conn:
+        # Case A: Two different stores in different cities with identical price and timestamp
+        # Store 1 in Berlin (10115) with corrupted title
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
+            VALUES ('edeka', 'EDEKA', 'vollmilch-$#2028;1l', 'Vollmilch$#2028;1L', 1.19, '2026-06-01T10:00:00', '10115', 'store_berlin_10115', 'store')
+        """)
+        # Store 2 in Munich (80331) with clean title
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
+            VALUES ('edeka', 'EDEKA', ?, 'Vollmilch 1L', 1.19, '2026-06-01T10:00:00', '80331', 'store_munich_80331', 'store')
+        """, (milk_key,))
+
+        # Case B: Two different stores in the SAME postal code (10115)
+        # Store A with corrupted title
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
+            VALUES ('edeka', 'EDEKA', 'brot-&amp;#x2028;500g', 'Bio Vollkornbrot&amp;#x2028;500g', 2.49, '2026-06-01T10:00:00', '10115', 'edeka_mitte_01', 'store')
+        """)
+        # Store B with clean title
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id, scope_type)
+            VALUES ('edeka', 'EDEKA', ?, 'Bio Vollkornbrot 500g', 2.49, '2026-06-01T10:00:00', '10115', 'edeka_mitte_02', 'store')
+        """, (bread_key,))
+
+        # Case C: Two different regional flyers
+        # North region with corrupted title
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, source_region_id, scope_type)
+            VALUES ('kaufland', 'Kaufland', 'kaffee-&#x2028;500g', 'Kaffee Bohnen&#x2028;500g', 4.99, '2026-06-01T10:00:00', '20095', 'flyer_north', 'region')
+        """)
+        # South region with clean title
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, source_region_id, scope_type)
+            VALUES ('kaufland', 'Kaufland', ?, 'Kaffee Bohnen 500g', 4.99, '2026-06-01T10:00:00', '70173', 'flyer_south', 'region')
+        """, (coffee_key,))
+
+        # Case D: Legacy records without store identity (prefer non-destructive UPDATE)
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, scope_type)
+            VALUES ('rewe', 'REWE', 'wasser-&#8232;1l', 'Wasser&#8232;1L', 0.79, '2026-06-01T10:00:00', '10115', 'unknown')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, scope_type)
+            VALUES ('rewe', 'REWE', 'wasser_1000ml', 'Wasser 1L', 0.79, '2026-06-01T10:00:00', '10115', 'unknown')
+        """)
+        conn.commit()
+
+        # Execute historical revalidation
+        service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        # Query all records
+        all_rows = conn.execute("SELECT id, product_key, title, store_id, zip_code, source_region_id, price FROM price_history ORDER BY id").fetchall()
+
+    # All 8 records MUST survive! None must be deleted!
+    assert len(all_rows) == 8
+
+    # Case A: Both stores survived and Berlin's title was cleaned
+    milk_rows = [r for r in all_rows if "Vollmilch" in r["title"]]
+    assert len(milk_rows) == 2
+    stores = {r["store_id"]: r["zip_code"] for r in milk_rows}
+    assert stores == {"store_berlin_10115": "10115", "store_munich_80331": "80331"}
+    for r in milk_rows:
+        assert r["title"] == "Vollmilch 1L"
+        assert r["product_key"] == milk_key
+
+    # Case B: Both stores in 10115 survived
+    bread_rows = [r for r in all_rows if "Vollkornbrot" in r["title"]]
+    assert len(bread_rows) == 2
+    store_ids = {r["store_id"] for r in bread_rows}
+    assert store_ids == {"edeka_mitte_01", "edeka_mitte_02"}
+    for r in bread_rows:
+        assert r["title"] == "Bio Vollkornbrot 500g"
+        assert r["product_key"] == bread_key
+
+    # Case C: Both regional flyers survived
+    coffee_rows = [r for r in all_rows if "Kaffee" in r["title"]]
+    assert len(coffee_rows) == 2
+    regions = {r["source_region_id"]: r["zip_code"] for r in coffee_rows}
+    assert regions == {"flyer_north": "20095", "flyer_south": "70173"}
+    for r in coffee_rows:
+        assert r["title"] == "Kaffee Bohnen 500g"
+        assert r["product_key"] == coffee_key
+
+    # Case D: Both legacy records without store identity survived non-destructively
+    water_rows = [r for r in all_rows if "Wasser" in r["title"]]
+    assert len(water_rows) == 2
+    for r in water_rows:
+        assert r["title"] == "Wasser 1L"
+
+
+def test_historical_cleanup_covers_all_supported_corruption_patterns_and_idempotent(tmp_path):
+    """
+    Requirement 2:
+    - Covers all encoded line-separator variants: hex entities, decimal entities,
+      malformed entities without semicolons, double-encoded entities, and actual Unicode separators.
+    - Avoids broad patterns that match legitimate product IDs or model numbers (2028, 2029).
+    - Verifies cleanup idempotency (subsequent runs produce 0 changes).
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="all_patterns_cleanup.db")
+
+    patterns = [
+        # Hexadecimal variants
+        "Tee&#x2028;Beutel",
+        "Tee&#X2028;Beutel",
+        "Tee&#x2028 Beutel",
+        "Tee&#x2029;Beutel",
+        "Tee$#x2028;Beutel",
+        "Tee$#x2029;Beutel",
+        # Decimal variants
+        "Tee&#2028;Beutel",
+        "Tee&#2028 Beutel",
+        "Tee&#2029;Beutel",
+        "Tee$#2028;Beutel",
+        "Tee$#2028 Beutel",
+        "Tee$#2029;Beutel",
+        "Tee&#8232;Beutel",
+        "Tee&#8232 Beutel",
+        "Tee&#8233;Beutel",
+        "Tee$#8232;Beutel",
+        "Tee$#8233;Beutel",
+        # Double-encoded variants
+        "Tee&amp;#x2028;Beutel",
+        "Tee&amp;#2028;Beutel",
+        "Tee&amp;$#2028;Beutel",
+        "Tee&amp;#8232;Beutel",
+        "Tee&amp;#8233;Beutel",
+        "Tee&amp;amp;#x2028;Beutel",
+        # Unicode separators
+        "Tee\u2028Beutel",
+        "Tee\u2029Beutel",
+        # Zero-width characters
+        "Tee \u200bBeutel",
+        "Tee \u200cBeutel",
+        "Tee \u200dBeutel",
+        "Tee \u2060Beutel",
+        "Tee \ufeffBeutel",
+        "Tee \u00adBeutel",
+    ]
+
+    with service._get_connection() as conn:
+        for idx, pat in enumerate(patterns):
+            conn.execute("""
+                INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id)
+                VALUES ('edeka', 'EDEKA', ?, ?, 1.49, '2026-06-01T10:00:00', '10115', ?)
+            """, (f"key_{idx}", pat, f"store_{idx}"))
+
+        # Legitimate titles with numbers 2028, 2029, and model numbers
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id)
+            VALUES ('edeka', 'EDEKA', 'wandkalender-2028', 'Wandkalender 2028', 9.99, '2026-06-01T10:00:00', '10115', 'store_leg_1')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id)
+            VALUES ('edeka', 'EDEKA', 'riesling-jahrgang-2029', 'Riesling Jahrgang 2029', 14.99, '2026-06-01T10:00:00', '10115', 'store_leg_2')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id)
+            VALUES ('edeka', 'EDEKA', 'modell-2028-turbo', 'Modell 2028 Turbo', 49.99, '2026-06-01T10:00:00', '10115', 'store_leg_3')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code, store_id)
+            VALUES ('edeka', 'EDEKA', 'schraube-2028', 'Schraube #2028', 0.29, '2026-06-01T10:00:00', '10115', 'store_leg_4')
+        """)
+        conn.commit()
+
+        # Run cleanup first time
+        service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        rows = conn.execute("SELECT product_key, title FROM price_history ORDER BY id").fetchall()
+
+    # All corrupted rows are cleaned
+    tee_rows = [r for r in rows if "Tee" in r["title"]]
+    assert len(tee_rows) == len(patterns)
+    for r in tee_rows:
+        assert r["title"] == "Tee Beutel"
+        assert "&#" not in r["title"]
+        assert "$#" not in r["title"]
+        assert "\u2028" not in r["title"]
+        assert "\u2029" not in r["title"]
+
+    # Legitimate numbers remain 100% intact
+    leg_rows = {r["title"]: r["product_key"] for r in rows if "Tee" not in r["title"]}
+    assert leg_rows["Wandkalender 2028"] == "wandkalender-2028"
+    assert leg_rows["Riesling Jahrgang 2029"] == "riesling-jahrgang-2029"
+    assert leg_rows["Modell 2028 Turbo"] == "modell-2028-turbo"
+    assert leg_rows["Schraube #2028"] == "schraube-2028"
+
+    # Idempotency check: run cleanup a SECOND time
+    with service._get_connection() as conn2:
+        service._revalidate_historical_records_conn(conn2)
+        conn2.commit()
+        rows2 = conn2.execute("SELECT product_key, title FROM price_history ORDER BY id").fetchall()
+
+    # Exactly identical
+    assert len(rows2) == len(rows)
+    for r1, r2 in zip(rows, rows2):
+        assert r1["title"] == r2["title"]
+        assert r1["product_key"] == r2["product_key"]
+
+
+def test_historical_cleanup_transaction_rollback_on_midway_failure(tmp_path, monkeypatch):
+    """
+    Requirement 3:
+    - Midway failures roll back all changes made by the cleanup operation.
+    - Release the savepoint correctly after rollback (no dangling savepoint).
+    - No partial updates or partial deletes remain after failure.
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="rollback_cleanup.db")
+
+    with service._get_connection() as conn:
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
+            VALUES (1, 'edeka', 'EDEKA', 'butter-$#2028;1', 'Butter$#2028;1', 1.49, '2026-06-01T10:00:00', '10115')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
+            VALUES (2, 'edeka', 'EDEKA', 'butter-$#2028;2', 'Butter$#2028;2', 1.49, '2026-06-01T10:00:00', '10115')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (id, retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
+            VALUES (3, 'edeka', 'EDEKA', 'butter-$#2028;3', 'Butter$#2028;3', 1.49, '2026-06-01T10:00:00', '10115')
+        """)
+        conn.commit()
+
+        # Inject failure on row 2
+        import app.providers.base as base_mod
+        orig_clean_text = base_mod.clean_text
+        call_count = 0
+
+        def flaky_clean_text(val):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("Simulated processing crash on second row!")
+            return orig_clean_text(val)
+
+        monkeypatch.setattr(base_mod, "clean_text", flaky_clean_text)
+
+        # Execution must fail and raise RuntimeError
+        with pytest.raises(RuntimeError, match="Simulated processing crash"):
+            service._revalidate_historical_records_conn(conn)
+
+        # Verify atomic rollback: Row 1 must NOT be partially updated
+        rows = conn.execute("SELECT id, product_key, title FROM price_history ORDER BY id").fetchall()
+        assert rows[0]["title"] == "Butter$#2028;1"
+        assert rows[0]["product_key"] == "butter-$#2028;1"
+        assert rows[1]["title"] == "Butter$#2028;2"
+        assert rows[2]["title"] == "Butter$#2028;3"
+
+        # Verify savepoint stack is completely clean by issuing a new savepoint
+        conn.execute("SAVEPOINT test_can_create_new_savepoint")
+        conn.execute("RELEASE SAVEPOINT test_can_create_new_savepoint")
+
 
 
 

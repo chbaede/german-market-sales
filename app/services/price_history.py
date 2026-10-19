@@ -1208,24 +1208,76 @@ class PriceHistoryService:
             logger.warning("Unexpected error reading verified_campaign_registry: %s", exc)
 
         # 2. Clean legacy corrupted titles or product keys (e.g. &#x2028;, $#2028;, \u2028)
+        cursor = conn.execute("PRAGMA table_info(price_history)")
+        col_names = {row["name"] for row in cursor.fetchall()}
+        has_store_id = "store_id" in col_names
+        has_zip_code = "zip_code" in col_names
+        has_scope_type = "scope_type" in col_names
+        has_source_region_id = "source_region_id" in col_names
+        has_region_verified = "region_verified" in col_names
+        has_source_url = "source_url" in col_names
+
+        cleaned_count = 0
+        pruned_count = 0
+        unclean_count = 0
+
         try:
             conn.execute("SAVEPOINT text_cleanup")
             from app.providers.base import clean_text
 
+            store_id_sel = "store_id" if has_store_id else "NULL as store_id"
+            zip_sel = "zip_code" if has_zip_code else "NULL as zip_code"
+            scope_sel = "scope_type" if has_scope_type else "NULL as scope_type"
+            region_sel = "source_region_id" if has_source_region_id else "NULL as source_region_id"
+            verified_sel = "region_verified" if has_region_verified else "0 as region_verified"
+            source_url_sel = "source_url" if has_source_url else "NULL as source_url"
+
             unclean_rows = conn.execute(
-                """
-                SELECT id, title, brand, product_key, retailer_slug, recorded_at, price
+                f"""
+                SELECT id, title, brand, product_key, retailer_slug, recorded_at, price,
+                       {store_id_sel}, {zip_sel}, {scope_sel}, {region_sel},
+                       {verified_sel}, {source_url_sel}
                 FROM price_history
                 WHERE title LIKE '%&#x2028%'
-                   OR title LIKE '%$#2028%'
+                   OR title LIKE '%&#2028%'
                    OR title LIKE '%&#x2029%'
+                   OR title LIKE '%&#2029%'
+                   OR title LIKE '%&#8232%'
+                   OR title LIKE '%&#8233%'
+                   OR title LIKE '%$#x2028%'
+                   OR title LIKE '%$#2028%'
+                   OR title LIKE '%$#x2029%'
                    OR title LIKE '%$#2029%'
+                   OR title LIKE '%$#8232%'
+                   OR title LIKE '%$#8233%'
+                   OR title LIKE '%&amp;%#x2028%'
+                   OR title LIKE '%&amp;%#2028%'
+                   OR title LIKE '%&amp;%#x2029%'
+                   OR title LIKE '%&amp;%#2029%'
+                   OR title LIKE '%&amp;%#8232%'
+                   OR title LIKE '%&amp;%#8233%'
+                   OR title LIKE '%&amp;%$#%'
                    OR title LIKE '%\u2028%'
                    OR title LIKE '%\u2029%'
+                   OR title LIKE '%\u200b%'
+                   OR title LIKE '%\u200c%'
+                   OR title LIKE '%\u200d%'
+                   OR title LIKE '%\u2060%'
+                   OR title LIKE '%\ufeff%'
+                   OR title LIKE '%\u00ad%'
                    OR product_key LIKE '%-x2028%'
                    OR product_key LIKE '%-x2029%'
+                   OR product_key LIKE '%-8232%'
+                   OR product_key LIKE '%-8233%'
+                   OR product_key LIKE '%&#%'
+                   OR product_key LIKE '%$#%'
+                   OR product_key LIKE '%\u2028%'
+                   OR product_key LIKE '%\u2029%'
+                   OR product_key LIKE '%&amp;%'
                 """
             ).fetchall()
+            unclean_count = len(unclean_rows)
+
             for u_row in unclean_rows:
                 row_id = u_row["id"]
                 orig_title = u_row["title"]
@@ -1233,38 +1285,117 @@ class PriceHistoryService:
                 brand = u_row["brand"]
                 cleaned_title = clean_text(orig_title)
                 new_key = normalize_product_key(cleaned_title, brand)
+
                 if cleaned_title != orig_title or new_key != orig_key:
-                    # Check for collision where an identical observation already exists under the cleaned key
-                    collision = conn.execute(
+                    # Determine whether an exact redundant duplicate clone of this observation
+                    # already exists under the cleaned product_key for the exact same store / scope / location.
+                    #
+                    # CRITICAL: Do NOT delete rows across different stores or regions!
+                    # Different store_ids, different zip_codes, or different scope identities
+                    # represent independent price observations and must always be preserved.
+                    # Non-destructive handling (UPDATE) is strictly preferred whenever duplicate
+                    # identity cannot be established with 100% certainty.
+
+                    is_confident_duplicate = False
+
+                    u_store_id = str(u_row["store_id"] or "").strip() if has_store_id else ""
+                    u_zip = str(u_row["zip_code"] or "").strip() if has_zip_code else ""
+                    u_scope = str(u_row["scope_type"] or "").strip().lower() if has_scope_type else "unknown"
+                    u_region_id = str(u_row["source_region_id"] or "").strip() if has_source_region_id else ""
+                    u_verified = int(u_row["region_verified"] or 0) if has_region_verified else 0
+                    u_source_url = str(u_row["source_url"] or "").strip() if has_source_url else ""
+
+                    # Only evaluate duplication if we have confident geographic identity:
+                    # - Store scope with non-empty store_id and non-empty zip_code
+                    # - Region scope with non-empty source_region_id and non-empty zip_code
+                    # - Nationwide scope
+                    can_evaluate_duplicate = (
+                        (u_scope == "store" and bool(u_store_id) and bool(u_zip))
+                        or (u_scope == "region" and bool(u_region_id) and bool(u_zip))
+                        or (u_scope == "nationwide")
+                    )
+
+                    if can_evaluate_duplicate:
+                        query_collision = f"""
+                            SELECT id, {store_id_sel}, {zip_sel}, {scope_sel},
+                                   {region_sel}, {verified_sel}, {source_url_sel}
+                            FROM price_history
+                            WHERE product_key = ?
+                              AND retailer_slug = ?
+                              AND recorded_at = ?
+                              AND (price = ? OR (price IS NULL AND ? IS NULL))
+                              AND id != ?
                         """
-                        SELECT id FROM price_history
-                        WHERE product_key = ?
-                          AND retailer_slug = ?
-                          AND recorded_at = ?
-                          AND (price = ? OR (price IS NULL AND ? IS NULL))
-                          AND id != ?
-                        LIMIT 1
-                        """,
-                        (new_key, u_row["retailer_slug"], u_row["recorded_at"], u_row["price"], u_row["price"], row_id),
-                    ).fetchone()
-                    if collision:
-                        # Redundant duplicate observation after key cleanup; prune corrupted row
+                        collisions = conn.execute(
+                            query_collision,
+                            (new_key, u_row["retailer_slug"], u_row["recorded_at"], u_row["price"], u_row["price"], row_id),
+                        ).fetchall()
+
+                        for coll in collisions:
+                            c_store_id = str(coll["store_id"] or "").strip() if has_store_id else ""
+                            c_zip = str(coll["zip_code"] or "").strip() if has_zip_code else ""
+                            c_scope = str(coll["scope_type"] or "").strip().lower() if has_scope_type else "unknown"
+                            c_region_id = str(coll["source_region_id"] or "").strip() if has_source_region_id else ""
+                            c_verified = int(coll["region_verified"] or 0) if has_region_verified else 0
+                            c_source_url = str(coll["source_url"] or "").strip() if has_source_url else ""
+
+                            if c_scope != u_scope:
+                                continue
+
+                            # Never delete a verified observation in favor of an unverified one
+                            if c_verified < u_verified:
+                                continue
+
+                            if u_scope == "store":
+                                if c_store_id == u_store_id and c_zip == u_zip:
+                                    if not (u_source_url and c_source_url and u_source_url != c_source_url):
+                                        is_confident_duplicate = True
+                                        break
+                            elif u_scope == "region":
+                                if c_region_id == u_region_id and c_zip == u_zip:
+                                    if not (u_source_url and c_source_url and u_source_url != c_source_url):
+                                        is_confident_duplicate = True
+                                        break
+                            elif u_scope == "nationwide":
+                                if not (u_source_url and c_source_url and u_source_url != c_source_url):
+                                    is_confident_duplicate = True
+                                    break
+
+                    if is_confident_duplicate:
                         conn.execute("DELETE FROM price_history WHERE id = ?", (row_id,))
+                        pruned_count += 1
                     else:
                         conn.execute(
                             "UPDATE price_history SET title = ?, product_key = ? WHERE id = ?",
                             (cleaned_title, new_key, row_id),
                         )
+                        cleaned_count += 1
+
             conn.execute("RELEASE SAVEPOINT text_cleanup")
+            if unclean_count > 0:
+                logger.info(
+                    "Historical text cleanup completed: %d rows inspected, %d updated, %d pruned duplicates",
+                    unclean_count,
+                    cleaned_count,
+                    pruned_count,
+                )
         except Exception as exc:
             try:
                 conn.execute("ROLLBACK TO SAVEPOINT text_cleanup")
-            except Exception:
-                pass
-            logger.warning("Error cleaning historical titles in price_history: %s", exc)
+            except Exception as rb_exc:
+                logger.error("Failed to rollback savepoint text_cleanup: %s", rb_exc)
+            finally:
+                try:
+                    conn.execute("RELEASE SAVEPOINT text_cleanup")
+                except Exception:
+                    pass
+            logger.error(
+                "Historical text cleanup failed (%d rows inspected before failure, changes rolled back): %s",
+                unclean_count,
+                exc,
+            )
+            raise
 
-        cursor = conn.execute("PRAGMA table_info(price_history)")
-        col_names = {row["name"] for row in cursor.fetchall()}
         store_addr_select = "store_address" if "store_address" in col_names else "NULL as store_address"
         evidence_select = "verification_evidence" if "verification_evidence" in col_names else "NULL as verification_evidence"
 
