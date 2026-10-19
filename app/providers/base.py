@@ -30,30 +30,32 @@ def verify_tls_bool(value: str | bool) -> bool:
 def clean_text(value: Any) -> str:
     if value is None:
         return ""
-    text = str(value)
-    # 1. Normalize accidental $# or $entity (e.g. $#2028;, $#x2028;, $amp;) to &# or &entity
-    text = re.sub(r"\$#", "&#", text)
-    text = re.sub(r"\$([a-zA-Z]+;)", r"&\1", text)
-    # 2. Fix missing semicolons on common numeric entities (e.g. &#x2028 or &#2028 followed by non-hex)
-    text = re.sub(r"&#x([0-9a-fA-F]+)(?![0-9a-fA-F;])", r"&#x\1;", text)
-    text = re.sub(r"&#([0-9]+)(?![0-9;])", r"&#\1;", text)
-    # 3. Explicitly replace numeric entities for line/paragraph separators (both hex 2028/2029 and decimal 2028/2029 or 8232/8233)
-    text = re.sub(r"&#x?202[89];?", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"&#823[23];?", " ", text)
-    # 4. Unescape standard HTML entities (with iterative loop for double-escaping like &amp;#x2028;)
-    for _ in range(2):
+    if not isinstance(value, str):
+        try:
+            value = str(value)
+        except Exception:
+            return ""
+    if not value:
+        return ""
+
+    text = value
+    for _ in range(5):
+        prev = text
+        text = re.sub(r"&amp;(\$#|&#)", r"\1", text)
+        text = re.sub(r"[\$&]#x?202[89];?", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"[\$&]#823[23];?", " ", text)
+        text = re.sub(r"\$#", "&#", text)
+        text = re.sub(r"\$([a-zA-Z]+;)", r"&\1", text)
+        text = re.sub(r"&#x([0-9a-fA-F]+)(?![0-9a-fA-F;])", r"&#x\1;", text)
+        text = re.sub(r"&#([0-9]+)(?![0-9;])", r"&#\1;", text)
         if "&" in text:
-            new_text = html.unescape(text)
-            if new_text == text:
-                break
-            text = new_text
-        else:
+            text = html.unescape(text)
+        if text == prev:
             break
-    # 5. Replace Unicode line/paragraph separators and control characters with standard whitespace
+
+    text = re.sub(r"[\$&]#x?202[89];?", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"[\u2028\u2029\r\n\t]+", " ", text)
-    # 6. Strip zero-width characters, soft hyphens, and BOM
-    text = re.sub(r"[\u200b-\u200d\ufeff\u00ad]", "", text)
-    # 7. Collapse all whitespace into a single space and strip
+    text = re.sub(r"[\u200b-\u200d\u2060\ufeff\u00ad]", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
 

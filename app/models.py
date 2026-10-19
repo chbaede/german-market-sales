@@ -56,7 +56,12 @@ class Offer:
             _clean_text_fn = clean_text
 
         if self.title:
-            self.title = _clean_text_fn(self.title)
+            cleaned_title = _clean_text_fn(self.title)
+            if cleaned_title != self.title:
+                self.title = cleaned_title
+                if self.product_key and any(m in self.product_key for m in ("-x2028", "-x2029", "&#", "$#", "\u2028", "\u2029")):
+                    from app.services.price_history import normalize_product_key
+                    self.product_key = normalize_product_key(self.title, self.brand)
         if self.brand:
             self.brand = _clean_text_fn(self.brand) or None
         if self.description:
@@ -65,7 +70,7 @@ class Offer:
             self.store_name = _clean_text_fn(self.store_name) or None
         if self.store_address:
             self.store_address = _clean_text_fn(self.store_address) or None
-        if self.product_key and any(m in self.product_key for m in ("2028", "2029", "&#", "$#")):
+        if self.product_key and any(m in self.product_key for m in ("-x2028", "-x2029", "&#", "$#", "\u2028", "\u2029")):
             from app.services.price_history import normalize_product_key
             self.product_key = normalize_product_key(self.title, self.brand)
 

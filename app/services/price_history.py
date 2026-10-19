@@ -1209,23 +1209,58 @@ class PriceHistoryService:
 
         # 2. Clean legacy corrupted titles or product keys (e.g. &#x2028;, $#2028;, \u2028)
         try:
+            conn.execute("SAVEPOINT text_cleanup")
             from app.providers.base import clean_text
 
             unclean_rows = conn.execute(
-                "SELECT id, title, brand, product_key FROM price_history "
-                "WHERE title LIKE '%&#%' OR title LIKE '%$#%' OR title LIKE '%\u2028%' OR product_key LIKE '%x2028%' OR product_key LIKE '%2029%'"
+                """
+                SELECT id, title, brand, product_key, retailer_slug, recorded_at, price
+                FROM price_history
+                WHERE title LIKE '%&#x2028%'
+                   OR title LIKE '%$#2028%'
+                   OR title LIKE '%&#x2029%'
+                   OR title LIKE '%$#2029%'
+                   OR title LIKE '%\u2028%'
+                   OR title LIKE '%\u2029%'
+                   OR product_key LIKE '%-x2028%'
+                   OR product_key LIKE '%-x2029%'
+                """
             ).fetchall()
             for u_row in unclean_rows:
                 row_id = u_row["id"]
                 orig_title = u_row["title"]
+                orig_key = u_row["product_key"]
                 brand = u_row["brand"]
                 cleaned_title = clean_text(orig_title)
                 new_key = normalize_product_key(cleaned_title, brand)
-                conn.execute(
-                    "UPDATE price_history SET title = ?, product_key = ? WHERE id = ?",
-                    (cleaned_title, new_key, row_id),
-                )
+                if cleaned_title != orig_title or new_key != orig_key:
+                    # Check for collision where an identical observation already exists under the cleaned key
+                    collision = conn.execute(
+                        """
+                        SELECT id FROM price_history
+                        WHERE product_key = ?
+                          AND retailer_slug = ?
+                          AND recorded_at = ?
+                          AND (price = ? OR (price IS NULL AND ? IS NULL))
+                          AND id != ?
+                        LIMIT 1
+                        """,
+                        (new_key, u_row["retailer_slug"], u_row["recorded_at"], u_row["price"], u_row["price"], row_id),
+                    ).fetchone()
+                    if collision:
+                        # Redundant duplicate observation after key cleanup; prune corrupted row
+                        conn.execute("DELETE FROM price_history WHERE id = ?", (row_id,))
+                    else:
+                        conn.execute(
+                            "UPDATE price_history SET title = ?, product_key = ? WHERE id = ?",
+                            (cleaned_title, new_key, row_id),
+                        )
+            conn.execute("RELEASE SAVEPOINT text_cleanup")
         except Exception as exc:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT text_cleanup")
+            except Exception:
+                pass
             logger.warning("Error cleaning historical titles in price_history: %s", exc)
 
         cursor = conn.execute("PRAGMA table_info(price_history)")

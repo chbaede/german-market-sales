@@ -59,21 +59,26 @@ class KauflandProvider(OfferProvider):
         norm_zip = normalize_german_plz(clean_zip) or clean_zip
         is_same_plz = bool(store_plz and (store_plz == clean_zip or store_plz == norm_zip))
 
+        store_registration_ok = False
         if is_same_plz and store and store_id and store_address and store_plz:
             from app.services.price_history import register_official_store_record
 
             try:
-                register_official_store_record(
-                    retailer_slug=self.retailer_slug,
-                    store_id=str(store_id).strip(),
-                    store_address=store_address,
-                    store_plz=store_plz,
-                    store_name=store_name,
-                    metadata_source="kaufland_official_store_api",
-                    source_record=store,
+                store_registration_ok = bool(
+                    register_official_store_record(
+                        retailer_slug=self.retailer_slug,
+                        store_id=str(store_id).strip(),
+                        store_address=store_address,
+                        store_plz=store_plz,
+                        store_name=store_name,
+                        metadata_source="kaufland_official_store_api",
+                        source_record=store,
+                    )
                 )
             except Exception:
-                pass
+                store_registration_ok = False
+
+        is_store_verified = bool(is_same_plz and store_registration_ok)
 
         offers = self.offers_from_payload(
             payload,
@@ -82,7 +87,7 @@ class KauflandProvider(OfferProvider):
             store_name=store_name,
             store_address=store_address,
             requested_zip=zip_code,
-            location_verified=is_same_plz,
+            location_verified=is_store_verified,
         )
         if not offers:
             raise ValueError("Kaufland official offers were empty.")
@@ -170,7 +175,7 @@ class KauflandProvider(OfferProvider):
         store_name: str | None = None,
         store_address: str | None = None,
         requested_zip: str | None = None,
-        location_verified: bool = False,
+        location_verified: bool | None = None,
     ) -> list[Offer]:
         today = today or datetime.now(BERLIN_TZ).date()
         cycles = payload.get("props", {}).get("offerData", {}).get("cycles") or []
@@ -217,7 +222,7 @@ class KauflandProvider(OfferProvider):
         store_name: str | None = None,
         store_address: str | None = None,
         requested_zip: str | None = None,
-        location_verified: bool = False,
+        location_verified: bool | None = None,
     ) -> Offer | None:
         from app.services.location import get_coordinates_for_plz, haversine_distance_km
 
@@ -246,10 +251,17 @@ class KauflandProvider(OfferProvider):
                 addr_plz = m_plz.group(1)
 
         # Defensible location evidence requires the store's authoritative postal code to match
-        # the requested PLZ (or its normalized street PLZ). A nearest store in a different PLZ
-        # (even within 60km) does NOT prove promotional applicability for the requested PLZ.
+        # the requested PLZ (or its normalized street PLZ) AND successful authoritative store validation.
         is_location_substantiated = False
         location_mismatch = False
+
+        from app.providers.marktguru import is_production_mode
+        if location_verified is False:
+            is_loc_allowed = False
+        elif location_verified is True:
+            is_loc_allowed = True
+        else:
+            is_loc_allowed = not is_production_mode()
 
         if clean_store_id and user_coords:
             if addr_plz:
@@ -258,7 +270,7 @@ class KauflandProvider(OfferProvider):
                 else:
                     location_mismatch = True
 
-        if clean_store_id and is_location_substantiated and not location_mismatch:
+        if clean_store_id and is_location_substantiated and not location_mismatch and is_loc_allowed:
             scope_type = "store"
             region_verified = True
             verification_method = "store_cookie_session"
@@ -270,7 +282,7 @@ class KauflandProvider(OfferProvider):
             if location_mismatch:
                 verification_reason = f"Kaufland store {clean_store_id} is located at PLZ {addr_plz}, which does not match requested PLZ {clean_zip}; promotional applicability unverified"
             else:
-                verification_reason = f"Kaufland store {clean_store_id} lacks verified geographic location evidence for requested PLZ {clean_zip}"
+                verification_reason = f"Kaufland store {clean_store_id} lacks authenticated official store source record for requested PLZ {clean_zip}"
         else:
             scope_type = "nationwide"
             region_verified = False
@@ -279,11 +291,12 @@ class KauflandProvider(OfferProvider):
 
         verification_evidence: dict[str, Any] | None = None
         if region_verified:
-            from app.providers.marktguru import is_production_mode
             from app.services.price_history import get_official_store_record
 
             official_record = get_official_store_record(cls.retailer_slug, clean_store_id)
-            if (official_record is None or (not is_production_mode() and official_record.get("store_plz") not in (addr_plz, clean_zip, norm_zip))) and not is_production_mode():
+            if not is_production_mode() and (
+                official_record is None or official_record.get("store_plz") not in (addr_plz, clean_zip, norm_zip)
+            ):
                 from app.services.price_history import register_official_store_record
 
                 register_official_store_record(

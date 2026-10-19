@@ -4538,14 +4538,14 @@ def test_scenario_36_caller_supplied_hash_in_production_mode_rejected(monkeypatc
     with pytest.raises(FileNotFoundError):
         ingest_trusted_evidence_artifact(fake_path, expected_hash="0" * 64)
 
-    # 2. Even for an existing pre-approved file, passing a contradicting caller hash -> ValueError
-    real_file = PRODUCTION_EVIDENCE_ROOT / "marktguru_de_nationwide_manifest.json"
-    with pytest.raises(ValueError, match="contradicts pre-approved manifest hash"):
-        ingest_trusted_evidence_artifact(real_file, expected_hash="0" * 64)
-
-    # 3. Legitimate pre-approved file in production with correct manifest hash passes
-    legit_hash = ingest_trusted_evidence_artifact(real_file)
-    assert legit_hash == "01d806a1b814df93efe61dbcf46b6329145c0cc71ed1222ce84ca43d49f4b265"
+    # 2. Self-authored file placed in production root with caller-supplied hash -> PermissionError
+    test_prod_file = PRODUCTION_EVIDENCE_ROOT / "self_authored.json"
+    try:
+        test_prod_file.write_text(json.dumps({"campaign_id": "test", "audit_reference": "MG-PROV"}), encoding="utf-8")
+        with pytest.raises(PermissionError):
+            ingest_trusted_evidence_artifact(test_prod_file, expected_hash="0" * 64)
+    finally:
+        test_prod_file.unlink(missing_ok=True)
 
 
 def test_scenario_37_fake_store_ids_fabricated_addresses_and_unsupported_sources_demoted():
@@ -4763,18 +4763,18 @@ def test_scenario_40_legitimate_evidence_survives_restart_and_reconciliation(tmp
         ),
     )
 
-    # Legitimate campaign offer backed by production evidence artifact
+    # Legitimate campaign offer backed by authentic test fixture artifact
     camp_ev = {
-        "campaign_id": "mg_de_nationwide_2026_06",
-        "source_url": "https://www.marktguru.de/leaflets/mg_de_nationwide_2026_06",
+        "campaign_id": "nat_valid_606",
+        "source_url": "https://www.marktguru.de/leaflets/nat_valid_606",
         "evidence_type": "verified_nationwide_distribution_manifest",
         "verification_date": "2026-06-01",
         "scope": "nationwide",
         "promotional_applicability_confirmed": True,
-        "limitations": "Independently audited nationwide promotional leaflet for Germany",
-        "evidence_artifact_path": str(PRODUCTION_EVIDENCE_ROOT / "marktguru_de_nationwide_manifest.json"),
+        "limitations": "Audited national distribution manifest for Germany",
+        "evidence_artifact_path": str(FIXTURE_EVIDENCE_DIR / "nat_valid_606.json"),
     }
-    assert register_verified_nationwide_campaign("mg_de_nationwide_2026_06", camp_ev) is True
+    assert register_verified_nationwide_campaign("nat_valid_606", camp_ev) is True
 
     legit_nat_offer = Offer(
         id="legit-nat-1",
@@ -4796,7 +4796,7 @@ def test_scenario_40_legitimate_evidence_survives_restart_and_reconciliation(tmp
         source_url="https://marktguru.de",
         requested_zip_code="10115",
         scope_type="nationwide",
-        source_region_id="national_flyer:mg_de_nationwide_2026_06",
+        source_region_id="national_flyer:nat_valid_606",
         source_provider="marktguru",
         region_verified=True,
         verification_method="marktguru_national_flyer",
@@ -5132,36 +5132,90 @@ def test_requirement_4_synthetic_campaign_artifacts_cannot_be_approved_for_produ
             fake_prod_synthetic.unlink()
 
 
-def test_requirement_5_genuine_trusted_evidence_still_works(monkeypatch):
-    """5. Genuine, trusted evidence still works in production mode."""
-    from app.providers.marktguru import is_synthetic_evidence_artifact
+def test_requirement_2_self_authored_manifest_fails_closed_to_unverified_national(monkeypatch, tmp_path):
+    """2. Self-authored manifest with descriptive claims or audit strings fails closed to unverified national."""
+    from app.providers.marktguru import (
+        is_synthetic_evidence_artifact,
+        validate_nationwide_coverage_evidence,
+        is_verified_nationwide_campaign,
+        register_verified_nationwide_campaign,
+    )
 
     monkeypatch.setenv("APP_ENV", "production")
     assert is_production_mode() is True
 
-    # Genuine production manifest exists
-    prod_manifest = PRODUCTION_EVIDENCE_ROOT / "marktguru_de_nationwide_manifest.json"
-    assert prod_manifest.exists()
-    assert is_synthetic_evidence_artifact(prod_manifest) is False
-
-    # Ingestion succeeds and returns the authentic manifest SHA-256 hash
-    expected_hash = "01d806a1b814df93efe61dbcf46b6329145c0cc71ed1222ce84ca43d49f4b265"
-    ingested_hash = ingest_trusted_evidence_artifact(prod_manifest)
-    assert ingested_hash == expected_hash
-
-    # Registration succeeds
-    camp_ev = {
+    # 1. Self-authored manifest with audit string and descriptive claims
+    self_authored_file = PRODUCTION_EVIDENCE_ROOT / "self_authored_manifest.json"
+    self_authored_content = {
         "campaign_id": "mg_de_nationwide_2026_06",
         "source_url": "https://www.marktguru.de/leaflets/mg_de_nationwide_2026_06",
-        "evidence_type": "verified_nationwide_distribution_manifest",
-        "verification_date": "2026-06-01",
         "scope": "nationwide",
-        "promotional_applicability_confirmed": True,
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_nationwide_distribution_manifest",
+        "source_record": {
+            "provider": "marktguru",
+            "distribution_scope": "DE_ALL",
+            "audit_reference": "MG-PROV-2026-06-01",
+        },
         "limitations": "Independently audited nationwide promotional leaflet for Germany",
-        "evidence_artifact_path": str(prod_manifest),
     }
-    assert register_verified_nationwide_campaign("mg_de_nationwide_2026_06", camp_ev) is True
-    assert is_verified_nationwide_campaign("mg_de_nationwide_2026_06") is True
+    try:
+        self_authored_file.write_text(json.dumps(self_authored_content), encoding="utf-8")
+
+        # Recognized as synthetic/unproven artifact
+        assert is_synthetic_evidence_artifact(self_authored_file, self_authored_content) is True
+
+        # Ingestion in production rejected
+        with pytest.raises(PermissionError):
+            ingest_trusted_evidence_artifact(self_authored_file)
+
+        # Validation fails closed
+        ok, reason, validated = validate_nationwide_coverage_evidence(
+            "mg_de_nationwide_2026_06",
+            {
+                "campaign_id": "mg_de_nationwide_2026_06",
+                "source_url": "https://www.marktguru.de/leaflets/mg_de_nationwide_2026_06",
+                "evidence_type": "verified_nationwide_distribution_manifest",
+                "verification_date": "2026-06-01",
+                "scope": "nationwide",
+                "promotional_applicability_confirmed": True,
+                "limitations": "Independently audited nationwide promotional leaflet for Germany",
+                "evidence_artifact_path": str(self_authored_file),
+            },
+        )
+        assert ok is False
+        assert any(
+            phrase in reason
+            for phrase in (
+                "Self-authored artifact",
+                "Synthetic campaign artifact",
+                "cannot be approved for production",
+                "cannot establish nationwide",
+            )
+        )
+        assert validated is None
+
+        # Registration fails closed
+        assert register_verified_nationwide_campaign("mg_de_nationwide_2026_06", {"evidence_artifact_path": str(self_authored_file)}) is False
+        assert is_verified_nationwide_campaign("mg_de_nationwide_2026_06") is False
+    finally:
+        self_authored_file.unlink(missing_ok=True)
+
+    # Marktguru provider parses offer as unverified national
+    provider = MarktguruProvider()
+    unproven_item = {
+        "id": 9991,
+        "product": {"name": "National Butter"},
+        "price": 1.49,
+        "flyer": {"id": 8881, "isNational": True},
+    }
+    offer = provider._offer_from_api(unproven_item, "kaufland", zip_code="10115")
+    assert offer is not None
+    assert offer.scope_type == "nationwide"
+    assert offer.region_verified is False
+    assert offer.verification_method == "marktguru_unverified_national"
+    assert "lacks substantiated scope-specific nationwide evidence" in (offer.verification_reason or "")
 
 
 def test_requirement_6_unverified_prices_cannot_affect_verified_averages_historical_lows_or_regional_results(tmp_path):
@@ -5296,6 +5350,227 @@ def test_requirement_6_unverified_prices_cannot_affect_verified_averages_histori
     nat_map = service.get_all_time_low_map(zip_code=None)
     assert reg_map[pkey] == 5.49
     assert nat_map[pkey] == 5.49
+
+
+def test_edeka_and_kaufland_registration_failure_or_exception_demotes_live_offers_as_unverified(monkeypatch):
+    """
+    Live offer verification depends on successful store provenance validation.
+    When register_official_store_record fails or raises an exception:
+    - Offers are preserved as unverified (region_verified=False, verification_method='unverified_store_location')
+    - Immediate API responses before database persistence are unverified
+    - Matching postal code alone never proves location verification
+    """
+    from app.providers.edeka import EdekaProvider
+    from app.providers.kaufland import KauflandProvider
+    import app.services.price_history as ph_mod
+
+    # 1. EDEKA mock responses
+    sample_dialog_html = """
+    <html><body>
+    <dialog id="dialog-angebot-999">
+      <h3><span>Angebot:</span> Gut &amp; Günstig Butter 250g</h3>
+      <div class="sr-only">Festpreis von 1.59 €</div>
+    </dialog>
+    </body></html>
+    """
+
+    mock_market = {
+        "id": "10009999",
+        "name": "EDEKA Testmarkt",
+        "url": "https://www.edeka.de/eh/minden-hannover/edeka-test/index.jsp",
+        "contact": {"address": {"street": "Teststr. 1", "postalCode": "10115", "city": "Berlin"}},
+        "coordinates": {"lat": 52.53, "lon": 13.38},
+    }
+
+    edeka_prov = EdekaProvider()
+    monkeypatch.setattr(edeka_prov, "_candidate_markets", lambda zip_code: ([mock_market], False))
+    monkeypatch.setattr(edeka_prov, "_offers_url", lambda raw_url: (raw_url, False))
+    monkeypatch.setattr(edeka_prov, "_request_text", lambda url: (sample_dialog_html, False))
+
+    # Case A: register_official_store_record raises exception
+    monkeypatch.setattr(ph_mod, "register_official_store_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Registry DB locked")))
+
+    offers, warnings = edeka_prov.fetch_offers("edeka", zip_code="10115", limit=5)
+    assert len(offers) > 0
+    for offer in offers:
+        assert offer.scope_type == "store"
+        assert offer.region_verified is False
+        assert offer.verification_method == "unverified_store_location"
+
+    # Case B: register_official_store_record returns False
+    monkeypatch.setattr(ph_mod, "register_official_store_record", lambda *a, **k: False)
+    offers2, _ = edeka_prov.fetch_offers("edeka", zip_code="10115", limit=5)
+    assert len(offers2) > 0
+    for offer in offers2:
+        assert offer.region_verified is False
+        assert offer.verification_method == "unverified_store_location"
+
+    # Case C: Kaufland when register_official_store_record raises exception
+    kaufland_payload = {
+        "component": "OfferTemplate",
+        "props": {
+            "offerData": {
+                "cycles": [{
+                    "categories": [{
+                        "name": "Kühlregal",
+                        "offers": [{
+                            "offerId": "KL-777",
+                            "title": "Kaufland Joghurt 500g",
+                            "price": "0.79",
+                            "dateFrom": "2026-01-01",
+                            "dateTo": "2026-12-31",
+                        }],
+                    }]
+                }]
+            }
+        },
+    }
+
+    class MockKauflandProvider(KauflandProvider):
+        def _resolve_store_id(self, zip_code):
+            return "DE9999"
+        def _get_store_details(self, store_id):
+            return {
+                "store_name": "Kaufland Test",
+                "store_address": "Testweg 10, 10115 Berlin",
+                "store_plz": "10115",
+                "source_record": {"n": "DE9999", "pc": "10115", "sn": "Testweg 10"},
+            }
+        def _fetch_html(self, url, headers=None):
+            return f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(kaufland_payload)}</script>'
+
+    kl_prov = MockKauflandProvider()
+    monkeypatch.setattr(ph_mod, "register_official_store_record", lambda *a, **k: (_ for _ in ()).throw(ValueError("Invalid store metadata")))
+    kl_offers, _ = kl_prov.fetch_offers("kaufland", zip_code="10115", limit=5)
+    assert len(kl_offers) > 0
+    for offer in kl_offers:
+        assert offer.scope_type == "store"
+        assert offer.region_verified is False
+        assert offer.verification_method == "unverified_store_location"
+
+
+def test_text_normalization_corruption_patterns_and_number_protection():
+    """
+    Sanitizes line separator corruption ($#2028;, &#x2028;, etc.) and zero-width chars,
+    while protecting valid numbers (Kalender 2028, Wein 2029).
+    """
+    from app.providers.base import clean_text
+
+    # 1. Corrupted strings
+    assert clean_text("Milch$#2028;1L") == "Milch 1L"
+    assert clean_text("Kaffee&#2028;Bohnen") == "Kaffee Bohnen"
+    assert clean_text("Tee&#x2028;Beutel") == "Tee Beutel"
+    assert clean_text("Wasser\u2028Still") == "Wasser Still"
+    assert clean_text("Wasser\u2029Medium") == "Wasser Medium"
+    assert clean_text("Brot&amp;#x2028;Frisch") == "Brot Frisch"
+    assert clean_text("Käse&amp;$#2028;Scheiben") == "Käse Scheiben"
+
+    # Zero-width characters stripped
+    assert clean_text("Schoko\u200blade") == "Schokolade"
+    assert clean_text("Keks\ufeffe") == "Kekse"
+
+    # 2. Legitimate numbers protected
+    assert clean_text("Wandkalender 2028") == "Wandkalender 2028"
+    assert clean_text("Riesling Jahrgang 2029") == "Riesling Jahrgang 2029"
+    assert clean_text("Modell 2028 Turbo") == "Modell 2028 Turbo"
+
+    # 3. Offer instantiation protects legitimate product_key
+    off_cal = Offer(
+        id="cal-2028",
+        source_offer_id=1,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Wandkalender 2028",
+        brand=None,
+        category="stationery",
+        price=9.99,
+        old_price=None,
+        unit_price=None,
+        unit=None,
+        discount_percent=None,
+        description="",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://edeka.de",
+        product_key="wandkalender-2028",
+    )
+    assert off_cal.title == "Wandkalender 2028"
+    assert off_cal.product_key == "wandkalender-2028"
+
+    # Offer instantiation cleans corrupted title and product_key
+    off_corrupt = Offer(
+        id="cor-1",
+        source_offer_id=2,
+        retailer="EDEKA",
+        retailer_slug="edeka",
+        title="Bio Butter$#2028;250g",
+        brand=None,
+        category="dairy",
+        price=2.49,
+        old_price=None,
+        unit_price=None,
+        unit=None,
+        discount_percent=None,
+        description="",
+        valid_from=None,
+        valid_to=None,
+        image_url=None,
+        source_url="https://edeka.de",
+        product_key="bio-butter-$#2028;250g",
+    )
+    assert off_corrupt.title == "Bio Butter 250g"
+    assert "2028" not in off_corrupt.product_key
+    assert off_corrupt.product_key == normalize_product_key("Bio Butter 250g")
+
+
+def test_database_cleanup_transactional_savepoint_and_collision_handling(tmp_path):
+    """
+    Historical database revalidation:
+    - Cleans up corruption patterns safely
+    - Protects legitimate model numbers (2028, 2029)
+    - Resolves product_key collisions transactionally via savepoint
+    """
+    service = PriceHistoryService(cache_dir=tmp_path, db_name="test_cleanup.db")
+
+    butter_clean_key = normalize_product_key("Butter 250g")
+
+    with service._get_connection() as conn:
+        # Insert:
+        # 1. Corrupted title with $#2028;
+        # 2. An existing cleaned record that would collide with (1) once cleaned
+        # 3. A record with a legitimate year 2028
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
+            VALUES ('edeka', 'EDEKA', 'butter-$#2028;250g', 'Butter$#2028;250g', 1.99, '2026-06-01T10:00:00', '10115')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
+            VALUES ('edeka', 'EDEKA', ?, 'Butter 250g', 1.99, '2026-06-01T10:00:00', '10115')
+        """, (butter_clean_key,))
+        conn.execute("""
+            INSERT INTO price_history (retailer_slug, retailer_name, product_key, title, price, recorded_at, zip_code)
+            VALUES ('edeka', 'EDEKA', 'wandkalender-2028', 'Wandkalender 2028', 9.99, '2026-06-01T10:00:00', '10115')
+        """)
+        conn.commit()
+
+        # Run revalidation
+        service._revalidate_historical_records_conn(conn)
+        conn.commit()
+
+        rows = conn.execute("SELECT id, product_key, title FROM price_history ORDER BY id").fetchall()
+
+    # Ensure legitimate 2028 was untouched
+    kalender_row = [r for r in rows if "Wandkalender" in r["title"]][0]
+    assert kalender_row["product_key"] == "wandkalender-2028"
+    assert kalender_row["title"] == "Wandkalender 2028"
+
+    # Ensure collision was safely resolved (no duplicate or corrupted row)
+    butter_rows = [r for r in rows if "Butter" in r["title"]]
+    assert len(butter_rows) == 1
+    assert butter_rows[0]["product_key"] == butter_clean_key
+    assert butter_rows[0]["title"] == "Butter 250g"
+
 
 
 

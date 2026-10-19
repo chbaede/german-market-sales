@@ -87,21 +87,26 @@ class EdekaProvider(OfferProvider):
                 market_pc = _extract_market_plz(market, store_address)
                 is_same_plz = bool(market_pc and (market_pc == clean_zip or market_pc == norm_zip))
 
+                store_registration_ok = False
                 if is_same_plz and store_id and store_address and market_pc:
                     from app.services.price_history import register_official_store_record
 
                     try:
-                        register_official_store_record(
-                            retailer_slug=self.retailer_slug,
-                            store_id=store_id,
-                            store_address=store_address,
-                            store_plz=market_pc,
-                            store_name=market_name,
-                            metadata_source="edeka_official_market_api",
-                            source_record=market,
+                        store_registration_ok = bool(
+                            register_official_store_record(
+                                retailer_slug=self.retailer_slug,
+                                store_id=store_id,
+                                store_address=store_address,
+                                store_plz=market_pc,
+                                store_name=market_name,
+                                metadata_source="edeka_official_market_api",
+                                source_record=market,
+                            )
                         )
                     except Exception:
-                        pass
+                        store_registration_ok = False
+
+                is_store_verified = bool(is_same_plz and store_registration_ok)
 
                 offers = self.offers_from_html(
                     html,
@@ -111,10 +116,10 @@ class EdekaProvider(OfferProvider):
                     store_id=store_id,
                     store_address=store_address,
                     requested_zip=zip_code,
-                    location_verified=is_same_plz,
+                    location_verified=is_store_verified,
                 )
                 if offers:
-                    if is_same_plz:
+                    if is_store_verified and any(o.region_verified for o in offers):
                         # Preferred: exact/normalized PLZ match verified store
                         return offers, list(dict.fromkeys(market_warnings))
                     elif unverified_fallback is None:
@@ -141,7 +146,7 @@ class EdekaProvider(OfferProvider):
         store_id: str | None = None,
         store_address: str | None = None,
         requested_zip: str | None = None,
-        location_verified: bool = False,
+        location_verified: bool | None = None,
     ) -> list[Offer]:
         soup = BeautifulSoup(html, "html.parser")
         valid_from, valid_to = _page_validity(soup)
@@ -177,7 +182,7 @@ class EdekaProvider(OfferProvider):
         store_id: str | None = None,
         store_address: str | None = None,
         requested_zip: str | None = None,
-        location_verified: bool = False,
+        location_verified: bool | None = None,
     ) -> Offer | None:
         from app.services.location import get_coordinates_for_plz, normalize_german_plz
 
@@ -210,10 +215,17 @@ class EdekaProvider(OfferProvider):
                 addr_plz = m_plz.group(1)
 
         # Defensible location evidence requires the store's authoritative postal code to match
-        # the requested PLZ (or its normalized street PLZ). A nearest store in a different PLZ
-        # (even within 60km) does NOT prove promotional applicability for the requested PLZ.
+        # the requested PLZ (or its normalized street PLZ) AND successful authoritative store validation.
         is_location_substantiated = False
         location_mismatch = False
+
+        from app.providers.marktguru import is_production_mode
+        if location_verified is False:
+            is_loc_allowed = False
+        elif location_verified is True:
+            is_loc_allowed = True
+        else:
+            is_loc_allowed = not is_production_mode()
 
         if has_store_identity and user_coords:
             if addr_plz:
@@ -222,7 +234,7 @@ class EdekaProvider(OfferProvider):
                 else:
                     location_mismatch = True
 
-        if has_store_identity and is_location_substantiated and not location_mismatch:
+        if has_store_identity and is_location_substantiated and not location_mismatch and is_loc_allowed:
             scope_type = "store"
             region_verified = True
             verification_method = "store_direct_api"
@@ -234,7 +246,7 @@ class EdekaProvider(OfferProvider):
             if location_mismatch:
                 verification_reason = f"EDEKA store {clean_store_id} is located at PLZ {addr_plz}, which does not match requested PLZ {clean_zip}; promotional applicability unverified"
             else:
-                verification_reason = f"EDEKA store {clean_store_id} lacks verified geographic location evidence for requested PLZ {clean_zip}"
+                verification_reason = f"EDEKA store {clean_store_id} lacks authenticated official store source record for requested PLZ {clean_zip}"
         else:
             scope_type = "unknown"
             region_verified = False
@@ -243,11 +255,12 @@ class EdekaProvider(OfferProvider):
 
         verification_evidence: dict[str, Any] | None = None
         if region_verified:
-            from app.providers.marktguru import is_production_mode
             from app.services.price_history import get_official_store_record
 
             official_record = get_official_store_record(cls.retailer_slug, clean_store_id)
-            if (official_record is None or (not is_production_mode() and official_record.get("store_plz") not in (addr_plz, clean_zip, norm_zip))) and not is_production_mode():
+            if not is_production_mode() and (
+                official_record is None or official_record.get("store_plz") not in (addr_plz, clean_zip, norm_zip)
+            ):
                 from app.services.price_history import register_official_store_record
 
                 register_official_store_record(

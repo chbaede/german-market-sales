@@ -132,8 +132,6 @@ def is_approved_evidence_path(p: Path) -> bool:
 # Trusted evidence ingestion catalog storing cryptographic SHA-256 hashes of audited artifacts
 # Bound strictly to canonical relative paths under approved roots.
 _TRUSTED_INGESTION_CATALOG: dict[str, str] = {
-    # Production canonical paths under data/evidence (genuine audited source evidence only)
-    "data/evidence/marktguru_de_nationwide_manifest.json": "01d806a1b814df93efe61dbcf46b6329145c0cc71ed1222ce84ca43d49f4b265",
     # Test fixture paths under tests/fixtures/evidence (test execution only)
     "tests/fixtures/evidence/700.json": "1d6481e826f2d8f7612d53ddd86c5b141e3e31d6eafc739fd5a7727ec0583d8f",
     "tests/fixtures/evidence/901.json": "d34092378f01f4d1c8f33a7ea27fc82a807c9764bf5907a92bb9b0addd78b260",
@@ -163,6 +161,7 @@ def is_synthetic_evidence_artifact(p: Path, content_dict: dict[str, Any] | None 
         "700.json",
         "901.json",
         "999.json",
+        "self_authored",
     )
     if any(marker in name for marker in synthetic_markers):
         return True
@@ -171,7 +170,16 @@ def is_synthetic_evidence_artifact(p: Path, content_dict: dict[str, Any] | None 
         if any(marker in cid for marker in ("test_", "mock_", "dummy_", "fake_", "sample_", "restart_", "valid_", "proven_")):
             return True
         lim = str(content_dict.get("limitations") or "").lower()
-        if any(lim.startswith(m) for m in ("audited nationwide", "persisted nationwide", "full national coverage")):
+        if any(marker in lim for marker in ("audited nationwide", "persisted nationwide", "full national coverage", "independently audited")):
+            return True
+        # Reject self-authored JSON with audit strings, claims, or lacking authentic upstream flyer fields
+        src_rec = content_dict.get("source_record")
+        if isinstance(src_rec, dict):
+            if "audit_reference" in src_rec or "audit" in src_rec:
+                return True
+            if src_rec.get("provider") == "marktguru" and not any(k in src_rec for k in ("id", "flyerId", "pages", "validFrom")):
+                return True
+        elif src_rec is None and content_dict.get("scope") == "nationwide":
             return True
     return False
 
@@ -557,6 +565,14 @@ def validate_nationwide_coverage_evidence(
         return False, f"Artifact verification_date '{art_date}' is missing or not a valid calendar date", None
     if art_date != verification_date:
         return False, f"Artifact verification_date '{art_date}' does not match evidence verification_date '{verification_date}'", None
+
+    if is_production_mode():
+        if is_synthetic_evidence_artifact(p, art_data):
+            return False, "Self-authored artifact, descriptive claims, or audit strings cannot establish nationwide applicability without genuine upstream provider evidence", None
+
+        src_rec = art_data.get("source_record")
+        if not isinstance(src_rec, dict) or "audit_reference" in src_rec or not any(k in src_rec for k in ("id", "flyerId", "pages", "validFrom")):
+            return False, "Evidence artifact lacks verified genuine upstream provider source record in production", None
 
     validated = {
         "campaign_id": clean_id,
