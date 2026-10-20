@@ -90,6 +90,7 @@ PRODUCTION_EVIDENCE_ROOT = (PROJECT_ROOT / "data" / "evidence").resolve()
 TEST_FIXTURE_EVIDENCE_ROOT = (PROJECT_ROOT / "tests" / "fixtures" / "evidence").resolve()
 
 _DYNAMIC_APPROVED_ROOTS: set[Path] = set()
+_ROOT_VERSIONS: dict[Path, int] = {}
 
 
 def is_production_mode() -> bool:
@@ -110,18 +111,44 @@ def get_approved_evidence_roots() -> set[Path]:
     roots = {PRODUCTION_EVIDENCE_ROOT}
     if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TESTING"):
         roots.add(TEST_FIXTURE_EVIDENCE_ROOT)
-    roots.update(_DYNAMIC_APPROVED_ROOTS)
+    with _REGISTRY_LOCK:
+        staged_roots = getattr(_stage_state, "staged_roots", None)
+        cleared_roots = getattr(_stage_state, "cleared_roots", False)
+        if staged_roots is not None:
+            if not cleared_roots:
+                roots.update(_DYNAMIC_APPROVED_ROOTS)
+            roots.update(staged_roots)
+        else:
+            roots.update(_DYNAMIC_APPROVED_ROOTS)
     return roots
 
 
 def register_approved_evidence_root(path: str | Path) -> None:
+    global _REGISTRY_MUTATION_SEQ
     if is_production_mode():
         raise PermissionError("Registration of custom evidence roots is forbidden in production")
-    _DYNAMIC_APPROVED_ROOTS.add(Path(path).resolve())
+    resolved = Path(path).resolve()
+    with _REGISTRY_LOCK:
+        staged_roots = getattr(_stage_state, "staged_roots", None)
+        if staged_roots is not None:
+            staged_roots.add(resolved)
+        else:
+            _DYNAMIC_APPROVED_ROOTS.add(resolved)
+            _REGISTRY_MUTATION_SEQ += 1
+            _ROOT_VERSIONS[resolved] = _REGISTRY_MUTATION_SEQ
 
 
 def clear_dynamic_approved_roots() -> None:
-    _DYNAMIC_APPROVED_ROOTS.clear()
+    global _REGISTRY_MUTATION_SEQ
+    with _REGISTRY_LOCK:
+        staged_roots = getattr(_stage_state, "staged_roots", None)
+        if staged_roots is not None:
+            _stage_state.cleared_roots = True
+            staged_roots.clear()
+        else:
+            _DYNAMIC_APPROVED_ROOTS.clear()
+            _ROOT_VERSIONS.clear()
+            _REGISTRY_MUTATION_SEQ += 1
 
 
 def is_approved_evidence_path(p: Path) -> bool:
@@ -148,6 +175,7 @@ _TRUSTED_INGESTION_CATALOG: dict[str, str] = {
 }
 
 _DYNAMIC_INGESTION_CATALOG: dict[str, str] = {}
+_CATALOG_VERSIONS: dict[str, int] = {}
 
 
 def is_synthetic_evidence_artifact(p: Path, content_dict: dict[str, Any] | None = None) -> bool:
@@ -256,14 +284,34 @@ def ingest_trusted_evidence_artifact(
             f"Evidence artifact '{p.name}' SHA-256 digest '{calculated_hash}' does not match expected '{expected_hash}'"
         )
 
-    _DYNAMIC_INGESTION_CATALOG[str(p)] = calculated_hash
-    if rel_to_project:
-        _DYNAMIC_INGESTION_CATALOG[rel_to_project] = calculated_hash
+    global _REGISTRY_MUTATION_SEQ
+    with _REGISTRY_LOCK:
+        staged_catalog = getattr(_stage_state, "staged_catalog", None)
+        if staged_catalog is not None:
+            staged_catalog[str(p)] = calculated_hash
+            if rel_to_project:
+                staged_catalog[rel_to_project] = calculated_hash
+        else:
+            _REGISTRY_MUTATION_SEQ += 1
+            _DYNAMIC_INGESTION_CATALOG[str(p)] = calculated_hash
+            _CATALOG_VERSIONS[str(p)] = _REGISTRY_MUTATION_SEQ
+            if rel_to_project:
+                _DYNAMIC_INGESTION_CATALOG[rel_to_project] = calculated_hash
+                _CATALOG_VERSIONS[rel_to_project] = _REGISTRY_MUTATION_SEQ
     return calculated_hash
 
 
 def clear_dynamic_ingestion_catalog() -> None:
-    _DYNAMIC_INGESTION_CATALOG.clear()
+    global _REGISTRY_MUTATION_SEQ
+    with _REGISTRY_LOCK:
+        staged_catalog = getattr(_stage_state, "staged_catalog", None)
+        if staged_catalog is not None:
+            _stage_state.cleared_catalog = True
+            staged_catalog.clear()
+        else:
+            _DYNAMIC_INGESTION_CATALOG.clear()
+            _CATALOG_VERSIONS.clear()
+            _REGISTRY_MUTATION_SEQ += 1
 
 
 def validate_evidence_artifact_integrity(p: Path) -> tuple[bool, str, str | None]:
@@ -303,11 +351,28 @@ def validate_evidence_artifact_integrity(p: Path) -> tuple[bool, str, str | None
             return False, f"Synthetic campaign artifact '{resolved.name}' cannot be approved for production", None
         expected_hash = _TRUSTED_INGESTION_CATALOG.get(rel_to_project) if rel_to_project else None
     else:
-        expected_hash = (
-            _DYNAMIC_INGESTION_CATALOG.get(str(resolved))
-            or (rel_to_project and _DYNAMIC_INGESTION_CATALOG.get(rel_to_project))
-            or (rel_to_project and _TRUSTED_INGESTION_CATALOG.get(rel_to_project))
-        )
+        with _REGISTRY_LOCK:
+            staged_catalog = getattr(_stage_state, "staged_catalog", None)
+            cleared_catalog = getattr(_stage_state, "cleared_catalog", False)
+            if staged_catalog is not None:
+                expected_hash = (
+                    staged_catalog.get(str(resolved))
+                    or (rel_to_project and staged_catalog.get(rel_to_project))
+                    or (
+                        not cleared_catalog
+                        and (
+                            _DYNAMIC_INGESTION_CATALOG.get(str(resolved))
+                            or (rel_to_project and _DYNAMIC_INGESTION_CATALOG.get(rel_to_project))
+                        )
+                    )
+                    or (rel_to_project and _TRUSTED_INGESTION_CATALOG.get(rel_to_project))
+                )
+            else:
+                expected_hash = (
+                    _DYNAMIC_INGESTION_CATALOG.get(str(resolved))
+                    or (rel_to_project and _DYNAMIC_INGESTION_CATALOG.get(rel_to_project))
+                    or (rel_to_project and _TRUSTED_INGESTION_CATALOG.get(rel_to_project))
+                )
 
     if not expected_hash:
         return False, f"Evidence artifact '{resolved.name}' has not been ingested through the trusted evidence ingestion process (unregistered artifact)", None
@@ -758,26 +823,67 @@ _stage_state = threading.local()
 
 _CAMPAIGN_VERSIONS: dict[str, int] = {}
 _NATIONWIDE_VERSIONS: dict[str, int] = {}
+_CAMPAIGN_TOMBSTONES: dict[str, int] = {}
+_NATIONWIDE_TOMBSTONES: dict[str, int] = {}
 _REGISTRY_MUTATION_SEQ: int = 0
 _REGISTRY_CLEAR_VERSION: int = 0
 
 
 def _clean_campaign_id(campaign_id: str) -> str:
     norm_k = str(campaign_id).strip().casefold()
-    return norm_k.removeprefix("national_flyer:").removeprefix("national_campaign:").removeprefix("flyer:").removeprefix("campaign:")
+    while True:
+        for prefix in ("national_flyer:", "national_campaign:", "flyer:", "campaign:"):
+            if norm_k.startswith(prefix):
+                norm_k = norm_k[len(prefix) :].strip()
+                break
+        else:
+            break
+    return norm_k
+
+
+def _regional_aliases(clean_id: str) -> tuple[str, str, str]:
+    c_id = _clean_campaign_id(clean_id)
+    return (c_id, f"flyer:{c_id}", f"campaign:{c_id}")
+
+
+def _nationwide_aliases(clean_id: str) -> tuple[str, str, str]:
+    c_id = _clean_campaign_id(clean_id)
+    return (c_id, f"national_flyer:{c_id}", f"national_campaign:{c_id}")
 
 
 def _record_campaign_mutation(clean_id: str) -> int:
     global _REGISTRY_MUTATION_SEQ
+    c_id = _clean_campaign_id(clean_id)
     _REGISTRY_MUTATION_SEQ += 1
-    _CAMPAIGN_VERSIONS[clean_id] = _REGISTRY_MUTATION_SEQ
+    _CAMPAIGN_VERSIONS[c_id] = _REGISTRY_MUTATION_SEQ
+    _CAMPAIGN_TOMBSTONES.pop(c_id, None)
+    return _REGISTRY_MUTATION_SEQ
+
+
+def _record_campaign_purge(clean_id: str) -> int:
+    global _REGISTRY_MUTATION_SEQ
+    c_id = _clean_campaign_id(clean_id)
+    _REGISTRY_MUTATION_SEQ += 1
+    _CAMPAIGN_VERSIONS.pop(c_id, None)
+    _CAMPAIGN_TOMBSTONES[c_id] = _REGISTRY_MUTATION_SEQ
     return _REGISTRY_MUTATION_SEQ
 
 
 def _record_nationwide_mutation(clean_id: str) -> int:
     global _REGISTRY_MUTATION_SEQ
+    c_id = _clean_campaign_id(clean_id)
     _REGISTRY_MUTATION_SEQ += 1
-    _NATIONWIDE_VERSIONS[clean_id] = _REGISTRY_MUTATION_SEQ
+    _NATIONWIDE_VERSIONS[c_id] = _REGISTRY_MUTATION_SEQ
+    _NATIONWIDE_TOMBSTONES.pop(c_id, None)
+    return _REGISTRY_MUTATION_SEQ
+
+
+def _record_nationwide_purge(clean_id: str) -> int:
+    global _REGISTRY_MUTATION_SEQ
+    c_id = _clean_campaign_id(clean_id)
+    _REGISTRY_MUTATION_SEQ += 1
+    _NATIONWIDE_VERSIONS.pop(c_id, None)
+    _NATIONWIDE_TOMBSTONES[c_id] = _REGISTRY_MUTATION_SEQ
     return _REGISTRY_MUTATION_SEQ
 
 
@@ -785,10 +891,12 @@ class _ThreadSafeRegistryProxy(Mapping):
     """
     Thread-safe, read-only mapping proxy over internal campaign registries.
     - Read operations during an active campaign_registry_transaction check the
-      calling thread's staged additions and staged purges before falling back
-      to the published base registry.
+      calling thread's staged additions, staged purges, and staged clear state
+      before falling back to the published base registry.
     - Concurrent reader threads observe the committed registry without seeing
-      partial staging or uncommitted purges.
+      partial staging or uncommitted purges/clears.
+    - All collection views (keys, items, values, copy, iteration, length, equality)
+      are constructed from an atomic point-in-time snapshot under _REGISTRY_LOCK.
     - Prevents arbitrary caller mutation (read-only mapping).
     """
 
@@ -797,76 +905,95 @@ class _ThreadSafeRegistryProxy(Mapping):
         self._stage_attr = stage_attr
         self._purge_attr = purge_attr
 
+    def _effective_dict(self) -> dict[str, dict[str, Any]]:
+        with _REGISTRY_LOCK:
+            is_cleared = getattr(_stage_state, "staged_cleared", False)
+            staged = getattr(_stage_state, self._stage_attr, None)
+            purged = getattr(_stage_state, self._purge_attr, None)
+
+            if is_cleared:
+                return dict(staged) if staged else {}
+
+            excluded_clean: set[str] = set()
+            excluded_raw: set[str] = set()
+            if purged:
+                excluded_raw |= set(purged)
+                excluded_clean |= {_clean_campaign_id(p) for p in purged}
+            if staged:
+                excluded_raw |= set(staged.keys())
+                excluded_clean |= {_clean_campaign_id(k) for k in staged.keys()}
+
+            if excluded_clean or excluded_raw:
+                d = {
+                    k: v
+                    for k, v in self._registry.items()
+                    if k not in excluded_raw and _clean_campaign_id(k) not in excluded_clean
+                }
+            else:
+                d = dict(self._registry)
+
+            if staged:
+                d.update(staged)
+            return d
+
     def __getitem__(self, key: str) -> dict[str, Any]:
         with _REGISTRY_LOCK:
-            purged = getattr(_stage_state, self._purge_attr, None)
-            norm_k = str(key).strip().casefold()
-            clean_k = norm_k.removeprefix("national_flyer:").removeprefix("national_campaign:").removeprefix("flyer:").removeprefix("campaign:")
-            if purged:
-                for k in (key, norm_k, clean_k):
-                    if k in purged:
-                        raise KeyError(key)
+            if not isinstance(key, str):
+                raise KeyError(key)
+            is_cleared = getattr(_stage_state, "staged_cleared", False)
             staged = getattr(_stage_state, self._stage_attr, None)
+            purged = getattr(_stage_state, self._purge_attr, None)
+            norm_k = key.strip().casefold()
+            clean_k = _clean_campaign_id(norm_k)
+            candidate_keys = (
+                key,
+                norm_k,
+                clean_k,
+                f"flyer:{clean_k}",
+                f"campaign:{clean_k}",
+                f"national_flyer:{clean_k}",
+                f"national_campaign:{clean_k}",
+            )
+
             if staged:
-                for k in (key, norm_k, clean_k):
+                for k in candidate_keys:
                     if k in staged:
                         return staged[k]
-            for k in (key, norm_k, clean_k):
+                for k, v in staged.items():
+                    if _clean_campaign_id(k) == clean_k:
+                        return v
+
+            if is_cleared:
+                raise KeyError(key)
+
+            if purged:
+                if key in purged or norm_k in purged or clean_k in purged:
+                    raise KeyError(key)
+                if any(_clean_campaign_id(p) == clean_k for p in purged):
+                    raise KeyError(key)
+
+            for k in candidate_keys:
                 if k in self._registry:
                     return self._registry[k]
+            for k, v in self._registry.items():
+                if _clean_campaign_id(k) == clean_k:
+                    return v
             raise KeyError(key)
 
     def __iter__(self):
-        with _REGISTRY_LOCK:
-            staged = getattr(_stage_state, self._stage_attr, None)
-            purged = getattr(_stage_state, self._purge_attr, None)
-            if purged:
-                purged_clean = {_clean_campaign_id(p) for p in purged} | set(purged)
-                keys = {
-                    k for k in self._registry.keys()
-                    if k not in purged_clean and _clean_campaign_id(k) not in purged_clean
-                }
-            else:
-                keys = set(self._registry.keys())
-            if staged:
-                keys |= set(staged.keys())
-            return iter(keys)
+        return iter(list(self._effective_dict().keys()))
 
     def __len__(self) -> int:
-        with _REGISTRY_LOCK:
-            staged = getattr(_stage_state, self._stage_attr, None)
-            purged = getattr(_stage_state, self._purge_attr, None)
-            if purged:
-                purged_clean = {_clean_campaign_id(p) for p in purged} | set(purged)
-                keys = {
-                    k for k in self._registry.keys()
-                    if k not in purged_clean and _clean_campaign_id(k) not in purged_clean
-                }
-            else:
-                keys = set(self._registry.keys())
-            if staged:
-                keys |= set(staged.keys())
-            return len(keys)
+        return len(self._effective_dict())
 
     def __contains__(self, key: object) -> bool:
-        with _REGISTRY_LOCK:
-            purged = getattr(_stage_state, self._purge_attr, None)
-            norm_k = str(key).strip().casefold()
-            clean_k = norm_k.removeprefix("national_flyer:").removeprefix("national_campaign:").removeprefix("flyer:").removeprefix("campaign:")
-            if purged:
-                for k in (key, norm_k, clean_k):
-                    if k in purged:
-                        return False
-            staged = getattr(_stage_state, self._stage_attr, None)
-            if staged:
-                for k in (key, norm_k, clean_k):
-                    if k in staged:
-                        return True
-            return (
-                key in self._registry
-                or norm_k in self._registry
-                or clean_k in self._registry
-            )
+        if not isinstance(key, str):
+            return False
+        try:
+            self[key]
+            return True
+        except KeyError:
+            return False
 
     def get(self, key: str, default: Any = None) -> Any:
         try:
@@ -874,19 +1001,26 @@ class _ThreadSafeRegistryProxy(Mapping):
         except KeyError:
             return default
 
+    def keys(self):
+        return self._effective_dict().keys()
+
+    def items(self):
+        return self._effective_dict().items()
+
+    def values(self):
+        return self._effective_dict().values()
+
+    def copy(self) -> dict[str, dict[str, Any]]:
+        return copy.deepcopy(self._effective_dict())
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Mapping):
+            with _REGISTRY_LOCK:
+                return self._effective_dict() == dict(other)
+        return NotImplemented
+
     def __repr__(self) -> str:
-        with _REGISTRY_LOCK:
-            staged = getattr(_stage_state, self._stage_attr, None)
-            purged = getattr(_stage_state, self._purge_attr, None)
-            d = dict(self._registry)
-            if purged:
-                purged_clean = {_clean_campaign_id(p) for p in purged} | set(purged)
-                for k in list(d.keys()):
-                    if k in purged_clean or _clean_campaign_id(k) in purged_clean:
-                        d.pop(k, None)
-            if staged:
-                d.update(staged)
-            return f"mappingproxy({d!r})"
+        return f"mappingproxy({self._effective_dict()!r})"
 
 
 # Read-only public mappings preventing callers from bypassing validation
@@ -898,36 +1032,250 @@ VERIFIED_NATIONWIDE_REGISTRY = _ThreadSafeRegistryProxy(
 )
 
 
-def snapshot_campaign_registries() -> tuple[dict[str, Any], dict[str, Any]]:
+class CampaignRegistrySnapshot(tuple):
     """
-    Returns an independent deep snapshot of in-memory campaign registries.
+    Independent deep snapshot of in-memory campaign registries with version metadata.
+    Subclasses tuple to remain compatible with (camp_snap, nat_snap) unpacking.
     """
-    with _REGISTRY_LOCK:
+
+    def __new__(
+        cls,
+        campaigns: dict[str, Any],
+        nationwide: dict[str, Any],
+        campaign_versions: dict[str, int] | None = None,
+        nationwide_versions: dict[str, int] | None = None,
+        mutation_seq: int = 0,
+        clear_version: int = 0,
+    ):
+        inst = super().__new__(cls, (copy.deepcopy(campaigns), copy.deepcopy(nationwide)))
+        inst.campaign_versions = dict(campaign_versions) if campaign_versions else {}
+        inst.nationwide_versions = dict(nationwide_versions) if nationwide_versions else {}
+        inst.mutation_seq = mutation_seq
+        inst.clear_version = clear_version
+        return inst
+
+    def __reduce__(self):
         return (
-            copy.deepcopy(_VERIFIED_CAMPAIGN_REGISTRY),
-            copy.deepcopy(_VERIFIED_NATIONWIDE_REGISTRY),
+            self.__class__,
+            (
+                self[0],
+                self[1],
+                self.campaign_versions,
+                self.nationwide_versions,
+                self.mutation_seq,
+                self.clear_version,
+            ),
+        )
+
+    def __deepcopy__(self, memo):
+        return self.__class__(
+            copy.deepcopy(self[0], memo),
+            copy.deepcopy(self[1], memo),
+            copy.deepcopy(self.campaign_versions, memo),
+            copy.deepcopy(self.nationwide_versions, memo),
+            self.mutation_seq,
+            self.clear_version,
         )
 
 
-def restore_campaign_registries(snapshot: tuple[dict[str, Any], dict[str, Any]]) -> None:
+def snapshot_campaign_registries() -> CampaignRegistrySnapshot:
+    """
+    Returns an independent deep snapshot of in-memory campaign registries with version metadata.
+    Subclasses tuple for backwards compatibility with (camp_snap, nat_snap).
+    """
+    with _REGISTRY_LOCK:
+        staged_camp = getattr(_stage_state, "staged_campaigns", None)
+        if staged_camp is not None:
+            camp_dict = VERIFIED_CAMPAIGN_REGISTRY._effective_dict()
+            nat_dict = VERIFIED_NATIONWIDE_REGISTRY._effective_dict()
+            camp_vers = dict(getattr(_stage_state, "base_versions_camp", {}))
+            nat_vers = dict(getattr(_stage_state, "base_versions_nat", {}))
+            for k in camp_dict:
+                c_id = _clean_campaign_id(k)
+                if c_id not in camp_vers:
+                    camp_vers[c_id] = _REGISTRY_MUTATION_SEQ
+            for k in nat_dict:
+                c_id = _clean_campaign_id(k)
+                if c_id not in nat_vers:
+                    nat_vers[c_id] = _REGISTRY_MUTATION_SEQ
+            clear_ver = getattr(_stage_state, "clear_ver", _REGISTRY_CLEAR_VERSION)
+            return CampaignRegistrySnapshot(
+                camp_dict,
+                nat_dict,
+                campaign_versions=camp_vers,
+                nationwide_versions=nat_vers,
+                mutation_seq=_REGISTRY_MUTATION_SEQ,
+                clear_version=clear_ver,
+            )
+
+        return CampaignRegistrySnapshot(
+            _VERIFIED_CAMPAIGN_REGISTRY,
+            _VERIFIED_NATIONWIDE_REGISTRY,
+            campaign_versions=_CAMPAIGN_VERSIONS,
+            nationwide_versions=_NATIONWIDE_VERSIONS,
+            mutation_seq=_REGISTRY_MUTATION_SEQ,
+            clear_version=_REGISTRY_CLEAR_VERSION,
+        )
+
+
+def restore_campaign_registries(
+    snapshot: tuple[dict[str, Any], dict[str, Any]] | CampaignRegistrySnapshot,
+) -> None:
     """
     Restores in-memory campaign registries from a previous snapshot under lock.
+
+    - Inside an active campaign_registry_transaction:
+      The snapshot restoration is staged thread-locally. The base registry is
+      not modified until outermost commit, preserving committed state on rollback.
+    - Outside a transaction:
+      Restores snapshot data into base registries safely and version-aware:
+      - Preserves unrelated concurrent registrations (campaigns registered after
+        the snapshot was taken).
+      - Preserves concurrent updates (newer versions committed after snapshot).
+      - Normalizes canonical aliases for restored entries so no alias is missing or stale.
+      - Updates mutation versions and tombstones so version metadata exactly matches
+        the committed registry contents.
+      - Maintains consistency between campaign and nationwide registries.
     """
     global _REGISTRY_MUTATION_SEQ, _REGISTRY_CLEAR_VERSION
+    if not isinstance(snapshot, tuple) or len(snapshot) != 2:
+        raise ValueError("Snapshot must be a 2-tuple of (campaign_registry, nationwide_registry)")
+    camp_snap, nat_snap = snapshot
+    if not isinstance(camp_snap, Mapping) or not isinstance(nat_snap, Mapping):
+        raise ValueError("Snapshot elements must be mappings")
+
     with _REGISTRY_LOCK:
-        camp_snap, nat_snap = snapshot
+        staged_camp = getattr(_stage_state, "staged_campaigns", None)
+        if staged_camp is not None:
+            new_staged_camp: dict[str, dict[str, Any]] = {}
+            for k, v in camp_snap.items():
+                val = copy.deepcopy(v)
+                c_id = _clean_campaign_id(k)
+                for alias in _regional_aliases(c_id):
+                    new_staged_camp[alias] = val
+                new_staged_camp[str(k).strip().casefold()] = val
+
+            new_staged_nat: dict[str, dict[str, Any]] = {}
+            for k, v in nat_snap.items():
+                val = copy.deepcopy(v)
+                c_id = _clean_campaign_id(k)
+                for alias in _nationwide_aliases(c_id):
+                    new_staged_nat[alias] = val
+                new_staged_nat[str(k).strip().casefold()] = val
+
+            _stage_state.staged_cleared = True
+            _stage_state.staged_campaigns.clear()
+            _stage_state.staged_campaigns.update(new_staged_camp)
+            _stage_state.staged_nationwide.clear()
+            _stage_state.staged_nationwide.update(new_staged_nat)
+            _stage_state.purged_campaigns.clear()
+            _stage_state.purged_nationwide.clear()
+            return
+
+        snap_camp_vers = getattr(snapshot, "campaign_versions", None)
+        snap_nat_vers = getattr(snapshot, "nationwide_versions", None)
+        snap_camp_clean_ids = {_clean_campaign_id(k) for k in camp_snap.keys()}
+        snap_nat_clean_ids = {_clean_campaign_id(k) for k in nat_snap.keys()}
+
+        # 1. Identify clean IDs in current base that were concurrently registered or updated after snapshot
+        concurrent_camp_clean_ids: set[str] = set()
+        for k in _VERIFIED_CAMPAIGN_REGISTRY:
+            c_id = _clean_campaign_id(k)
+            if snap_camp_vers is not None:
+                if c_id not in snap_camp_vers or _CAMPAIGN_VERSIONS.get(c_id, 0) > snap_camp_vers.get(c_id, 0):
+                    concurrent_camp_clean_ids.add(c_id)
+            else:
+                if c_id not in snap_camp_clean_ids:
+                    concurrent_camp_clean_ids.add(c_id)
+
+        concurrent_nat_clean_ids: set[str] = set()
+        for k in _VERIFIED_NATIONWIDE_REGISTRY:
+            c_id = _clean_campaign_id(k)
+            if snap_nat_vers is not None:
+                if c_id not in snap_nat_vers or _NATIONWIDE_VERSIONS.get(c_id, 0) > snap_nat_vers.get(c_id, 0):
+                    concurrent_nat_clean_ids.add(c_id)
+            else:
+                if c_id not in snap_nat_clean_ids:
+                    concurrent_nat_clean_ids.add(c_id)
+
+        # Save concurrent entries and their versions
+        preserved_camp = {
+            k: v
+            for k, v in _VERIFIED_CAMPAIGN_REGISTRY.items()
+            if _clean_campaign_id(k) in concurrent_camp_clean_ids
+        }
+        preserved_camp_vers = {
+            c_id: _CAMPAIGN_VERSIONS[c_id]
+            for c_id in concurrent_camp_clean_ids
+            if c_id in _CAMPAIGN_VERSIONS
+        }
+        preserved_nat = {
+            k: v
+            for k, v in _VERIFIED_NATIONWIDE_REGISTRY.items()
+            if _clean_campaign_id(k) in concurrent_nat_clean_ids
+        }
+        preserved_nat_vers = {
+            c_id: _NATIONWIDE_VERSIONS[c_id]
+            for c_id in concurrent_nat_clean_ids
+            if c_id in _NATIONWIDE_VERSIONS
+        }
+
+        prev_camp_clean_ids = {_clean_campaign_id(k) for k in _VERIFIED_CAMPAIGN_REGISTRY.keys()}
+        prev_nat_clean_ids = {_clean_campaign_id(k) for k in _VERIFIED_NATIONWIDE_REGISTRY.keys()}
+
+        # Build restored dicts for non-concurrent keys (expanding canonical aliases)
+        restored_camp: dict[str, dict[str, Any]] = {}
+        for k, v in camp_snap.items():
+            c_id = _clean_campaign_id(k)
+            if c_id not in concurrent_camp_clean_ids:
+                val = copy.deepcopy(v)
+                for alias in _regional_aliases(c_id):
+                    restored_camp[alias] = val
+                restored_camp[str(k).strip().casefold()] = val
+
+        restored_nat: dict[str, dict[str, Any]] = {}
+        for k, v in nat_snap.items():
+            c_id = _clean_campaign_id(k)
+            if c_id not in concurrent_nat_clean_ids:
+                val = copy.deepcopy(v)
+                for alias in _nationwide_aliases(c_id):
+                    restored_nat[alias] = val
+                restored_nat[str(k).strip().casefold()] = val
+
         _VERIFIED_CAMPAIGN_REGISTRY.clear()
-        _VERIFIED_CAMPAIGN_REGISTRY.update(copy.deepcopy(camp_snap))
+        _VERIFIED_CAMPAIGN_REGISTRY.update(restored_camp)
+        _VERIFIED_CAMPAIGN_REGISTRY.update(preserved_camp)
+
         _VERIFIED_NATIONWIDE_REGISTRY.clear()
-        _VERIFIED_NATIONWIDE_REGISTRY.update(copy.deepcopy(nat_snap))
+        _VERIFIED_NATIONWIDE_REGISTRY.update(restored_nat)
+        _VERIFIED_NATIONWIDE_REGISTRY.update(preserved_nat)
+
+        # Bump global mutation sequence and clear version
         _REGISTRY_MUTATION_SEQ += 1
         _REGISTRY_CLEAR_VERSION = _REGISTRY_MUTATION_SEQ
+
+        # Synchronize version and tombstone maps with resulting registry contents
+        new_camp_clean_ids = {_clean_campaign_id(k) for k in _VERIFIED_CAMPAIGN_REGISTRY.keys()}
+        for removed_id in prev_camp_clean_ids - new_camp_clean_ids:
+            _CAMPAIGN_TOMBSTONES[removed_id] = _REGISTRY_MUTATION_SEQ
         _CAMPAIGN_VERSIONS.clear()
-        for k in _VERIFIED_CAMPAIGN_REGISTRY:
-            _CAMPAIGN_VERSIONS[_clean_campaign_id(k)] = _REGISTRY_MUTATION_SEQ
+        for c_id in new_camp_clean_ids:
+            _CAMPAIGN_TOMBSTONES.pop(c_id, None)
+            if c_id in preserved_camp_vers:
+                _CAMPAIGN_VERSIONS[c_id] = preserved_camp_vers[c_id]
+            else:
+                _CAMPAIGN_VERSIONS[c_id] = _REGISTRY_MUTATION_SEQ
+
+        new_nat_clean_ids = {_clean_campaign_id(k) for k in _VERIFIED_NATIONWIDE_REGISTRY.keys()}
+        for removed_id in prev_nat_clean_ids - new_nat_clean_ids:
+            _NATIONWIDE_TOMBSTONES[removed_id] = _REGISTRY_MUTATION_SEQ
         _NATIONWIDE_VERSIONS.clear()
-        for k in _VERIFIED_NATIONWIDE_REGISTRY:
-            _NATIONWIDE_VERSIONS[_clean_campaign_id(k)] = _REGISTRY_MUTATION_SEQ
+        for c_id in new_nat_clean_ids:
+            _NATIONWIDE_TOMBSTONES.pop(c_id, None)
+            if c_id in preserved_nat_vers:
+                _NATIONWIDE_VERSIONS[c_id] = preserved_nat_vers[c_id]
+            else:
+                _NATIONWIDE_VERSIONS[c_id] = _REGISTRY_MUTATION_SEQ
 
 
 @contextmanager
@@ -935,33 +1283,46 @@ def campaign_registry_transaction():
     """
     Transactional context manager for in-memory campaign registry changes.
 
+    Invariants & Semantics:
     1. Staging isolation:
-       All additions and purges are staged into a thread-local staging layer.
-       The base registries are NEVER modified until transaction commit.
+       All registrations, purges, clears, restores, dynamic catalog ingestions,
+       and approved root changes inside a transaction are staged in thread-local
+       storage (_stage_state). Base registries and version maps are NEVER mutated
+       during the transaction body.
     2. Concurrent visibility:
-       The transaction-owning thread sees staged additions and staged purges
-       via public proxies. Other threads observe ONLY committed base registry state.
+       The transaction-owning thread observes its staged additions, purges, clears,
+       and restores via public proxies. Other threads observe ONLY committed base state.
     3. Concurrency-safe atomic commit:
-       At commit time under _REGISTRY_LOCK, changes are published to base registries.
-       If a key was concurrently registered or updated in the base registry while
-       the transaction was in progress:
-       - Staged purges do NOT delete the concurrently registered/updated key.
-       - Staged additions do NOT overwrite the concurrent registration unexpectedly.
-    4. Safe rollback:
-       On exception or abort, staged additions and purges are discarded without
-       modifying the base registry, completely preserving concurrent writes.
-    5. Nested transaction support:
-       Inner transactions inherit outer staging; inner rollback restores outer
-       staging; inner commit merges into outer staging without leaking to concurrent
-       threads until outermost commit.
+       At outermost commit under _REGISTRY_LOCK, staged changes are published to base
+       registries. If a campaign key was concurrently registered, updated, or purged
+       by another thread while the transaction was open:
+       - Staged purges and clears do NOT delete the concurrently registered/updated key.
+       - Staged additions and restores do NOT overwrite the newer concurrent write.
+    4. Non-destructive rollback:
+       On exception or abort, thread-local staging is discarded in finally without
+       touching base registries, completely preserving both prior committed data and
+       concurrent writes.
+    5. Nested transaction isolation:
+       Inner transactions deep-copy outer staging on entry; inner rollback restores
+       the outer transaction's exact prior staging; inner commit merges into outer
+       staging without publishing to base registries until outermost commit.
     """
+    global _REGISTRY_MUTATION_SEQ, _REGISTRY_CLEAR_VERSION
     prev_staged_camp = getattr(_stage_state, "staged_campaigns", None)
     prev_staged_nat = getattr(_stage_state, "staged_nationwide", None)
     prev_purged_camp = getattr(_stage_state, "purged_campaigns", None)
     prev_purged_nat = getattr(_stage_state, "purged_nationwide", None)
     prev_base_camp = getattr(_stage_state, "base_versions_camp", None)
     prev_base_nat = getattr(_stage_state, "base_versions_nat", None)
+    prev_start_seq = getattr(_stage_state, "start_mutation_seq", None)
     prev_clear_ver = getattr(_stage_state, "clear_ver", None)
+    prev_staged_cleared = getattr(_stage_state, "staged_cleared", None)
+    prev_staged_catalog = getattr(_stage_state, "staged_catalog", None)
+    prev_cleared_catalog = getattr(_stage_state, "cleared_catalog", None)
+    prev_base_catalog = getattr(_stage_state, "base_versions_catalog", None)
+    prev_staged_roots = getattr(_stage_state, "staged_roots", None)
+    prev_cleared_roots = getattr(_stage_state, "cleared_roots", None)
+    prev_base_roots = getattr(_stage_state, "base_versions_roots", None)
 
     is_outermost = prev_staged_camp is None
 
@@ -969,19 +1330,35 @@ def campaign_registry_transaction():
         with _REGISTRY_LOCK:
             start_versions_camp = dict(_CAMPAIGN_VERSIONS)
             start_versions_nat = dict(_NATIONWIDE_VERSIONS)
+            start_versions_catalog = dict(_CATALOG_VERSIONS)
+            start_versions_roots = dict(_ROOT_VERSIONS)
+            start_mutation_seq = _REGISTRY_MUTATION_SEQ
             start_clear_ver = _REGISTRY_CLEAR_VERSION
         staged_camp: dict[str, dict[str, Any]] = {}
         staged_nat: dict[str, dict[str, Any]] = {}
         purged_camp: set[str] = set()
         purged_nat: set[str] = set()
+        staged_cleared: bool = False
+        staged_catalog: dict[str, str] = {}
+        cleared_catalog: bool = False
+        staged_roots: set[Path] = set()
+        cleared_roots: bool = False
     else:
         start_versions_camp = prev_base_camp
         start_versions_nat = prev_base_nat
+        start_versions_catalog = prev_base_catalog
+        start_versions_roots = prev_base_roots
+        start_mutation_seq = prev_start_seq
         start_clear_ver = prev_clear_ver
-        staged_camp = dict(prev_staged_camp)
-        staged_nat = dict(prev_staged_nat)
+        staged_camp = copy.deepcopy(prev_staged_camp)
+        staged_nat = copy.deepcopy(prev_staged_nat)
         purged_camp = set(prev_purged_camp)
         purged_nat = set(prev_purged_nat)
+        staged_cleared = bool(prev_staged_cleared)
+        staged_catalog = dict(prev_staged_catalog) if prev_staged_catalog is not None else {}
+        cleared_catalog = bool(prev_cleared_catalog)
+        staged_roots = set(prev_staged_roots) if prev_staged_roots is not None else set()
+        cleared_roots = bool(prev_cleared_roots)
 
     _stage_state.staged_campaigns = staged_camp
     _stage_state.staged_nationwide = staged_nat
@@ -989,78 +1366,213 @@ def campaign_registry_transaction():
     _stage_state.purged_nationwide = purged_nat
     _stage_state.base_versions_camp = start_versions_camp
     _stage_state.base_versions_nat = start_versions_nat
+    _stage_state.base_versions_catalog = start_versions_catalog
+    _stage_state.base_versions_roots = start_versions_roots
+    _stage_state.start_mutation_seq = start_mutation_seq
     _stage_state.clear_ver = start_clear_ver
+    _stage_state.staged_cleared = staged_cleared
+    _stage_state.staged_catalog = staged_catalog
+    _stage_state.cleared_catalog = cleared_catalog
+    _stage_state.staged_roots = staged_roots
+    _stage_state.cleared_roots = cleared_roots
 
-    committed = False
     try:
         yield
+        current_cleared = getattr(_stage_state, "staged_cleared", False)
+        current_cleared_catalog = getattr(_stage_state, "cleared_catalog", False)
+        current_cleared_roots = getattr(_stage_state, "cleared_roots", False)
         if not is_outermost:
-            # Nested transaction committed: merge changes into outer transaction's staging
-            prev_staged_camp.clear()
-            prev_staged_camp.update(staged_camp)
-            prev_staged_nat.clear()
-            prev_staged_nat.update(staged_nat)
-            prev_purged_camp.clear()
-            prev_purged_camp.update(purged_camp)
-            prev_purged_nat.clear()
-            prev_purged_nat.update(purged_nat)
-            committed = True
+            with _REGISTRY_LOCK:
+                # Nested transaction committed: atomically replace parent staging with merged state
+                if current_cleared:
+                    prev_staged_cleared = True
+                if current_cleared_catalog:
+                    prev_cleared_catalog = True
+                if current_cleared_roots:
+                    prev_cleared_roots = True
+                prev_staged_camp.clear()
+                prev_staged_camp.update(staged_camp)
+                prev_staged_nat.clear()
+                prev_staged_nat.update(staged_nat)
+                prev_purged_camp.clear()
+                prev_purged_camp.update(purged_camp)
+                prev_purged_nat.clear()
+                prev_purged_nat.update(purged_nat)
+                if prev_staged_catalog is not None:
+                    prev_staged_catalog.clear()
+                    prev_staged_catalog.update(staged_catalog)
+                if prev_staged_roots is not None:
+                    prev_staged_roots.clear()
+                    prev_staged_roots.update(staged_roots)
         else:
             with _REGISTRY_LOCK:
                 concurrent_modified_camp = {
-                    c_id for c_id in (set(_CAMPAIGN_VERSIONS.keys()) | set(start_versions_camp.keys()))
+                    c_id
+                    for c_id in (
+                        set(_CAMPAIGN_VERSIONS.keys())
+                        | set(start_versions_camp.keys())
+                        | set(_CAMPAIGN_TOMBSTONES.keys())
+                    )
                     if _CAMPAIGN_VERSIONS.get(c_id) != start_versions_camp.get(c_id)
+                    or _CAMPAIGN_TOMBSTONES.get(c_id, 0) > start_mutation_seq
                 }
                 if _REGISTRY_CLEAR_VERSION != start_clear_ver:
                     concurrent_modified_camp |= set(start_versions_camp.keys())
 
                 concurrent_modified_nat = {
-                    c_id for c_id in (set(_NATIONWIDE_VERSIONS.keys()) | set(start_versions_nat.keys()))
+                    c_id
+                    for c_id in (
+                        set(_NATIONWIDE_VERSIONS.keys())
+                        | set(start_versions_nat.keys())
+                        | set(_NATIONWIDE_TOMBSTONES.keys())
+                    )
                     if _NATIONWIDE_VERSIONS.get(c_id) != start_versions_nat.get(c_id)
+                    or _NATIONWIDE_TOMBSTONES.get(c_id, 0) > start_mutation_seq
                 }
                 if _REGISTRY_CLEAR_VERSION != start_clear_ver:
                     concurrent_modified_nat |= set(start_versions_nat.keys())
 
+                # If clear was staged in this transaction, clear pre-existing base entries (preserving concurrent ones)
+                if current_cleared:
+                    for k in list(_VERIFIED_CAMPAIGN_REGISTRY.keys()):
+                        c_id = _clean_campaign_id(k)
+                        if c_id not in concurrent_modified_camp:
+                            _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+                            _CAMPAIGN_VERSIONS.pop(c_id, None)
+                            _CAMPAIGN_TOMBSTONES[c_id] = _REGISTRY_MUTATION_SEQ + 1
+
+                    for k in list(_VERIFIED_NATIONWIDE_REGISTRY.keys()):
+                        c_id = _clean_campaign_id(k)
+                        if c_id not in concurrent_modified_nat:
+                            _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+                            _NATIONWIDE_VERSIONS.pop(c_id, None)
+                            _NATIONWIDE_TOMBSTONES[c_id] = _REGISTRY_MUTATION_SEQ + 1
+
+                    _REGISTRY_MUTATION_SEQ += 1
+                    _REGISTRY_CLEAR_VERSION = _REGISTRY_MUTATION_SEQ
+
                 # 1. Purge regional campaigns (skip if concurrently registered or updated)
-                for k in purged_camp:
-                    c_id = _clean_campaign_id(k)
-                    if c_id not in concurrent_modified_camp:
-                        _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
-
-                # 2. Purge nationwide campaigns (skip if concurrently registered or updated)
-                for k in purged_nat:
-                    c_id = _clean_campaign_id(k)
-                    if c_id not in concurrent_modified_nat:
-                        _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
-
-                # 3. Add regional campaigns (skip if concurrently registered in base registry)
-                for k, v in staged_camp.items():
-                    c_id = _clean_campaign_id(k)
-                    if c_id not in concurrent_modified_camp:
-                        _VERIFIED_CAMPAIGN_REGISTRY[k] = v
-
-                # 4. Add nationwide campaigns (skip if concurrently registered in base registry)
-                for k, v in staged_nat.items():
-                    c_id = _clean_campaign_id(k)
-                    if c_id not in concurrent_modified_nat:
-                        _VERIFIED_NATIONWIDE_REGISTRY[k] = v
-
-                # 5. Record version updates for published campaigns
-                published_camp_ids = {
-                    _clean_campaign_id(k) for k in (set(purged_camp) | set(staged_camp.keys()))
+                purged_camp_clean_ids = {
+                    _clean_campaign_id(k)
+                    for k in purged_camp
                     if _clean_campaign_id(k) not in concurrent_modified_camp
                 }
-                for c_id in published_camp_ids:
-                    _record_campaign_mutation(c_id)
+                if purged_camp_clean_ids:
+                    for k in list(_VERIFIED_CAMPAIGN_REGISTRY.keys()):
+                        c_id = _clean_campaign_id(k)
+                        if c_id in purged_camp_clean_ids:
+                            _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+                    for c_id in purged_camp_clean_ids:
+                        if c_id in _CAMPAIGN_VERSIONS or c_id in start_versions_camp:
+                            _record_campaign_purge(c_id)
 
-                published_nat_ids = {
-                    _clean_campaign_id(k) for k in (set(purged_nat) | set(staged_nat.keys()))
+                # 2. Purge nationwide campaigns (skip if concurrently registered or updated)
+                purged_nat_clean_ids = {
+                    _clean_campaign_id(k)
+                    for k in purged_nat
                     if _clean_campaign_id(k) not in concurrent_modified_nat
                 }
-                for c_id in published_nat_ids:
-                    _record_nationwide_mutation(c_id)
+                if purged_nat_clean_ids:
+                    for k in list(_VERIFIED_NATIONWIDE_REGISTRY.keys()):
+                        c_id = _clean_campaign_id(k)
+                        if c_id in purged_nat_clean_ids:
+                            _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+                    for c_id in purged_nat_clean_ids:
+                        if c_id in _NATIONWIDE_VERSIONS or c_id in start_versions_nat:
+                            _record_nationwide_purge(c_id)
 
-                committed = True
+                # 3. Add regional campaigns (skip if concurrently registered in base registry)
+                staged_camp_clean_ids = {
+                    _clean_campaign_id(k)
+                    for k in staged_camp.keys()
+                    if _clean_campaign_id(k) not in concurrent_modified_camp
+                }
+                if staged_camp_clean_ids:
+                    for k in list(_VERIFIED_CAMPAIGN_REGISTRY.keys()):
+                        if _clean_campaign_id(k) in staged_camp_clean_ids:
+                            _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+                    for k, v in staged_camp.items():
+                        c_id = _clean_campaign_id(k)
+                        if c_id in staged_camp_clean_ids:
+                            _VERIFIED_CAMPAIGN_REGISTRY[k] = v
+                            for alias in _regional_aliases(c_id):
+                                _VERIFIED_CAMPAIGN_REGISTRY[alias] = v
+                    for c_id in staged_camp_clean_ids:
+                        _record_campaign_mutation(c_id)
+
+                # 4. Add nationwide campaigns (skip if concurrently registered in base registry)
+                staged_nat_clean_ids = {
+                    _clean_campaign_id(k)
+                    for k in staged_nat.keys()
+                    if _clean_campaign_id(k) not in concurrent_modified_nat
+                }
+                if staged_nat_clean_ids:
+                    for k in list(_VERIFIED_NATIONWIDE_REGISTRY.keys()):
+                        if _clean_campaign_id(k) in staged_nat_clean_ids:
+                            _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+                    for k, v in staged_nat.items():
+                        c_id = _clean_campaign_id(k)
+                        if c_id in staged_nat_clean_ids:
+                            _VERIFIED_NATIONWIDE_REGISTRY[k] = v
+                            for alias in _nationwide_aliases(c_id):
+                                _VERIFIED_NATIONWIDE_REGISTRY[alias] = v
+                    for c_id in staged_nat_clean_ids:
+                        _record_nationwide_mutation(c_id)
+
+                # 5. Apply staged dynamic catalog and approved root changes
+                protected_artifact_paths: set[Path] = set()
+                protected_catalog_keys: set[str] = set()
+                for ev in list(_VERIFIED_CAMPAIGN_REGISTRY.values()) + list(
+                    _VERIFIED_NATIONWIDE_REGISTRY.values()
+                ):
+                    if isinstance(ev, dict) and ev.get("evidence_artifact_path"):
+                        try:
+                            rp = Path(ev["evidence_artifact_path"]).resolve()
+                            protected_artifact_paths.add(rp)
+                            protected_catalog_keys.add(str(rp))
+                            try:
+                                protected_catalog_keys.add(rp.relative_to(PROJECT_ROOT).as_posix())
+                            except ValueError:
+                                pass
+                        except Exception:
+                            pass
+
+                concurrent_modified_catalog = {
+                    ck
+                    for ck in (set(_CATALOG_VERSIONS.keys()) | set(start_versions_catalog.keys()))
+                    if _CATALOG_VERSIONS.get(ck) != start_versions_catalog.get(ck)
+                }
+                if current_cleared or current_cleared_catalog:
+                    for ck in list(_DYNAMIC_INGESTION_CATALOG.keys()):
+                        if ck not in concurrent_modified_catalog and ck not in protected_catalog_keys:
+                            _DYNAMIC_INGESTION_CATALOG.pop(ck, None)
+                            _CATALOG_VERSIONS.pop(ck, None)
+
+                for ck, chash in staged_catalog.items():
+                    if ck not in concurrent_modified_catalog:
+                        _DYNAMIC_INGESTION_CATALOG[ck] = chash
+                        _REGISTRY_MUTATION_SEQ += 1
+                        _CATALOG_VERSIONS[ck] = _REGISTRY_MUTATION_SEQ
+
+                concurrent_modified_roots = {
+                    r
+                    for r in (set(_ROOT_VERSIONS.keys()) | set(start_versions_roots.keys()))
+                    if _ROOT_VERSIONS.get(r) != start_versions_roots.get(r)
+                }
+                if current_cleared or current_cleared_roots:
+                    for r in list(_DYNAMIC_APPROVED_ROOTS):
+                        covers_protected = any(
+                            ap == r or ap.is_relative_to(r) for ap in protected_artifact_paths
+                        )
+                        if r not in concurrent_modified_roots and not covers_protected:
+                            _DYNAMIC_APPROVED_ROOTS.discard(r)
+                            _ROOT_VERSIONS.pop(r, None)
+
+                for r in staged_roots:
+                    _DYNAMIC_APPROVED_ROOTS.add(r)
+                    if r not in concurrent_modified_roots:
+                        _REGISTRY_MUTATION_SEQ += 1
+                        _ROOT_VERSIONS[r] = _REGISTRY_MUTATION_SEQ
     finally:
         _stage_state.staged_campaigns = prev_staged_camp
         _stage_state.staged_nationwide = prev_staged_nat
@@ -1068,41 +1580,59 @@ def campaign_registry_transaction():
         _stage_state.purged_nationwide = prev_purged_nat
         _stage_state.base_versions_camp = prev_base_camp
         _stage_state.base_versions_nat = prev_base_nat
+        _stage_state.base_versions_catalog = prev_base_catalog
+        _stage_state.base_versions_roots = prev_base_roots
+        _stage_state.start_mutation_seq = prev_start_seq
         _stage_state.clear_ver = prev_clear_ver
+        _stage_state.staged_cleared = prev_staged_cleared
+        _stage_state.staged_catalog = prev_staged_catalog
+        _stage_state.cleared_catalog = prev_cleared_catalog
+        _stage_state.staged_roots = prev_staged_roots
+        _stage_state.cleared_roots = prev_cleared_roots
 
 
 def _purge_nationwide_campaign(clean_id: str) -> None:
-    norm_id = clean_id.strip().casefold()
-    c_id = norm_id.removeprefix("national_flyer:").removeprefix("national_campaign:")
-    keys_to_purge = (c_id, f"national_flyer:{c_id}", f"national_campaign:{c_id}")
+    c_id = _clean_campaign_id(clean_id)
+    keys_to_purge = _nationwide_aliases(c_id)
     with _REGISTRY_LOCK:
         staged = getattr(_stage_state, "staged_nationwide", None)
         purged = getattr(_stage_state, "purged_nationwide", None)
         if staged is not None and purged is not None:
+            for k in list(staged.keys()):
+                if _clean_campaign_id(k) == c_id:
+                    staged.pop(k, None)
             for k in keys_to_purge:
-                staged.pop(k, None)
                 purged.add(k)
         else:
-            for k in keys_to_purge:
-                _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
-            _record_nationwide_mutation(c_id)
+            had_entry = False
+            for k in list(_VERIFIED_NATIONWIDE_REGISTRY.keys()):
+                if _clean_campaign_id(k) == c_id:
+                    _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+                    had_entry = True
+            if had_entry or c_id in _NATIONWIDE_VERSIONS:
+                _record_nationwide_purge(c_id)
 
 
 def _purge_regional_campaign(clean_id: str) -> None:
-    norm_id = clean_id.strip().casefold()
-    c_id = norm_id.removeprefix("flyer:").removeprefix("campaign:")
-    keys_to_purge = (c_id, f"flyer:{c_id}", f"campaign:{c_id}")
+    c_id = _clean_campaign_id(clean_id)
+    keys_to_purge = _regional_aliases(c_id)
     with _REGISTRY_LOCK:
         staged = getattr(_stage_state, "staged_campaigns", None)
         purged = getattr(_stage_state, "purged_campaigns", None)
         if staged is not None and purged is not None:
+            for k in list(staged.keys()):
+                if _clean_campaign_id(k) == c_id:
+                    staged.pop(k, None)
             for k in keys_to_purge:
-                staged.pop(k, None)
                 purged.add(k)
         else:
-            for k in keys_to_purge:
-                _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
-            _record_campaign_mutation(c_id)
+            had_entry = False
+            for k in list(_VERIFIED_CAMPAIGN_REGISTRY.keys()):
+                if _clean_campaign_id(k) == c_id:
+                    _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+                    had_entry = True
+            if had_entry or c_id in _CAMPAIGN_VERSIONS:
+                _record_campaign_purge(c_id)
 
 
 def register_verified_campaign(
@@ -1119,23 +1649,27 @@ def register_verified_campaign(
     if not is_valid or not validated:
         return False
 
-    norm_id = str(campaign_id).strip().casefold()
-    clean_id = norm_id.removeprefix("flyer:").removeprefix("campaign:")
+    clean_id = _clean_campaign_id(campaign_id)
+    aliases = _regional_aliases(clean_id)
     with _REGISTRY_LOCK:
         staged = getattr(_stage_state, "staged_campaigns", None)
         purged = getattr(_stage_state, "purged_campaigns", None)
         if staged is not None:
             if purged is not None:
-                purged.discard(norm_id)
-                purged.discard(clean_id)
-                purged.discard(f"flyer:{clean_id}")
-            staged[norm_id] = validated
-            staged[clean_id] = validated
-            staged[f"flyer:{clean_id}"] = validated
+                for p in list(purged):
+                    if _clean_campaign_id(p) == clean_id:
+                        purged.discard(p)
+            for k in list(staged.keys()):
+                if _clean_campaign_id(k) == clean_id:
+                    staged.pop(k, None)
+            for alias in aliases:
+                staged[alias] = validated
         else:
-            _VERIFIED_CAMPAIGN_REGISTRY[norm_id] = validated
-            _VERIFIED_CAMPAIGN_REGISTRY[clean_id] = validated
-            _VERIFIED_CAMPAIGN_REGISTRY[f"flyer:{clean_id}"] = validated
+            for k in list(_VERIFIED_CAMPAIGN_REGISTRY.keys()):
+                if _clean_campaign_id(k) == clean_id:
+                    _VERIFIED_CAMPAIGN_REGISTRY.pop(k, None)
+            for alias in aliases:
+                _VERIFIED_CAMPAIGN_REGISTRY[alias] = validated
             _record_campaign_mutation(clean_id)
     return True
 
@@ -1153,23 +1687,27 @@ def register_verified_nationwide_campaign(
     if not is_valid or not validated:
         return False
 
-    norm_id = str(campaign_id).strip().casefold()
-    clean_id = norm_id.removeprefix("national_flyer:").removeprefix("national_campaign:")
+    clean_id = _clean_campaign_id(campaign_id)
+    aliases = _nationwide_aliases(clean_id)
     with _REGISTRY_LOCK:
         staged = getattr(_stage_state, "staged_nationwide", None)
         purged = getattr(_stage_state, "purged_nationwide", None)
         if staged is not None:
             if purged is not None:
-                purged.discard(norm_id)
-                purged.discard(clean_id)
-                purged.discard(f"national_flyer:{clean_id}")
-            staged[norm_id] = validated
-            staged[clean_id] = validated
-            staged[f"national_flyer:{clean_id}"] = validated
+                for p in list(purged):
+                    if _clean_campaign_id(p) == clean_id:
+                        purged.discard(p)
+            for k in list(staged.keys()):
+                if _clean_campaign_id(k) == clean_id:
+                    staged.pop(k, None)
+            for alias in aliases:
+                staged[alias] = validated
         else:
-            _VERIFIED_NATIONWIDE_REGISTRY[norm_id] = validated
-            _VERIFIED_NATIONWIDE_REGISTRY[clean_id] = validated
-            _VERIFIED_NATIONWIDE_REGISTRY[f"national_flyer:{clean_id}"] = validated
+            for k in list(_VERIFIED_NATIONWIDE_REGISTRY.keys()):
+                if _clean_campaign_id(k) == clean_id:
+                    _VERIFIED_NATIONWIDE_REGISTRY.pop(k, None)
+            for alias in aliases:
+                _VERIFIED_NATIONWIDE_REGISTRY[alias] = validated
             _record_nationwide_mutation(clean_id)
     return True
 
@@ -1196,7 +1734,7 @@ def get_verified_campaign_plzs(campaign_or_region_id: str | None) -> set[str] | 
             return None
 
     # 2. Verified campaign distribution manifest registry
-    clean_id = key_lower.removeprefix("flyer:").removeprefix("campaign:")
+    clean_id = _clean_campaign_id(key_lower)
     ev_data = None
     with _REGISTRY_LOCK:
         for lookup in (key, key_lower, clean_id):
@@ -1239,7 +1777,7 @@ def is_verified_nationwide_campaign(campaign_or_flyer_id: str | None) -> bool:
     if not campaign_or_flyer_id:
         return False
     key = str(campaign_or_flyer_id).strip().casefold()
-    clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
+    clean_id = _clean_campaign_id(key)
 
     with _REGISTRY_LOCK:
         ev_data = VERIFIED_NATIONWIDE_REGISTRY.get(key) or VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
@@ -1275,7 +1813,7 @@ def get_verified_nationwide_evidence(campaign_id: str | None) -> dict[str, Any] 
     if not is_verified_nationwide_campaign(campaign_id):
         return None
     key = str(campaign_id).strip().casefold()
-    clean_id = key.removeprefix("national_flyer:").removeprefix("national_campaign:")
+    clean_id = _clean_campaign_id(key)
     with _REGISTRY_LOCK:
         data = VERIFIED_NATIONWIDE_REGISTRY.get(key) or VERIFIED_NATIONWIDE_REGISTRY.get(clean_id)
         return dict(data) if data else None
@@ -1288,7 +1826,7 @@ def get_verified_campaign_evidence(campaign_id: str | None) -> dict[str, Any] | 
     if get_verified_campaign_plzs(campaign_id) is None:
         return None
     key = str(campaign_id).strip().casefold()
-    clean_id = key.removeprefix("flyer:").removeprefix("campaign:")
+    clean_id = _clean_campaign_id(key)
     with _REGISTRY_LOCK:
         data = VERIFIED_CAMPAIGN_REGISTRY.get(key) or VERIFIED_CAMPAIGN_REGISTRY.get(clean_id)
         return dict(data) if data else None
@@ -1296,30 +1834,47 @@ def get_verified_campaign_evidence(campaign_id: str | None) -> dict[str, Any] | 
 
 def clear_campaign_registries() -> None:
     """
-    Clears in-memory dynamic campaign registries for test isolation and restart simulation.
+    Clears in-memory dynamic campaign registries and dynamic evidence state for test
+    isolation and restart simulation.
+    When called inside an active campaign_registry_transaction, the clear operation is staged
+    thread-locally and applied to the base registries only upon outermost transaction commit,
+    preserving committed state on rollback and protecting concurrent registrations.
     """
     global _REGISTRY_MUTATION_SEQ, _REGISTRY_CLEAR_VERSION
     with _REGISTRY_LOCK:
         staged_camp = getattr(_stage_state, "staged_campaigns", None)
         if staged_camp is not None:
+            _stage_state.staged_cleared = True
             staged_camp.clear()
-        staged_nat = getattr(_stage_state, "staged_nationwide", None)
-        if staged_nat is not None:
-            staged_nat.clear()
-        purged_camp = getattr(_stage_state, "purged_campaigns", None)
-        if purged_camp is not None:
-            purged_camp.clear()
-        purged_nat = getattr(_stage_state, "purged_nationwide", None)
-        if purged_nat is not None:
-            purged_nat.clear()
+            staged_nat = getattr(_stage_state, "staged_nationwide", None)
+            if staged_nat is not None:
+                staged_nat.clear()
+            purged_camp = getattr(_stage_state, "purged_campaigns", None)
+            if purged_camp is not None:
+                purged_camp.clear()
+            purged_nat = getattr(_stage_state, "purged_nationwide", None)
+            if purged_nat is not None:
+                purged_nat.clear()
+            staged_catalog = getattr(_stage_state, "staged_catalog", None)
+            if staged_catalog is not None:
+                staged_catalog.clear()
+            staged_roots = getattr(_stage_state, "staged_roots", None)
+            if staged_roots is not None:
+                staged_roots.clear()
+            return
+
         _VERIFIED_CAMPAIGN_REGISTRY.clear()
         _VERIFIED_NATIONWIDE_REGISTRY.clear()
         _DYNAMIC_INGESTION_CATALOG.clear()
         _DYNAMIC_APPROVED_ROOTS.clear()
+        _CATALOG_VERSIONS.clear()
+        _ROOT_VERSIONS.clear()
         _REGISTRY_MUTATION_SEQ += 1
         _REGISTRY_CLEAR_VERSION = _REGISTRY_MUTATION_SEQ
         _CAMPAIGN_VERSIONS.clear()
         _NATIONWIDE_VERSIONS.clear()
+        _CAMPAIGN_TOMBSTONES.clear()
+        _NATIONWIDE_TOMBSTONES.clear()
 
 
 def _extract_verified_campaign_plzs(flyer_data: dict, flyer_id: str | None) -> tuple[set[str] | None, str | None]:

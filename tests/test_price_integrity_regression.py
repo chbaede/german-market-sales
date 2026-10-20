@@ -7180,6 +7180,865 @@ def test_nested_transaction_rollback_and_commit(tmp_path):
     assert "camp_in2" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
 
 
+def test_transaction_staged_clear_rollback_preserves_base(tmp_path):
+    """
+    1. A transaction stages a registration, calls clear_campaign_registries(), and rolls back.
+    Verify previously committed base data remains intact.
+    """
+    import app.providers.marktguru as mg_mod
+
+    mg_mod.clear_campaign_registries()
+    mg_mod.clear_dynamic_approved_roots()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    art_base = tmp_path / "art_clear_base.json"
+    art_base.write_text(json.dumps({
+        "campaign_id": "camp_base",
+        "source_url": "https://www.marktguru.de/leaflets/base",
+        "scope": "region",
+        "covered_plzs": ["10115"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_base)
+    ev_base = {
+        "campaign_id": "camp_base",
+        "retailer": "edeka",
+        "campaign_title": "Base Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/base",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_base",
+        "covered_plzs": ["10115"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_base),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+    assert mg_mod.register_verified_campaign("camp_base", ["10115"], ev_base)
+    assert "camp_base" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+    art_stage = tmp_path / "art_clear_stage.json"
+    art_stage.write_text(json.dumps({
+        "campaign_id": "camp_stage",
+        "source_url": "https://www.marktguru.de/leaflets/stage",
+        "scope": "region",
+        "covered_plzs": ["20095"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_stage)
+    ev_stage = {
+        "campaign_id": "camp_stage",
+        "retailer": "edeka",
+        "campaign_title": "Stage Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/stage",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_stage",
+        "covered_plzs": ["20095"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_stage),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    with pytest.raises(RuntimeError, match="abort"):
+        with mg_mod.campaign_registry_transaction():
+            assert mg_mod.register_verified_campaign("camp_stage", ["20095"], ev_stage)
+            assert "camp_stage" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+            # Transactional clear
+            mg_mod.clear_campaign_registries()
+
+            # Transaction thread observes cleared state
+            assert "camp_base" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            assert "camp_stage" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            assert len(mg_mod.VERIFIED_CAMPAIGN_REGISTRY) == 0
+
+            raise RuntimeError("abort")
+
+    # After rollback: base registry remains completely intact!
+    assert "camp_base" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert "camp_stage" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.get_verified_campaign_plzs("camp_base") == {"10115"}
+
+
+def test_concurrent_registration_during_staged_clear_commit(tmp_path):
+    """
+    2. A clear operation commits while another thread registers a campaign.
+    Verify the documented concurrency policy is enforced and no registration is accidentally lost.
+    """
+    import threading
+    import app.providers.marktguru as mg_mod
+
+    mg_mod.clear_campaign_registries()
+    mg_mod.clear_dynamic_approved_roots()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    art_old = tmp_path / "art_clear_old.json"
+    art_old.write_text(json.dumps({
+        "campaign_id": "camp_old",
+        "source_url": "https://www.marktguru.de/leaflets/old",
+        "scope": "region",
+        "covered_plzs": ["10115"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_old)
+    ev_old = {
+        "campaign_id": "camp_old",
+        "retailer": "edeka",
+        "campaign_title": "Old Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/old",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_old",
+        "covered_plzs": ["10115"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_old),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+    assert mg_mod.register_verified_campaign("camp_old", ["10115"], ev_old)
+
+    art_a = tmp_path / "art_clear_a.json"
+    art_a.write_text(json.dumps({
+        "campaign_id": "camp_a",
+        "source_url": "https://www.marktguru.de/leaflets/a",
+        "scope": "region",
+        "covered_plzs": ["20095"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_a)
+    ev_a = {
+        "campaign_id": "camp_a",
+        "retailer": "edeka",
+        "campaign_title": "A Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/a",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_a",
+        "covered_plzs": ["20095"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_a),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    art_b = tmp_path / "art_clear_b.json"
+    art_b.write_text(json.dumps({
+        "campaign_id": "camp_b",
+        "source_url": "https://www.marktguru.de/leaflets/b",
+        "scope": "region",
+        "covered_plzs": ["80331"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_b)
+    ev_b = {
+        "campaign_id": "camp_b",
+        "retailer": "edeka",
+        "campaign_title": "B Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/b",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_b",
+        "covered_plzs": ["80331"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_b),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    clear_staged_evt = threading.Event()
+    thread_b_registered_evt = threading.Event()
+
+    def thread_a_worker():
+        with mg_mod.campaign_registry_transaction():
+            mg_mod.clear_campaign_registries()
+            assert mg_mod.register_verified_campaign("camp_a", ["20095"], ev_a)
+            clear_staged_evt.set()
+            assert thread_b_registered_evt.wait(timeout=5.0)
+
+    def thread_b_worker():
+        assert clear_staged_evt.wait(timeout=5.0)
+        assert mg_mod.register_verified_campaign("camp_b", ["80331"], ev_b)
+        thread_b_registered_evt.set()
+
+    t_a = threading.Thread(target=thread_a_worker)
+    t_b = threading.Thread(target=thread_b_worker)
+    t_a.start()
+    t_b.start()
+    t_a.join()
+    t_b.join()
+
+    # Old campaign was cleared
+    assert "camp_old" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    # A was committed
+    assert "camp_a" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    # B was registered concurrently by Thread B: PRESERVED and not lost!
+    assert "camp_b" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.get_verified_campaign_plzs("camp_b") == {"80331"}
+    assert mg_mod.get_verified_campaign_plzs("camp_a") == {"20095"}
+
+
+def test_inner_transaction_clear_and_restore_rollback_restores_outer(tmp_path):
+    """
+    3. An inner transaction clears or restores registry state and then rolls back.
+    Verify the outer transaction's staging is restored correctly.
+    """
+    import app.providers.marktguru as mg_mod
+
+    mg_mod.clear_campaign_registries()
+    mg_mod.clear_dynamic_approved_roots()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    art_outer = tmp_path / "art_outer.json"
+    art_outer.write_text(json.dumps({
+        "campaign_id": "camp_outer",
+        "source_url": "https://www.marktguru.de/leaflets/outer",
+        "scope": "region",
+        "covered_plzs": ["10115"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_outer)
+    ev_outer = {
+        "campaign_id": "camp_outer",
+        "retailer": "edeka",
+        "campaign_title": "Outer Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/outer",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_outer",
+        "covered_plzs": ["10115"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_outer),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    art_snap = tmp_path / "art_snap.json"
+    art_snap.write_text(json.dumps({
+        "campaign_id": "camp_snap",
+        "source_url": "https://www.marktguru.de/leaflets/snap",
+        "scope": "region",
+        "covered_plzs": ["50667"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_snap)
+    ev_snap = {
+        "campaign_id": "camp_snap",
+        "retailer": "edeka",
+        "campaign_title": "Snap Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/snap",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_snap",
+        "covered_plzs": ["50667"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_snap),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    # Prepare a snapshot
+    assert mg_mod.register_verified_campaign("camp_snap", ["50667"], ev_snap)
+    snap = mg_mod.snapshot_campaign_registries()
+    mg_mod.clear_campaign_registries()
+    mg_mod.register_approved_evidence_root(tmp_path)
+    mg_mod.ingest_trusted_evidence_artifact(art_outer)
+    mg_mod.ingest_trusted_evidence_artifact(art_snap)
+
+    with mg_mod.campaign_registry_transaction():
+        assert mg_mod.register_verified_campaign("camp_outer", ["10115"], ev_outer)
+        assert "camp_outer" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+        # Subcase 3a: Inner transaction clears and rolls back
+        try:
+            with mg_mod.campaign_registry_transaction():
+                mg_mod.clear_campaign_registries()
+                assert "camp_outer" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+                assert len(mg_mod.VERIFIED_CAMPAIGN_REGISTRY) == 0
+                raise RuntimeError("inner clear abort")
+        except RuntimeError:
+            pass
+
+        # Outer transaction staging is restored: camp_outer is visible again
+        assert "camp_outer" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+        # Subcase 3b: Inner transaction restores snapshot and rolls back
+        try:
+            with mg_mod.campaign_registry_transaction():
+                mg_mod.restore_campaign_registries(snap)
+                assert "camp_snap" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+                assert "camp_outer" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+                raise RuntimeError("inner restore abort")
+        except RuntimeError:
+            pass
+
+        # Outer transaction staging is restored again
+        assert "camp_outer" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        assert "camp_snap" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+    # After outer commit: camp_outer is committed
+    assert "camp_outer" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert "camp_snap" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+
+def test_outer_transaction_rollback_after_inner_commit_staged_clear_or_restore(tmp_path):
+    """
+    4. An outer transaction rolls back after an inner transaction commits a staged clear or restore operation.
+    Verify base registry remains completely untouched.
+    """
+    import app.providers.marktguru as mg_mod
+
+    mg_mod.clear_campaign_registries()
+    mg_mod.clear_dynamic_approved_roots()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    art_base = tmp_path / "art_outer_base.json"
+    art_base.write_text(json.dumps({
+        "campaign_id": "camp_base",
+        "source_url": "https://www.marktguru.de/leaflets/base",
+        "scope": "region",
+        "covered_plzs": ["10115"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_base)
+    ev_base = {
+        "campaign_id": "camp_base",
+        "retailer": "edeka",
+        "campaign_title": "Base Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/base",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_base",
+        "covered_plzs": ["10115"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_base),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+    assert mg_mod.register_verified_campaign("camp_base", ["10115"], ev_base)
+
+    # Subtest 4a: Inner commits clear, outer rolls back
+    with pytest.raises(RuntimeError, match="outer clear abort"):
+        with mg_mod.campaign_registry_transaction():
+            with mg_mod.campaign_registry_transaction():
+                mg_mod.clear_campaign_registries()
+            # In outer transaction after inner committed clear:
+            assert "camp_base" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            raise RuntimeError("outer clear abort")
+
+    # Base registry remains completely intact
+    assert "camp_base" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+    # Prepare snapshot for 4b
+    art_snap = tmp_path / "art_outer_snap.json"
+    art_snap.write_text(json.dumps({
+        "campaign_id": "camp_snap",
+        "source_url": "https://www.marktguru.de/leaflets/snap",
+        "scope": "region",
+        "covered_plzs": ["50667"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_snap)
+    ev_snap = {
+        "campaign_id": "camp_snap",
+        "retailer": "edeka",
+        "campaign_title": "Snap Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/snap",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_snap",
+        "covered_plzs": ["50667"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_snap),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+    snap = mg_mod.CampaignRegistrySnapshot(
+        {"camp_snap": ev_snap},
+        {},
+        {"camp_snap": 1},
+        {},
+        1,
+        0,
+    )
+
+    # Subtest 4b: Inner commits restore, outer rolls back
+    with pytest.raises(RuntimeError, match="outer restore abort"):
+        with mg_mod.campaign_registry_transaction():
+            with mg_mod.campaign_registry_transaction():
+                mg_mod.restore_campaign_registries(snap)
+            # In outer transaction after inner committed restore:
+            assert "camp_snap" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            assert "camp_base" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            raise RuntimeError("outer restore abort")
+
+    # Base registry remains completely intact: camp_base is present, camp_snap is absent
+    assert "camp_base" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert "camp_snap" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+
+def test_stale_snapshot_restoration_races_with_concurrent_registration(tmp_path):
+    """
+    5. A stale snapshot restoration races with a new registration.
+    Verify unrelated concurrent registrations are preserved, and newer updates are preserved.
+    """
+    import threading
+    import app.providers.marktguru as mg_mod
+
+    mg_mod.clear_campaign_registries()
+    mg_mod.clear_dynamic_approved_roots()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    art_snap = tmp_path / "art_race_snap.json"
+    art_snap.write_text(json.dumps({
+        "campaign_id": "camp_snap",
+        "source_url": "https://www.marktguru.de/leaflets/snap",
+        "scope": "region",
+        "covered_plzs": ["10115"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_snap)
+    ev_snap = {
+        "campaign_id": "camp_snap",
+        "retailer": "edeka",
+        "campaign_title": "Snap Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/snap",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_snap",
+        "covered_plzs": ["10115"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_snap),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+    assert mg_mod.register_verified_campaign("camp_snap", ["10115"], ev_snap)
+    snap = mg_mod.snapshot_campaign_registries()
+
+    # Part A: Unrelated concurrent registration during/after snapshot
+    art_unrelated = tmp_path / "art_race_unrelated.json"
+    art_unrelated.write_text(json.dumps({
+        "campaign_id": "camp_unrelated",
+        "source_url": "https://www.marktguru.de/leaflets/unrelated",
+        "scope": "region",
+        "covered_plzs": ["20095"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_unrelated)
+    ev_unrelated = {
+        "campaign_id": "camp_unrelated",
+        "retailer": "edeka",
+        "campaign_title": "Unrelated Campaign",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/unrelated",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_unrelated",
+        "covered_plzs": ["20095"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_unrelated),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    # Thread B commits camp_unrelated
+    assert mg_mod.register_verified_campaign("camp_unrelated", ["20095"], ev_unrelated)
+    assert "camp_unrelated" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+    # Thread A restores the snapshot (which did not have camp_unrelated)
+    mg_mod.restore_campaign_registries(snap)
+
+    # Both must be present!
+    assert "camp_snap" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert "camp_unrelated" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.get_verified_campaign_plzs("camp_unrelated") == {"20095"}
+    assert mg_mod.get_verified_campaign_plzs("camp_snap") == {"10115"}
+
+    # Part B: Concurrent update on the SAME key after snapshot
+    art_snap_v2 = tmp_path / "art_race_snap_v2.json"
+    art_snap_v2.write_text(json.dumps({
+        "campaign_id": "camp_snap",
+        "source_url": "https://www.marktguru.de/leaflets/snap_v2",
+        "scope": "region",
+        "covered_plzs": ["80331"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-02",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_snap_v2)
+    ev_snap_v2 = {
+        "campaign_id": "camp_snap",
+        "retailer": "edeka",
+        "campaign_title": "Snap Campaign V2",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-02", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/snap_v2",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_snap_v2",
+        "covered_plzs": ["80331"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_snap_v2),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-02",
+        "limitations": "none",
+    }
+
+    # Thread B updates camp_snap to V2
+    assert mg_mod.register_verified_campaign("camp_snap", ["80331"], ev_snap_v2)
+    assert mg_mod.get_verified_campaign_plzs("camp_snap") == {"80331"}
+
+    # Thread A restores the stale snapshot (which has V1: 10115)
+    mg_mod.restore_campaign_registries(snap)
+
+    # Thread B's newer update must NOT be overwritten by the stale snapshot!
+    assert mg_mod.get_verified_campaign_plzs("camp_snap") == {"80331"}
+    assert "camp_unrelated" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+
+def test_clear_and_restore_nested_commit_and_dynamic_catalog_root_semantics(tmp_path):
+    """
+    Verify:
+    - Clear inside a transaction followed by commit (#2)
+    - Inner transaction clears and commits into outer (#4)
+    - Restore inside a nested transaction commits into outer and then outermost commits (#11)
+    - Transactional staging, rollback, and commit of _DYNAMIC_INGESTION_CATALOG and _DYNAMIC_APPROVED_ROOTS (#7)
+    - Invalid snapshot structure rejected safely
+    """
+    import app.providers.marktguru as mg_mod
+    import json
+    import pytest
+
+    mg_mod.clear_campaign_registries()
+
+    sub_root_a = tmp_path / "root_a"
+    sub_root_b = tmp_path / "root_b"
+    sub_root_a.mkdir()
+    sub_root_b.mkdir()
+
+    mg_mod.register_approved_evidence_root(sub_root_a)
+    assert sub_root_a.resolve() in mg_mod.get_approved_evidence_roots()
+
+    art_a = sub_root_a / "art_a.json"
+    art_a.write_text(json.dumps({
+        "campaign_id": "camp_dyn_a",
+        "source_url": "https://www.marktguru.de/leaflets/dyn_a",
+        "scope": "region",
+        "covered_plzs": ["10115"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    mg_mod.ingest_trusted_evidence_artifact(art_a)
+
+    ev_a = {
+        "campaign_id": "camp_dyn_a",
+        "retailer": "edeka",
+        "campaign_title": "Dyn A",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/dyn_a",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_dyn_a",
+        "covered_plzs": ["10115"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_a),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+    assert mg_mod.register_verified_campaign("camp_dyn_a", ["10115"], ev_a)
+    snap_a = mg_mod.snapshot_campaign_registries()
+
+    # 1. Dynamic roots & catalog staged inside a transaction that rolls back do NOT leak to base
+    with pytest.raises(RuntimeError, match="abort_dyn"):
+        with mg_mod.campaign_registry_transaction():
+            mg_mod.clear_dynamic_approved_roots()
+            mg_mod.clear_dynamic_ingestion_catalog()
+            assert sub_root_a.resolve() not in mg_mod.get_approved_evidence_roots()
+            mg_mod.register_approved_evidence_root(sub_root_b)
+            assert sub_root_b.resolve() in mg_mod.get_approved_evidence_roots()
+            raise RuntimeError("abort_dyn")
+
+    # After rollback, sub_root_a and art_a remain intact; sub_root_b is not leaked
+    assert sub_root_a.resolve() in mg_mod.get_approved_evidence_roots()
+    assert sub_root_b.resolve() not in mg_mod.get_approved_evidence_roots()
+    assert str(art_a.resolve()) in mg_mod._DYNAMIC_INGESTION_CATALOG
+    assert mg_mod.get_verified_campaign_plzs("camp_dyn_a") == {"10115"}
+
+    # 2. Inner transaction clears and commits into outer, then outer commits (#2, #4)
+    art_b = sub_root_b / "art_b.json"
+    art_b.write_text(json.dumps({
+        "campaign_id": "camp_dyn_b",
+        "source_url": "https://www.marktguru.de/leaflets/dyn_b",
+        "scope": "region",
+        "covered_plzs": ["20095"],
+        "promotional_campaign_applicability": True,
+        "verification_date": "2026-06-01",
+        "evidence_type": "verified_campaign_distribution_manifest",
+    }), encoding="utf-8")
+    ev_b = {
+        "campaign_id": "camp_dyn_b",
+        "retailer": "edeka",
+        "campaign_title": "Dyn B",
+        "scope": "region",
+        "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+        "source_url": "https://www.marktguru.de/leaflets/dyn_b",
+        "source_provider": "marktguru",
+        "source_record_id": "rec_dyn_b",
+        "covered_plzs": ["20095"],
+        "promotional_applicability_confirmed": True,
+        "evidence_artifact_path": str(art_b),
+        "evidence_type": "verified_campaign_distribution_manifest",
+        "verification_date": "2026-06-01",
+        "limitations": "none",
+    }
+
+    with mg_mod.campaign_registry_transaction():
+        with mg_mod.campaign_registry_transaction():
+            mg_mod.clear_campaign_registries()
+            assert "camp_dyn_a" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            mg_mod.register_approved_evidence_root(sub_root_b)
+            mg_mod.ingest_trusted_evidence_artifact(art_b)
+            assert mg_mod.register_verified_campaign("camp_dyn_b", ["20095"], ev_b)
+        # Inner committed into outer
+        assert "camp_dyn_a" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        assert "camp_dyn_b" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+    # Outermost committed: camp_dyn_a cleared, camp_dyn_b and sub_root_b committed
+    assert "camp_dyn_a" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert "camp_dyn_b" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert sub_root_a.resolve() not in mg_mod.get_approved_evidence_roots()
+    assert sub_root_b.resolve() in mg_mod.get_approved_evidence_roots()
+    assert mg_mod.get_verified_campaign_plzs("camp_dyn_b") == {"20095"}
+
+    # 3. Restore inside a nested transaction that commits into outer, then outer commits (#11)
+    # Re-approve sub_root_a and ingest art_a so camp_dyn_a's artifact remains valid upon lookup
+    mg_mod.register_approved_evidence_root(sub_root_a)
+    mg_mod.ingest_trusted_evidence_artifact(art_a)
+    with mg_mod.campaign_registry_transaction():
+        with mg_mod.campaign_registry_transaction():
+            mg_mod.restore_campaign_registries(snap_a)
+            assert "camp_dyn_a" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            assert "camp_dyn_b" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        assert "camp_dyn_a" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        assert "camp_dyn_b" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+    assert "camp_dyn_a" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert "camp_dyn_b" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert mg_mod.get_verified_campaign_plzs("camp_dyn_a") == {"10115"}
+
+    # 4. Invalid snapshots are rejected cleanly without corrupting state
+    with pytest.raises(ValueError, match="2-tuple"):
+        mg_mod.restore_campaign_registries(("only_one",))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="mappings"):
+        mg_mod.restore_campaign_registries((["not_a_dict"], {}))  # type: ignore[arg-type]
+    assert "camp_dyn_a" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+
+def test_alias_normalization_purge_reregister_and_version_metadata_consistency(tmp_path):
+    """
+    Verify:
+    - Canonical alias normalization across all prefixes (id, flyer:id, campaign:id,
+      national_flyer:id, national_campaign:id) (#18, #19)
+    - Purge then re-register and register then purge within the same transaction (#18)
+    - Regional vs nationwide independent identity and version tracking (#19)
+    - Version metadata (_CAMPAIGN_VERSIONS / _NATIONWIDE_VERSIONS) 1-to-1 consistency
+      after registration, overwrite, purge, restore, transaction commit, and rollback (#12, #20)
+    - Atomic point-in-time proxy view methods (keys, items, values, copy, ==)
+    """
+    import app.providers.marktguru as mg_mod
+    import json
+    import pytest
+
+    mg_mod.clear_campaign_registries()
+    mg_mod.register_approved_evidence_root(tmp_path)
+
+    def _make_reg_ev(cid: str, plzs: list[str], suffix: str = "1") -> dict:
+        art = tmp_path / f"art_{cid}_{suffix}.json"
+        art.write_text(json.dumps({
+            "campaign_id": cid,
+            "source_url": f"https://www.marktguru.de/leaflets/{cid}_{suffix}",
+            "scope": "region",
+            "covered_plzs": plzs,
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_campaign_distribution_manifest",
+        }), encoding="utf-8")
+        mg_mod.ingest_trusted_evidence_artifact(art)
+        return {
+            "campaign_id": cid,
+            "retailer": "edeka",
+            "campaign_title": f"Title {cid} {suffix}",
+            "scope": "region",
+            "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+            "source_url": f"https://www.marktguru.de/leaflets/{cid}_{suffix}",
+            "source_provider": "marktguru",
+            "source_record_id": f"rec_{cid}_{suffix}",
+            "covered_plzs": plzs,
+            "promotional_applicability_confirmed": True,
+            "evidence_artifact_path": str(art),
+            "evidence_type": "verified_campaign_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "limitations": "none",
+        }
+
+    def _make_nat_ev(cid: str, suffix: str = "1") -> dict:
+        art = tmp_path / f"art_nat_{cid}_{suffix}.json"
+        art.write_text(json.dumps({
+            "campaign_id": cid,
+            "source_url": f"https://www.marktguru.de/leaflets/nat_{cid}_{suffix}",
+            "scope": "nationwide",
+            "promotional_campaign_applicability": True,
+            "verification_date": "2026-06-01",
+            "evidence_type": "verified_nationwide_distribution_manifest",
+        }), encoding="utf-8")
+        mg_mod.ingest_trusted_evidence_artifact(art)
+        return {
+            "campaign_id": cid,
+            "retailer": "aldi-nord",
+            "campaign_title": f"Nat Title {cid} {suffix}",
+            "scope": "nationwide",
+            "valid_dates": {"start": "2026-06-01", "end": "2026-06-30"},
+            "source_url": f"https://www.marktguru.de/leaflets/nat_{cid}_{suffix}",
+            "source_provider": "marktguru",
+            "source_record_id": f"rec_nat_{cid}_{suffix}",
+            "national_applicability_confirmed": True,
+            "promotional_applicability_confirmed": True,
+            "evidence_artifact_path": str(art),
+            "evidence_type": "verified_nationwide_distribution_manifest",
+            "verification_date": "2026-06-01",
+            "limitations": "none",
+        }
+
+    def _assert_version_invariants():
+        expected_reg = {mg_mod._clean_campaign_id(k) for k in mg_mod._VERIFIED_CAMPAIGN_REGISTRY}
+        expected_nat = {mg_mod._clean_campaign_id(k) for k in mg_mod._VERIFIED_NATIONWIDE_REGISTRY}
+        assert set(mg_mod._CAMPAIGN_VERSIONS.keys()) == expected_reg
+        assert set(mg_mod._NATIONWIDE_VERSIONS.keys()) == expected_nat
+
+    # 1. Register via "campaign:alias1" and verify all 3 regional aliases are populated and consistent
+    ev1 = _make_reg_ev("alias1", ["10115"], "v1")
+    assert mg_mod.register_verified_campaign("campaign:alias1", ["10115"], ev1)
+    for alias in ("alias1", "flyer:alias1", "campaign:alias1"):
+        assert alias in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        assert set(mg_mod.VERIFIED_CAMPAIGN_REGISTRY[alias]["covered_plzs"]) == {"10115"}
+    _assert_version_invariants()
+
+    # Overwrite via "flyer:alias1" and verify "campaign:alias1" is also updated (no stale alias!)
+    ev2 = _make_reg_ev("alias1", ["20095"], "v2")
+    assert mg_mod.register_verified_campaign("flyer:alias1", ["20095"], ev2)
+    for alias in ("alias1", "flyer:alias1", "campaign:alias1"):
+        assert set(mg_mod.VERIFIED_CAMPAIGN_REGISTRY[alias]["covered_plzs"]) == {"20095"}
+    _assert_version_invariants()
+
+    # 2. Register nationwide with same base ID "alias1" via "national_campaign:alias1"
+    nat_ev1 = _make_nat_ev("alias1", "v1")
+    assert mg_mod.register_verified_nationwide_campaign("national_campaign:alias1", nat_ev1)
+    for alias in ("alias1", "flyer:alias1", "campaign:alias1", "national_flyer:alias1", "national_campaign:alias1"):
+        assert alias in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+    # Purging regional "alias1" must NOT affect nationwide "alias1" (#19)
+    mg_mod._purge_regional_campaign("alias1")
+    assert "alias1" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert "campaign:alias1" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    assert "alias1" in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+    assert mg_mod.is_verified_nationwide_campaign("national_campaign:alias1")
+    _assert_version_invariants()
+
+    # 3. Inside a transaction: purge then re-register, and register then purge (#18)
+    assert mg_mod.register_verified_campaign("alias1", ["10115"], ev1)
+    ev_temp = _make_reg_ev("temp_camp", ["80331"], "v1")
+
+    with mg_mod.campaign_registry_transaction():
+        # Purge existing alias1, then re-register with ev2
+        mg_mod._purge_regional_campaign("campaign:alias1")
+        assert "alias1" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        assert "campaign:alias1" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+        assert mg_mod.register_verified_campaign("alias1", ["20095"], ev2)
+        for alias in ("alias1", "flyer:alias1", "campaign:alias1"):
+            assert alias in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+            assert set(mg_mod.VERIFIED_CAMPAIGN_REGISTRY[alias]["covered_plzs"]) == {"20095"}
+
+        # Register temp_camp, then purge it in the same transaction
+        assert mg_mod.register_verified_campaign("temp_camp", ["80331"], ev_temp)
+        assert "temp_camp" in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        mg_mod._purge_regional_campaign("flyer:temp_camp")
+        for alias in ("temp_camp", "flyer:temp_camp", "campaign:temp_camp"):
+            assert alias not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+
+        # Check proxy views inside transaction
+        proxy_copy = mg_mod.VERIFIED_CAMPAIGN_REGISTRY.copy()
+        assert dict(mg_mod.VERIFIED_CAMPAIGN_REGISTRY.items()) == proxy_copy
+        assert set(mg_mod.VERIFIED_CAMPAIGN_REGISTRY.keys()) == set(proxy_copy.keys())
+        assert list(mg_mod.VERIFIED_CAMPAIGN_REGISTRY.values()) == list(proxy_copy.values())
+        assert mg_mod.VERIFIED_CAMPAIGN_REGISTRY == proxy_copy
+
+    # After commit: alias1 has ev2 across all aliases, temp_camp is absent, versions match 1-to-1
+    for alias in ("alias1", "flyer:alias1", "campaign:alias1"):
+        assert alias in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+        assert set(mg_mod.VERIFIED_CAMPAIGN_REGISTRY[alias]["covered_plzs"]) == {"20095"}
+    assert "temp_camp" not in mg_mod.VERIFIED_CAMPAIGN_REGISTRY
+    _assert_version_invariants()
+
+    # 4. Snapshot, purge nationwide, restore snapshot -> versions remain 1-to-1 consistent (#12, #20)
+    snap = mg_mod.snapshot_campaign_registries()
+    mg_mod._purge_nationwide_campaign("national_flyer:alias1")
+    assert "alias1" not in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+    _assert_version_invariants()
+
+    # Restore an old raw 2-tuple snapshot format (without CampaignRegistrySnapshot metadata)
+    raw_2tuple = ({k: dict(v) for k, v in snap[0].items()}, {k: dict(v) for k, v in snap[1].items()})
+    mg_mod.restore_campaign_registries(raw_2tuple)
+    assert "alias1" in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+    assert "national_campaign:alias1" in mg_mod.VERIFIED_NATIONWIDE_REGISTRY
+    _assert_version_invariants()
+
+
+
 
 
 
