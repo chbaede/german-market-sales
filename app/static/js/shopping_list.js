@@ -27,7 +27,7 @@
       return `<span class="scope-badge scope-store" title="${escapeHtml(storeName || "매장 전용")}">📍 ${escapeHtml(storeName || lTk("매장 전용", "Store Only"))}</span>`;
     }
     if (scopeType === "store" && !regionVerified) {
-      return `<span class="scope-badge scope-unverified" title="${escapeHtml(storeName || "매장")} (${lTk("미검증", "unverified")})">📍 ${escapeHtml(storeName || lTk("매장", "Store"))} (${lTk("미검증", "unverified")})</span>`;
+      return `<span class="scope-badge scope-unverified" title="${escapeHtml(storeName || lTk("매장", "Store"))}">📍 ${escapeHtml(storeName || lTk("매장", "Store"))}</span>`;
     }
     if (scopeType === "region" && regionVerified) {
       return `<span class="scope-badge scope-region" title="${lTk("지역 검증 할인", "Verified Regional Deal")}">🗺️ ${lTk("지역 검증", "Regional")}</span>`;
@@ -36,10 +36,10 @@
       return `<span class="scope-badge scope-nationwide" title="${lTk("전국 공통 할인", "Nationwide Deal")}">🌐 ${lTk("전국공통", "Nationwide")}</span>`;
     }
     if (scopeType === "nationwide" && !regionVerified) {
-      return `<span class="scope-badge scope-unverified" title="${lTk("전국 행사 (미검증)", "Nationwide Offer (Unverified)")}">🌐 ${lTk("전국(미검증)", "Nationwide (Unverified)")}</span>`;
+      return `<span class="scope-badge scope-unverified" title="${lTk("전국 행사", "Nationwide Offer")}">🌐 ${lTk("전국 행사", "Nationwide Offer")}</span>`;
     }
     if (scopeType === "region" && !regionVerified) {
-      return `<span class="scope-badge scope-unverified" title="${lTk("권역 행사 (미검증)", "Territory Offer (Unverified)")}">ℹ️ ${lTk("권역행사", "Territory")}</span>`;
+      return `<span class="scope-badge scope-unverified" title="${lTk("권역 행사", "Territory Offer")}">ℹ️ ${lTk("권역행사", "Territory")}</span>`;
     }
     return `<span class="scope-badge scope-unknown" title="${lTk("적용 범위 미확인", "Unknown Scope")}">❓ ${lTk("미확인", "Unknown")}</span>`;
   }
@@ -117,9 +117,9 @@
     if (unverifiedHistory.length) {
       unverifiedTable = `
         <div class="tracker-history-table-wrap unverified-history-wrap">
-          <h4>⚠️ ${lTk("미검증 관측 이력 (참고용)", "Unverified Observations (Reference Only)")}</h4>
+          <h4>${lTk("기타 관측 이력 (참고용)", "Other Observations (Reference Only)")}</h4>
           <p class="unverified-note">
-            ${lTk("공식 매장 또는 지역 적용 여부가 확인되지 않아 공식 통계에서 분리된 관측 데이터입니다.", "Observations excluded from official stats because regional/store applicability could not be verified.")}
+            ${lTk("매장 또는 지역 적용 범위가 다른 관측 데이터로, 위 통계에는 포함되지 않습니다.", "Observations with a different store/regional scope; not included in the stats above.")}
           </p>
           <table class="tracker-history-table">
             <thead>

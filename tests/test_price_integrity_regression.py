@@ -1524,7 +1524,7 @@ def test_ui_unverified_store_badge_rendering(monkeypatch):
     assert response.status_code == 200
     # Must contain unverified badge
     assert "scope-unverified" in html
-    assert "미검증" in html
+    assert "미검증" not in html
     # Must NOT contain verified store badge
     assert "scope-badge scope-store" not in html
     # Scope badge must be rendered in its own card-scope-row container
@@ -1751,13 +1751,14 @@ def test_ui_rendered_price_history_modal_isolates_unverified(monkeypatch):
 
         # C. Unverified section is rendered with clear warning and separate container
         assert "unverified-history-wrap" in rendered_html
-        assert "미검증 관측 이력 (참고용)" in rendered_html
-        assert "공식 매장 또는 지역 적용 여부가 확인되지 않아 공식 통계에서 분리된 관측 데이터입니다." in rendered_html
+        assert "기타 관측 이력 (참고용)" in rendered_html
+        assert "매장 또는 지역 적용 범위가 다른 관측 데이터로, 위 통계에는 포함되지 않습니다." in rendered_html
+        assert "미검증" not in rendered_html
         assert "0.50 €" in rendered_html
         assert "0.75 €" in rendered_html
         assert "0.60 €" in rendered_html
         assert "scope-unverified" in rendered_html
-        assert "전국(미검증)" in rendered_html
+        assert "전국 행사" in rendered_html
         assert "미확인" in rendered_html
 
         # D. Verified table portion must NOT contain unverified prices
