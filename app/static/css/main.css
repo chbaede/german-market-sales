@@ -973,8 +973,9 @@ select:focus {
 .card-meta-left {
   align-items: center;
   display: flex;
-  flex: 1;
+  flex: 0 1 auto;
   gap: 6px;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
 }
@@ -1005,8 +1006,10 @@ select:focus {
   color: var(--muted);
   flex-shrink: 0;
   font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
   margin-left: auto;
+  max-width: 100%;
   white-space: nowrap;
 }
 
@@ -1603,6 +1606,29 @@ select:focus {
   width: 100%;
 }
 
+ins.adsbygoogle[data-ad-status="unfilled"] {
+  display: none !important;
+}
+
+/* Suppress intrusive AdSense Auto Ads inside navigation, controls, cards, and modals */
+.topbar .google-auto-placed,
+.control-card .google-auto-placed,
+.list-status-bar .google-auto-placed,
+.notice .google-auto-placed,
+.offer-card .google-auto-placed,
+.custom-modal-backdrop .google-auto-placed,
+.topbar ins.adsbygoogle:not([data-ad-slot]),
+.control-card ins.adsbygoogle:not([data-ad-slot]),
+.list-status-bar ins.adsbygoogle:not([data-ad-slot]),
+.notice ins.adsbygoogle:not([data-ad-slot]),
+.offer-card ins.adsbygoogle:not([data-ad-slot]),
+.custom-modal-backdrop ins.adsbygoogle:not([data-ad-slot]) {
+  display: none !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
 .ad-label {
   align-self: flex-end;
   color: var(--muted);
@@ -1817,6 +1843,27 @@ select:focus {
     padding: 12px;
   }
 
+  .offer-card > .image-wrap {
+    grid-column: 1;
+  }
+
+  .offer-card > .card-body {
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .offer-card.offer-card--text {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .offer-card.offer-card--text > .image-wrap {
+    display: none;
+  }
+
+  .offer-card.offer-card--text > .card-body {
+    grid-column: 1 / -1;
+  }
+
   .image-wrap {
     aspect-ratio: 1 / 1;
     border: 1px solid #eef1ec;
@@ -1836,6 +1883,25 @@ select:focus {
   .card-body {
     gap: 3px;
     padding: 0;
+  }
+
+  .card-meta {
+    column-gap: 6px;
+    row-gap: 3px;
+  }
+
+  .valid-dates {
+    font-size: 10.5px;
+    line-height: 1.25;
+  }
+
+  /* Keep initial mobile view clean: suppress Auto Ads outside the dedicated bottom slot */
+  .google-auto-placed,
+  ins.adsbygoogle:not([data-ad-slot]) {
+    display: none !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
 
   .card-scope-row {

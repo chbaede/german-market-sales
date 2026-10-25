@@ -1091,7 +1091,7 @@ class PriceHistoryService:
         self.cache_dir = cache_dir
         self.db_path = (cache_dir / db_name).resolve()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._atl_cache: tuple[int, dict[str, float]] | None = None
+        self._atl_cache: dict[tuple[int, str | None, str | None], dict[str, float]] | None = None
         if self.db_path not in self._INITIALIZED_DBS or not self.db_path.exists():
             self._init_db()
             self._INITIALIZED_DBS.add(self.db_path)
@@ -1688,6 +1688,15 @@ class PriceHistoryService:
         return len(rows_to_insert)
 
     def get_all_time_low_map(self, zip_code: str | None = None, store_id: str | None = None) -> dict[str, float]:
+        mtime_ns = 0
+        try:
+            mtime_ns = self.db_path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = 0
+        cache_key = (mtime_ns, zip_code, store_id)
+        if mtime_ns and self._atl_cache is not None and cache_key in self._atl_cache:
+            return dict(self._atl_cache[cache_key])
+
         with self._get_connection() as conn:
             if zip_code:
                 if store_id:
@@ -1722,7 +1731,12 @@ class PriceHistoryService:
                     GROUP BY product_key
                     """
                 )
-            return {row["product_key"]: float(row["min_price"]) for row in cursor.fetchall()}
+            result = {row["product_key"]: float(row["min_price"]) for row in cursor.fetchall()}
+            if mtime_ns:
+                if self._atl_cache is None or any(k[0] != mtime_ns for k in self._atl_cache):
+                    self._atl_cache = {}
+                self._atl_cache[cache_key] = dict(result)
+            return result
 
     def get_product_stats(
         self,

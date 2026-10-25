@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
+import copy
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
@@ -78,14 +78,9 @@ class OfferService:
 
     def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
         if not refresh:
-            cached = self._read_cache(zip_code)
-            if cached and not self._is_stale(cached["fetched_at"]):
-                return OfferResult(
-                    offers=self._cached_offers(cached),
-                    fetched_at=cached["fetched_at"],
-                    warnings=cached.get("warnings", []),
-                    from_cache=True,
-                )
+            cached_res = self.get_cached_offers(zip_code)
+            if cached_res is not None and not self._is_stale(cached_res.fetched_at):
+                return cached_res
 
         warnings: list[str] = []
         offers: list[Offer] = []
@@ -206,7 +201,7 @@ class OfferService:
             temp_path.replace(target_file)
             try:
                 mtime_ns = target_file.stat().st_mtime_ns
-                self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [replace(o) for o in offers])
+                self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [copy.copy(o) for o in offers])
             except OSError:
                 self._memory_cache.pop(zip_code, None)
         except Exception:
@@ -231,7 +226,7 @@ class OfferService:
         if mem_entry is not None:
             cached_mtime, fetched_at, warnings, base_offers = mem_entry
             if cached_mtime == mtime_ns:
-                offers = self._non_expired_offers([replace(o) for o in base_offers])
+                offers = self._non_expired_offers([copy.copy(o) for o in base_offers])
                 return OfferResult(
                     offers=offers,
                     fetched_at=fetched_at,
@@ -245,7 +240,7 @@ class OfferService:
         offers = self._cached_offers(cached)
         fetched_at = cached["fetched_at"]
         warnings = cached.get("warnings", [])
-        self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [replace(o) for o in offers])
+        self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [copy.copy(o) for o in offers])
         return OfferResult(
             offers=offers,
             fetched_at=fetched_at,

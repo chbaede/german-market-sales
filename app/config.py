@@ -8,9 +8,14 @@ WEEK_LABELS = {
 
 SUPERMARKET_PAGE = {
     "title": "Supermarkt-Angebote · 독일 마트 할인",
+    "title_en": "Supermarkt-Angebote · German Supermarket Deals",
     "meta_description": (
         "Wöchentliche Supermarkt-Angebote in Deutschland (EDEKA, REWE, Lidl, ALDI Nord, ALDI Süd, Kaufland, Netto, PENNY) "
         "vergleichen und sparen. Aktuelle Prospekte, Rabatte und günstige Lebensmittel."
+    ),
+    "meta_description_en": (
+        "Compare weekly supermarket deals in Germany (EDEKA, REWE, Lidl, ALDI Nord, ALDI Süd, Kaufland, Netto, PENNY) "
+        "and save on groceries with current flyers and discounts."
     ),
     "eyebrow": "EDEKA · REWE · Lidl · ALDI Nord · ALDI Süd · Kaufland · Netto · PENNY · nahkauf",
     "heading": "Supermarkt Deals",
@@ -22,6 +27,7 @@ SUPERMARKET_PAGE = {
     "storage_key": "supermarketDealShoppingList",
     "retailer_label": {"de": "Händler", "ko": "마트순", "en": "Retailer"},
     "search_placeholder": "상품 검색 (예: Butter, Kaffee, 우유)",
+    "search_placeholder_en": "Search products (e.g. Butter, Kaffee, Milk)",
     "basket_placeholder": "파 4개, 당근, 우유 2개",
     "basket_placeholder_en": "4 green onions, carrots, 2 milk",
     "week_labels": WEEK_LABELS,
@@ -32,9 +38,14 @@ SUPERMARKET_PAGE = {
 
 DRUGSTORE_PAGE = {
     "title": "Drogerie-Angebote · DM/ROSSMANN 할인",
+    "title_en": "Drogerie-Angebote · DM/ROSSMANN Deals",
     "meta_description": (
         "Aktuelle Drogerie-Angebote bei dm, ROSSMANN und budni vergleichen. "
         "Entdecken Sie Rabatte auf Kosmetik, Pflegeprodukte, Haushaltswaren und Babyartikel."
+    ),
+    "meta_description_en": (
+        "Compare current drugstore deals at dm, ROSSMANN, and budni in Germany. "
+        "Find discounts on cosmetics, personal care, household, and baby products."
     ),
     "eyebrow": "dm · ROSSMANN · budni",
     "heading": "Drogerie Deals",
@@ -44,8 +55,9 @@ DRUGSTORE_PAGE = {
     "refresh_endpoint": "main.drugstores_refresh",
     "basket_endpoint": "main.api_drugstore_basket",
     "storage_key": "drugstoreDealShoppingList",
-    "retailer_label": {"de": "Drogerie", "ko": " 매장순", "en": "Store"},
+    "retailer_label": {"de": "Drogerie", "ko": "매장순", "en": "Store"},
     "search_placeholder": "상품 검색 (예: Shampoo, Zahnpasta, 샴푸)",
+    "search_placeholder_en": "Search products (e.g. Shampoo, Zahnpasta, Soap)",
     "basket_placeholder": "샴푸 1개, 치약, 세제, 기저귀",
     "basket_placeholder_en": "1 shampoo, toothpaste, detergent, diapers",
     "week_labels": WEEK_LABELS,

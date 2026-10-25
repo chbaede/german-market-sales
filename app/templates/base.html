@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Supermarkt Deals{% endblock %}</title>
     <meta name="description" content="{% block meta_description %}Wöchentliche Supermarkt- & Drogerie-Angebote in Deutschland (ALDI, LIDL, REWE, EDEKA, DM, ROSSMANN) vergleichen und sparen.{% endblock %}">
-    <meta name="keywords" content="Supermarkt Angebote, Prospekte, Rabatt, ALDI, LIDL, REWE, EDEKA, DM, ROSSMANN, 독일 마트 할인">
+    <meta name="keywords" content="{% if lang == 'en' %}Supermarkt Angebote, Prospekte, Rabatt, ALDI, LIDL, REWE, EDEKA, DM, ROSSMANN, German supermarket deals{% else %}Supermarkt Angebote, Prospekte, Rabatt, ALDI, LIDL, REWE, EDEKA, DM, ROSSMANN, 독일 마트 할인{% endif %}">
     <meta name="robots" content="index, follow">
     <meta name="google-site-verification" content="2VmKKN5VGVIL9P-KiYywyJoeJQiKVCxEhRM4japgnzE">
     <link rel="canonical" href="{{ request.base_url }}">
@@ -28,7 +28,7 @@
     <!-- Google AdSense -->
     <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6854824605420161" crossorigin="anonymous"></script>
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css', v='20261018-2') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css', v='20261025-1') }}">
 
     <!-- Structured Data (JSON-LD) for SEO -->
     <script type="application/ld+json">

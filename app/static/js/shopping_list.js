@@ -24,7 +24,7 @@
     const storeName = item.store_name;
 
     if (scopeType === "store" && regionVerified) {
-      return `<span class="scope-badge scope-store" title="${escapeHtml(storeName || "매장 전용")}">📍 ${escapeHtml(storeName || lTk("매장 전용", "Store Only"))}</span>`;
+      return `<span class="scope-badge scope-store" title="${escapeHtml(storeName || lTk("매장 전용", "Store Only"))}">📍 ${escapeHtml(storeName || lTk("매장 전용", "Store Only"))}</span>`;
     }
     if (scopeType === "store" && !regionVerified) {
       return `<span class="scope-badge scope-unverified" title="${escapeHtml(storeName || lTk("매장", "Store"))}">📍 ${escapeHtml(storeName || lTk("매장", "Store"))}</span>`;
@@ -414,31 +414,22 @@
     });
   }
 
-  // Auto-detect German PLZ on first visit when no PLZ cookie/query is saved
-  if (locationBar && locationBar.dataset.hasSavedPlz === "0") {
-    const currentPlz = locationBar.dataset.currentPlz || "";
-    detectViaClientIp().then((result) => {
-      if (!result || !result.detected || !result.zip_code) return;
-      savePlzCookie(result.zip_code);
-      if (result.zip_code !== currentPlz) {
-        applyPlzAndSubmit(result.zip_code, result.city);
-      } else if (result.city && locationCityEl) {
-        locationCityEl.textContent = result.city;
+  // Suppress intrusive Google Auto Ads inside topbar, controls, cards, and initial mobile viewport
+  function pruneIntrusiveAutoAds() {
+    const blockedZones = ".topbar, .control-card, .list-status-bar, .notice, .offer-card, .custom-modal-backdrop";
+    document.querySelectorAll(".google-auto-placed, ins.adsbygoogle:not([data-ad-slot])").forEach((el) => {
+      if (el.closest(blockedZones) || (window.innerWidth <= 640 && !el.closest(".ad-unit-bottom"))) {
+        el.remove();
       }
     });
   }
 
-  function escapeHtml(value) {
-    return String(value)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-  }
-
-  function escapeAttribute(value) {
-    return escapeHtml(value).replaceAll("`", "&#096;");
+  pruneIntrusiveAutoAds();
+  if (typeof MutationObserver !== "undefined" && document.body) {
+    const adObserver = new MutationObserver(() => {
+      pruneIntrusiveAutoAds();
+    });
+    adObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   // Shared Modal Controller Helper

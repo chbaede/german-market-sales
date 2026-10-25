@@ -113,3 +113,105 @@ def test_drogerie_page_seo_and_ads(monkeypatch):
     assert "whatsapp" not in html.lower()
     assert "https://main.yocto.co.kr/" in html
     assert "hub-link" in html
+
+
+def test_english_mode_has_no_korean_ui_strings(monkeypatch):
+    import re
+    import app.routes as routes
+    from app.models import Offer
+
+    sample_offers = [
+        Offer(
+            id="edeka-text-offer",
+            source_offer_id=101,
+            retailer="EDEKA",
+            retailer_slug="edeka",
+            title="Frische Vollmilch 1L",
+            brand="Gut & Günstig",
+            category="dairy",
+            price=0.99,
+            old_price=1.29,
+            unit_price=0.99,
+            unit="1l",
+            discount_percent=23.0,
+            description="versch. Sorten",
+            valid_from="2026-10-20T00:00:00+02:00",
+            valid_to="2099-12-31T23:59:59+01:00",
+            image_url=None,
+            source_url="https://www.edeka.de/angebot",
+            scope_type="store",
+            region_verified=True,
+            source_provider="marktguru",
+        ),
+        Offer(
+            id="rewe-comp-offer",
+            source_offer_id=102,
+            retailer="REWE",
+            retailer_slug="rewe",
+            title="Frische Vollmilch 1L",
+            brand="Gut & Günstig",
+            category="dairy",
+            price=1.09,
+            old_price=1.29,
+            unit_price=1.09,
+            unit="1l",
+            discount_percent=15.0,
+            description="",
+            valid_from="2026-10-20T00:00:00+02:00",
+            valid_to="2099-12-31T23:59:59+01:00",
+            image_url="https://example.com/milk.jpg",
+            source_url="https://www.rewe.de/angebot",
+            scope_type="nationwide",
+            region_verified=True,
+            source_provider="rewe",
+        ),
+    ]
+
+    class FakeOfferService:
+        def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
+            return OfferResult(
+                offers=sample_offers,
+                fetched_at="2026-10-25T08:00:00+00:00",
+                warnings=[
+                    "ALDI Süd 매장은 해당 지역(PLZ 14195)에 존재하지 않습니다 (ALDI Nord 관할 지역).",
+                    "EDEKA 공식 데이터가 비어 있어 Marktguru 데이터로 대체했습니다.",
+                ],
+            )
+
+    monkeypatch.setattr(routes, "offer_service", lambda: FakeOfferService())
+    monkeypatch.setattr(routes, "drugstore_offer_service", lambda: FakeOfferService())
+    app = create_app()
+    client = app.test_client()
+    client.set_cookie("lang", "en")
+
+    res_super = client.get("/?retailer=edeka&retailer=rewe")
+    assert res_super.status_code == 200
+    html_super = res_super.get_data(as_text=True)
+    assert re.findall(r"[가-힣]+", html_super) == []
+    assert "offer-card--text" in html_super
+    assert "ALDI Süd stores do not operate in this area" in html_super
+    assert "EDEKA official data was empty; substituted with Marktguru data." in html_super
+
+    res_drug = client.get("/drogerie")
+    assert res_drug.status_code == 200
+    html_drug = res_drug.get_data(as_text=True)
+    assert re.findall(r"[가-힣]+", html_drug) == []
+
+
+def test_mobile_date_and_ad_suppression_assets():
+    app = create_app()
+    client = app.test_client()
+
+    css_res = client.get("/static/css/main.css")
+    assert css_res.status_code == 200
+    css = css_res.get_data(as_text=True)
+    assert ".offer-card.offer-card--text" in css
+    assert ".offer-card > .card-body" in css
+    assert "flex: 0 1 auto;" in css
+    assert ".google-auto-placed" in css
+
+    js_res = client.get("/static/js/shopping_list.js")
+    assert js_res.status_code == 200
+    js = js_res.get_data(as_text=True)
+    assert "pruneIntrusiveAutoAds" in js
+    assert 'locationBar.dataset.hasSavedPlz === "0"' not in js

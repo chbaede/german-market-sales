@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 
-{% block title %}{{ page.title }}{% endblock %}
-{% block meta_description %}{{ page.meta_description }}{% endblock %}
-{% block og_description %}{{ page.meta_description }}{% endblock %}
-{% block twitter_description %}{{ page.meta_description }}{% endblock %}
+{% block title %}{% if lang == 'en' %}{{ page.title_en or page.title }}{% else %}{{ page.title }}{% endif %}{% endblock %}
+{% block meta_description %}{% if lang == 'en' %}{{ page.meta_description_en or page.meta_description }}{% else %}{{ page.meta_description }}{% endif %}{% endblock %}
+{% block og_description %}{% if lang == 'en' %}{{ page.meta_description_en or page.meta_description }}{% else %}{{ page.meta_description }}{% endif %}{% endblock %}
+{% block twitter_description %}{% if lang == 'en' %}{{ page.meta_description_en or page.meta_description }}{% else %}{{ page.meta_description }}{% endif %}{% endblock %}
 
 {% block body %}
 
@@ -40,7 +40,19 @@
   '현위치': 'Locate',
   '적용': 'Apply',
   '독일 우편번호 (PLZ)': 'German Postal Code (PLZ)',
-  '현재 위치로 우편번호 자동 설정': 'Detect current postal code'
+  '현재 위치로 우편번호 자동 설정': 'Detect current postal code',
+  'Hub 메인 페이지로 이동': 'Go to Hub Home',
+  'Hub 메인': 'Hub Home',
+  '매장 전용': 'Store Only',
+  '매장': 'Store',
+  '지역 검증 할인': 'Verified Regional Deal',
+  '전국 공통 할인': 'Nationwide Deal',
+  '전국공통': 'Nationwide',
+  '전국 행사': 'Nationwide Offer',
+  '권역 행사': 'Territory Offer',
+  '적용 범위 미확인': 'Unknown Scope',
+  'Marktguru 전단지': 'Marktguru Flyer',
+  '비교할 상품명 입력 (예: Nutella, Coca Cola, Barilla, Balea)...': 'Enter product name to compare (e.g. Nutella, Coca Cola, Barilla, Balea)...'
 } %}
 
 {% macro render_ko(ko_str) -%}
@@ -51,7 +63,7 @@
   <div class="topbar-inner">
     <div class="topbar-brand-row">
       <div class="brand-left">
-        <a class="hub-link" href="https://main.yocto.co.kr/" title="Hub 메인 페이지로 이동">← Hub</a>
+        <a class="hub-link" href="https://main.yocto.co.kr/" title="{{ render_ko('Hub 메인 페이지로 이동') }}">← Hub</a>
         <h1>{{ page.heading }}</h1>
       </div>
       <div class="topbar-actions">
@@ -178,7 +190,7 @@
 
       <div class="filter-primary-row">
         <div class="search-box">
-          <input type="search" name="q" value="{{ query }}" placeholder="{{ page.search_placeholder }}" aria-label="{{ render_ko('검색') }}">
+          <input type="search" name="q" value="{{ query }}" placeholder="{% if lang == 'en' %}{{ page.search_placeholder_en or page.search_placeholder }}{% else %}{{ page.search_placeholder }}{% endif %}" aria-label="{{ render_ko('검색') }}">
           <button class="submit-button search-submit-btn" type="submit">{{ render_ko("검색") }}</button>
         </div>
         <div class="filter-select-row">
@@ -233,7 +245,7 @@
           {% set title_ko = offer.title|ko_text %}
           {% set valid_text = offer.valid_from|date_de ~ " – " ~ offer.valid_to|date_de %}
           <article
-            class="offer-card retailer-theme retailer-{{ offer.retailer_slug }}"
+            class="offer-card {% if not offer.image_url %}offer-card--text{% endif %} retailer-theme retailer-{{ offer.retailer_slug }}"
             data-offer-id="{{ offer.id }}"
             data-title="{{ offer.title }}"
             data-title-ko="{{ title_ko }}"
@@ -245,7 +257,7 @@
           >
             <div class="image-wrap">
               {% if offer.image_url %}
-                <img src="{{ offer.image_url }}" alt="{{ offer.title }}" loading="lazy" decoding="async">
+                <img src="{{ offer.image_url }}" alt="{{ offer.title }}" loading="lazy" decoding="async" onerror="this.closest('.offer-card')?.classList.add('offer-card--text')">
               {% else %}
                 <div class="image-placeholder">{{ offer.retailer }}</div>
               {% endif %}
@@ -263,22 +275,22 @@
 
               <div class="card-scope-row">
                 {% if offer.scope_type == 'store' and offer.region_verified %}
-                  <span class="scope-badge scope-store" title="{{ offer.store_address or offer.store_name }}">📍 {{ offer.store_name or '매장 전용' }}</span>
+                  <span class="scope-badge scope-store" title="{{ offer.store_address or offer.store_name or render_ko('매장 전용') }}">📍 {{ offer.store_name or render_ko('매장 전용') }}</span>
                 {% elif offer.scope_type == 'store' and not offer.region_verified %}
-                  <span class="scope-badge scope-unverified" title="{{ offer.store_address or offer.store_name or '매장' }}">📍 {{ offer.store_name or '매장' }}</span>
+                  <span class="scope-badge scope-unverified" title="{{ offer.store_address or offer.store_name or render_ko('매장') }}">📍 {{ offer.store_name or render_ko('매장') }}</span>
                 {% elif offer.scope_type == 'region' and offer.region_verified %}
-                  <span class="scope-badge scope-region" title="지역 검증 할인">🗺️ {% if lang == 'de' %}Regional verifiziert{% elif lang == 'en' %}Verified Regional{% else %}지역 검증{% endif %}</span>
+                  <span class="scope-badge scope-region" title="{{ render_ko('지역 검증 할인') }}">🗺️ {% if lang == 'de' %}Regional verifiziert{% elif lang == 'en' %}Verified Regional{% else %}지역 검증{% endif %}</span>
                 {% elif offer.scope_type == 'nationwide' and offer.region_verified %}
-                  <span class="scope-badge scope-nationwide" title="전국 공통 할인">🌐 {% if lang == 'de' %}Bundesweit{% elif lang == 'en' %}Nationwide{% else %}전국공통{% endif %}</span>
+                  <span class="scope-badge scope-nationwide" title="{{ render_ko('전국 공통 할인') }}">🌐 {% if lang == 'de' %}Bundesweit{% elif lang == 'en' %}Nationwide{% else %}전국공통{% endif %}</span>
                 {% elif offer.scope_type == 'nationwide' and not offer.region_verified %}
-                  <span class="scope-badge scope-unverified" title="전국 행사">🌐 {% if lang == 'de' %}Bundesweites Angebot{% elif lang == 'en' %}Nationwide Offer{% else %}전국 행사{% endif %}</span>
+                  <span class="scope-badge scope-unverified" title="{{ render_ko('전국 행사') }}">🌐 {% if lang == 'de' %}Bundesweites Angebot{% elif lang == 'en' %}Nationwide Offer{% else %}전국 행사{% endif %}</span>
                 {% elif offer.scope_type == 'region' and not offer.region_verified %}
-                  <span class="scope-badge scope-unverified" title="권역 행사">ℹ️ {% if lang == 'de' %}Gebietsangebot{% elif lang == 'en' %}Territory Offer{% else %}권역행사{% endif %}</span>
+                  <span class="scope-badge scope-unverified" title="{{ render_ko('권역 행사') }}">ℹ️ {% if lang == 'de' %}Gebietsangebot{% elif lang == 'en' %}Territory Offer{% else %}권역행사{% endif %}</span>
                 {% else %}
-                  <span class="scope-badge scope-unknown" title="적용 범위 미확인">❓ {% if lang == 'de' %}Unbekannt{% elif lang == 'en' %}Unknown{% else %}미확인{% endif %}</span>
+                  <span class="scope-badge scope-unknown" title="{{ render_ko('적용 범위 미확인') }}">❓ {% if lang == 'de' %}Unbekannt{% elif lang == 'en' %}Unknown{% else %}미확인{% endif %}</span>
                 {% endif %}
                 {% if offer.source_provider == 'marktguru' %}
-                  <span class="scope-badge scope-fallback" title="Marktguru 전단지">MG</span>
+                  <span class="scope-badge scope-fallback" title="{{ render_ko('Marktguru 전단지') }}">MG</span>
                 {% endif %}
               </div>
 
@@ -316,7 +328,7 @@
                 <div class="card-competitor-box {% if offer.is_cheapest_in_week %}is-cheapest{% elif offer.cheapest_competitor and offer.cheapest_competitor.price_diff and offer.cheapest_competitor.price_diff > 0 %}has-cheaper{% else %}is-same{% endif %}">
                   <div class="ccb-stores">
                     {% for c in offer.competitors %}
-                      <a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer" class="comp-store-pill retailer-theme retailer-{{ c.retailer_slug }}" title="{{ c.retailer }}{% if c.scope_type == 'store' and c.region_verified %} (📍 {{ c.store_name or '매장' }}){% elif c.scope_type == 'nationwide' and c.region_verified %} (🌐 전국공통){% endif %}: {{ c.title }}">
+                      <a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer" class="comp-store-pill retailer-theme retailer-{{ c.retailer_slug }}" title="{{ c.retailer }}{% if c.scope_type == 'store' and c.region_verified %} (📍 {{ c.store_name or render_ko('매장') }}){% elif c.scope_type == 'nationwide' and c.region_verified %} (🌐 {{ render_ko('전국공통') }}){% endif %}: {{ c.title }}">
                         <span class="csp-retailer">{{ c.retailer }}</span>
                         <strong class="csp-price">{{ c.price|eur }}</strong>
                         {% if c.price_diff is not none and c.price_diff > 0 %}
@@ -394,7 +406,7 @@
     </div>
     <div class="compare-modal-search">
       <form data-compare-form class="compare-search-form">
-        <input type="text" data-compare-search-input placeholder="비교할 상품명 입력 (예: Nutella, Coca Cola, Barilla, Balea)..." required>
+        <input type="text" data-compare-search-input placeholder="{{ render_ko('비교할 상품명 입력 (예: Nutella, Coca Cola, Barilla, Balea)...') }}" required>
         <button type="submit" class="submit-button">{{ render_ko("비교") }}</button>
       </form>
     </div>
@@ -420,15 +432,15 @@
       </p>
     </div>
     <div class="footer-links">
-      <a href="https://main.yocto.co.kr/">Hub 메인</a>
+      <a href="https://main.yocto.co.kr/">{{ render_ko("Hub 메인") }}</a>
       <a href="{{ url_for('main.index') }}">Supermarkt</a>
       <a href="{{ url_for('main.drugstores') }}">Drogerie</a>
-      <a href="{{ url_for(page.refresh_endpoint, **request.args) }}">Aktualisieren</a>
+      <a href="{{ url_for(page.refresh_endpoint, **request.args) }}">{% if lang == 'en' %}Refresh{% else %}Aktualisieren{% endif %}</a>
     </div>
   </div>
 </footer>
 {% endblock %}
 
 {% block scripts %}
-  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261018-1') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261025-1') }}" defer></script>
 {% endblock %}

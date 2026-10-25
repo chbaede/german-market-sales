@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import html
 import re
 from abc import ABC, abstractmethod
@@ -18,6 +19,18 @@ from app.models import Offer
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36"
 
+_RE_AMP_ENTITY = re.compile(r"&amp;(\$#|&#)")
+_RE_LS_HEX = re.compile(r"[\$&]#x?202[89];?", flags=re.IGNORECASE)
+_RE_LS_DEC = re.compile(r"[\$&]#823[23];?")
+_RE_DOLLAR_HASH = re.compile(r"\$#")
+_RE_DOLLAR_ENTITY = re.compile(r"\$([a-zA-Z]+;)")
+_RE_UNTERM_HEX = re.compile(r"&#x([0-9a-fA-F]+)(?![0-9a-fA-F;])")
+_RE_UNTERM_DEC = re.compile(r"&#([0-9]+)(?![0-9;])")
+_RE_LINE_BREAKS = re.compile(r"[\u2028\u2029\r\n\t]+")
+_RE_ZERO_WIDTH = re.compile(r"[\u200b-\u200d\u2060\ufeff\u00ad]")
+_RE_MULTI_SPACE = re.compile(r"\s+")
+_RE_NEEDS_CLEAN = re.compile(r"[&$\r\n\t\u2028\u2029\u200b-\u200d\u2060\ufeff\u00ad\xa0]|  ")
+
 
 def verify_tls_bool(value: str | bool) -> bool:
     if isinstance(value, bool):
@@ -25,6 +38,33 @@ def verify_tls_bool(value: str | bool) -> bool:
     if str(value).casefold() in {"false", "0", "no"}:
         return False
     return True
+
+
+@lru_cache(maxsize=16384)
+def _clean_text_str(value: str) -> str:
+    if not _RE_NEEDS_CLEAN.search(value):
+        return value.strip()
+
+    text = value
+    for _ in range(5):
+        prev = text
+        if "&" in text or "$" in text:
+            text = _RE_AMP_ENTITY.sub(r"\1", text)
+            text = _RE_LS_HEX.sub(" ", text)
+            text = _RE_LS_DEC.sub(" ", text)
+            text = _RE_DOLLAR_HASH.sub("&#", text)
+            text = _RE_DOLLAR_ENTITY.sub(r"&\1", text)
+            text = _RE_UNTERM_HEX.sub(r"&#x\1;", text)
+            text = _RE_UNTERM_DEC.sub(r"&#\1;", text)
+            if "&" in text:
+                text = html.unescape(text)
+        if text == prev:
+            break
+
+    text = _RE_LS_HEX.sub(" ", text)
+    text = _RE_LINE_BREAKS.sub(" ", text)
+    text = _RE_ZERO_WIDTH.sub("", text)
+    return _RE_MULTI_SPACE.sub(" ", text).strip()
 
 
 def clean_text(value: Any) -> str:
@@ -37,26 +77,7 @@ def clean_text(value: Any) -> str:
             return ""
     if not value:
         return ""
-
-    text = value
-    for _ in range(5):
-        prev = text
-        text = re.sub(r"&amp;(\$#|&#)", r"\1", text)
-        text = re.sub(r"[\$&]#x?202[89];?", " ", text, flags=re.IGNORECASE)
-        text = re.sub(r"[\$&]#823[23];?", " ", text)
-        text = re.sub(r"\$#", "&#", text)
-        text = re.sub(r"\$([a-zA-Z]+;)", r"&\1", text)
-        text = re.sub(r"&#x([0-9a-fA-F]+)(?![0-9a-fA-F;])", r"&#x\1;", text)
-        text = re.sub(r"&#([0-9]+)(?![0-9;])", r"&#\1;", text)
-        if "&" in text:
-            text = html.unescape(text)
-        if text == prev:
-            break
-
-    text = re.sub(r"[\$&]#x?202[89];?", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"[\u2028\u2029\r\n\t]+", " ", text)
-    text = re.sub(r"[\u200b-\u200d\u2060\ufeff\u00ad]", "", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return _clean_text_str(value)
 
 
 def join_text(*parts: str | None, sep: str = " · ") -> str:

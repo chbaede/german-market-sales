@@ -22,15 +22,17 @@ PHRASES_KO: tuple[tuple[str, str], ...] = (
 )
 
 PHRASES_EN: tuple[tuple[str, str], ...] = (
-
     ("새 데이터를 가져오지 못해 캐시를 표시합니다.", "Failed to fetch new data, showing cached results instead."),
     ("EDEKA 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "EDEKA request retried without TLS verification due to failure."),
     ("ALDI Nord 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "ALDI Nord request retried without TLS verification due to failure."),
+    ("ALDI Süd 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "ALDI Süd request retried without TLS verification due to failure."),
     ("Kaufland 공식 페이지 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "Kaufland official page request retried without TLS verification due to failure."),
     ("TLS 인증서 검증 실패로 Marktguru 요청을 한 번 비검증 모드로 재시도했습니다.", "Marktguru request retried without TLS verification due to failure."),
     ("TLS 인증서 검증 실패로 dm 요청을 한 번 비검증 모드로 재시도했습니다.", "dm request retried without TLS verification due to failure."),
     ("REWE 공식 페이지 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "REWE official page request retried without TLS verification due to failure."),
     ("REWE 상품 타일 요청은 TLS 인증서 검증 실패로 한 번 비검증 모드로 재시도했습니다.", "REWE product tile request retried without TLS verification due to failure."),
+    ("TLS 인증서 검증 실패로 ROSSMANN 공식 전단지 요청을 한 번 비검증 모드로 재시도했습니다.", "ROSSMANN official flyer request retried without TLS verification due to failure."),
+    ("ROSSMANN 공식 전단지 색인을 확인하지 못해 Marktguru 상세 데이터만 사용했습니다.", "Failed to verify ROSSMANN official flyer index, used Marktguru data only."),
     ("ROSSMANN 공식 전단지 색인을 확인하지 못해 Marktguru 상세 데이터만 사용했습니다", "Failed to verify ROSSMANN official flyer index, used Marktguru data only"),
     ("ROSSMANN 공식 전단지 색인과 Marktguru 항목의 일치율이 낮아 Marktguru 출처 링크를 유지했습니다.", "Maintained Marktguru source link due to low match rate with ROSSMANN official flyer index."),
 
@@ -329,6 +331,32 @@ _COMPILED_PHRASES_EN: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile(re.escape(source), re.IGNORECASE), target)
     for source, target in sorted(PHRASES_EN, key=lambda pair: len(pair[0]), reverse=True)
 )
+_DYNAMIC_PATTERNS_EN: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"^ALDI Nord 매장은 해당 지역\(PLZ ([^)]+)\)에 존재하지 않습니다 \([^)]+\)\.$"),
+        r"ALDI Nord stores do not operate in this area (PLZ \1; ALDI Süd territory).",
+    ),
+    (
+        re.compile(r"^ALDI Süd 매장은 해당 지역\(PLZ ([^)]+)\)에 존재하지 않습니다 \([^)]+\)\.$"),
+        r"ALDI Süd stores do not operate in this area (PLZ \1; ALDI Nord territory).",
+    ),
+    (
+        re.compile(r"^(.+?) 공식 데이터가 비어 있어 Marktguru 데이터로 대체했습니다\.$"),
+        r"\1 official data was empty; substituted with Marktguru data.",
+    ),
+    (
+        re.compile(r"^(.+?) 공식 데이터를 가져오지 못해 Marktguru 데이터로 대체했습니다:\s*(.+)$"),
+        r"Failed to fetch official \1 data; substituted with Marktguru data: \2",
+    ),
+    (
+        re.compile(r"^(.+?) 데이터를 가져오지 못했습니다:\s*(.+)$"),
+        r"Failed to fetch \1 data: \2",
+    ),
+    (
+        re.compile(r"^(.+?) 공식 페이지가 브라우저 검증으로 차단되었고 대체 피드에서도 항목을 찾지 못했습니다\.$"),
+        r"\1 official page was blocked by browser verification and no items were found in the fallback feed.",
+    ),
+)
 
 
 @lru_cache(maxsize=4096)
@@ -340,6 +368,12 @@ def _translate_text_cached(text: str | None, lang: str) -> str:
     words = WORDS_EN if lang == "en" else WORDS_KO
 
     translated = text
+    if lang == "en":
+        for dyn_pattern, dyn_target in _DYNAMIC_PATTERNS_EN:
+            translated, count = dyn_pattern.subn(dyn_target, translated)
+            if count:
+                return translated
+
     for pattern, target in phrases:
         translated = pattern.sub(target, translated)
 
