@@ -1611,27 +1611,19 @@ select:focus {
   width: 100%;
 }
 
+/* Suppress all uncontrolled AdSense Auto Ads; only explicit .ad-unit slots are allowed */
+.google-auto-placed,
+ins.adsbygoogle:not([data-ad-slot]),
+ins.adsbygoogle[data-anchor-status],
 ins.adsbygoogle[data-ad-status="unfilled"] {
-  display: none !important;
-}
-
-/* Suppress intrusive AdSense Auto Ads inside navigation, controls, cards, and modals */
-.topbar .google-auto-placed,
-.control-card .google-auto-placed,
-.list-status-bar .google-auto-placed,
-.notice .google-auto-placed,
-.offer-card .google-auto-placed,
-.custom-modal-backdrop .google-auto-placed,
-.topbar ins.adsbygoogle:not([data-ad-slot]),
-.control-card ins.adsbygoogle:not([data-ad-slot]),
-.list-status-bar ins.adsbygoogle:not([data-ad-slot]),
-.notice ins.adsbygoogle:not([data-ad-slot]),
-.offer-card ins.adsbygoogle:not([data-ad-slot]),
-.custom-modal-backdrop ins.adsbygoogle:not([data-ad-slot]) {
   display: none !important;
   height: 0 !important;
   margin: 0 !important;
+  max-height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
   padding: 0 !important;
+  visibility: hidden !important;
 }
 
 .ad-label {

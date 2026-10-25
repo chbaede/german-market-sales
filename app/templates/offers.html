@@ -352,7 +352,7 @@
               </div>
             </div>
           </article>
-          {% if (loop.index == 4 and offers|length > 4) or (loop.index == 16 and offers|length > 16) %}
+          {% if loop.index == 8 and offers|length > 8 %}
             <div class="ad-unit ad-unit-infeed" aria-label="Anzeige">
               <span class="ad-label">Anzeige</span>
               <ins class="adsbygoogle"
@@ -456,5 +456,5 @@
 {% endblock %}
 
 {% block scripts %}
-  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261025-2') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261025-3') }}" defer></script>
 {% endblock %}

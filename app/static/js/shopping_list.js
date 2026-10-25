@@ -414,14 +414,15 @@
     });
   }
 
-  // Suppress intrusive Google Auto Ads inside topbar, controls, and inside individual product cards
+  // Block all uncontrolled Google Auto Ads so only explicit .ad-unit slots render
   function pruneIntrusiveAutoAds() {
-    const blockedZones = ".topbar, .control-card, .list-status-bar, .notice, .offer-card, .custom-modal-backdrop";
-    document.querySelectorAll(".google-auto-placed, ins.adsbygoogle:not([data-ad-slot])").forEach((el) => {
-      if (el.closest(blockedZones)) {
-        el.remove();
-      }
-    });
+    document
+      .querySelectorAll(".google-auto-placed, ins.adsbygoogle:not([data-ad-slot]), ins.adsbygoogle[data-anchor-status]")
+      .forEach((el) => {
+        if (!el.closest(".ad-unit")) {
+          el.remove();
+        }
+      });
   }
 
   pruneIntrusiveAutoAds();
