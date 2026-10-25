@@ -352,6 +352,20 @@
               </div>
             </div>
           </article>
+          {% if (loop.index == 4 and offers|length > 4) or (loop.index == 16 and offers|length > 16) %}
+            <div class="ad-unit ad-unit-infeed" aria-label="Anzeige">
+              <span class="ad-label">Anzeige</span>
+              <ins class="adsbygoogle"
+                   style="display:block"
+                   data-ad-client="ca-pub-6854824605420161"
+                   data-ad-slot="9426228178"
+                   data-ad-format="auto"
+                   data-full-width-responsive="true"></ins>
+              <script>
+                   (adsbygoogle = window.adsbygoogle || []).push({});
+              </script>
+            </div>
+          {% endif %}
         {% else %}
           <div class="empty-state">
             <p>Keine Angebote gefunden. <span class="ko">{{ render_ko("조건에 맞는 할인 항목이 없습니다.") }}</span></p>
@@ -442,5 +456,5 @@
 {% endblock %}
 
 {% block scripts %}
-  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261025-1') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/shopping_list.js', v='20261025-2') }}" defer></script>
 {% endblock %}

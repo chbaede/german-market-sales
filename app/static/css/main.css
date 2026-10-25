@@ -1599,6 +1599,11 @@ select:focus {
   width: 100%;
 }
 
+.ad-unit-infeed {
+  grid-column: 1 / -1;
+  margin: 2px 0;
+}
+
 .ad-unit ins.adsbygoogle {
   display: block;
   margin: 0 auto;
@@ -1893,15 +1898,6 @@ ins.adsbygoogle[data-ad-status="unfilled"] {
   .valid-dates {
     font-size: 10.5px;
     line-height: 1.25;
-  }
-
-  /* Keep initial mobile view clean: suppress Auto Ads outside the dedicated bottom slot */
-  .google-auto-placed,
-  ins.adsbygoogle:not([data-ad-slot]) {
-    display: none !important;
-    height: 0 !important;
-    margin: 0 !important;
-    padding: 0 !important;
   }
 
   .card-scope-row {

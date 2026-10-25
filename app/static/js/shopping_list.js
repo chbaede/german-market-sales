@@ -414,11 +414,11 @@
     });
   }
 
-  // Suppress intrusive Google Auto Ads inside topbar, controls, cards, and initial mobile viewport
+  // Suppress intrusive Google Auto Ads inside topbar, controls, and inside individual product cards
   function pruneIntrusiveAutoAds() {
     const blockedZones = ".topbar, .control-card, .list-status-bar, .notice, .offer-card, .custom-modal-backdrop";
     document.querySelectorAll(".google-auto-placed, ins.adsbygoogle:not([data-ad-slot])").forEach((el) => {
-      if (el.closest(blockedZones) || (window.innerWidth <= 640 && !el.closest(".ad-unit-bottom"))) {
+      if (el.closest(blockedZones)) {
         el.remove();
       }
     });
