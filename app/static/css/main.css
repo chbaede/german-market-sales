@@ -1611,11 +1611,14 @@ select:focus {
   width: 100%;
 }
 
-/* Suppress all uncontrolled AdSense Auto Ads; only explicit .ad-unit slots are allowed */
+/* Suppress uncontrolled in-page AdSense Auto Ads (.google-auto-placed),
+   while allowing the top slide-down anchor ad and explicit .ad-unit slots */
 .google-auto-placed,
-ins.adsbygoogle:not([data-ad-slot]),
-ins.adsbygoogle[data-anchor-status],
-ins.adsbygoogle[data-ad-status="unfilled"] {
+main ins.adsbygoogle:not([data-ad-slot]),
+.topbar ins.adsbygoogle:not([data-ad-slot]),
+.site-footer ins.adsbygoogle:not([data-ad-slot]),
+.custom-modal-backdrop ins.adsbygoogle:not([data-ad-slot]),
+ins.adsbygoogle[data-ad-status="unfilled"]:not([data-anchor-status]) {
   display: none !important;
   height: 0 !important;
   margin: 0 !important;

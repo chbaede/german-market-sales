@@ -414,12 +414,18 @@
     });
   }
 
-  // Block all uncontrolled Google Auto Ads so only explicit .ad-unit slots render
+  // Block uncontrolled in-page Google Auto Ads (.google-auto-placed) while keeping
+  // the top slide-down anchor ad and explicit .ad-unit slots
   function pruneIntrusiveAutoAds() {
+    document.querySelectorAll(".google-auto-placed").forEach((el) => {
+      if (!el.closest(".ad-unit")) {
+        el.remove();
+      }
+    });
     document
-      .querySelectorAll(".google-auto-placed, ins.adsbygoogle:not([data-ad-slot]), ins.adsbygoogle[data-anchor-status]")
+      .querySelectorAll("main ins.adsbygoogle:not([data-ad-slot]), .topbar ins.adsbygoogle:not([data-ad-slot])")
       .forEach((el) => {
-        if (!el.closest(".ad-unit")) {
+        if (!el.closest(".ad-unit") && !el.hasAttribute("data-anchor-status")) {
           el.remove();
         }
       });
