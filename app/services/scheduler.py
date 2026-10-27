@@ -30,7 +30,7 @@ class AutoRefreshScheduler:
         self,
         app,
         check_interval_seconds: int = 900,
-        max_cache_age_hours: int = 24,
+        max_cache_age_hours: int = 168,
     ):
         self.app = app
         self.check_interval_seconds = check_interval_seconds
@@ -124,15 +124,15 @@ class AutoRefreshScheduler:
 
         age_hours = (now - last_run).total_seconds() / 3600
 
-        # Monday morning deal refresh: between 03:00 and 07:00 Berlin time
+        # Weekly Monday deal refresh: run once on Monday (from 03:00 Berlin time)
         is_monday = now.weekday() == 0
-        in_monday_window = is_monday and (3 <= now.hour <= 7)
-        ran_today = (last_run.date() == now.date())
+        in_monday_window = is_monday and now.hour >= 3
+        ran_today = (last_run.astimezone(BERLIN_TZ).date() == now.date())
 
         if in_monday_window and not ran_today:
             return True
 
-        # Standard periodic threshold (e.g. 24 hours)
+        # Weekly fallback threshold (default 168 hours = 7 days)
         if age_hours >= self.max_cache_age_hours:
             return True
 

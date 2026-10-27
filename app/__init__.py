@@ -25,7 +25,7 @@ def create_app(config_object: type[Config] = Config) -> Flask:
         scheduler = AutoRefreshScheduler(
             app=app,
             check_interval_seconds=int(app.config.get("SCHEDULER_CHECK_INTERVAL_SECONDS", 900)),
-            max_cache_age_hours=int(app.config.get("SCHEDULER_MAX_CACHE_AGE_HOURS", 24)),
+            max_cache_age_hours=int(app.config.get("SCHEDULER_MAX_CACHE_AGE_HOURS", 168)),
         )
         scheduler.start()
         app.extensions["auto_scheduler"] = scheduler

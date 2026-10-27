@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
 import json
 import logging
@@ -1523,6 +1523,46 @@ class PriceHistoryService:
             logger.error("Historical revalidation failed; all changes rolled back: %s", exc)
             raise
 
+    @staticmethod
+    def monday_iso_for_timestamp(timestamp: str | None = None) -> str:
+        dt: datetime | None = None
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp)
+            except ValueError:
+                try:
+                    d = date.fromisoformat(timestamp.split("T", 1)[0])
+                    dt = datetime.combine(d, time(6, 0), BERLIN_TZ)
+                except ValueError:
+                    dt = None
+        if dt is None:
+            dt = datetime.now(BERLIN_TZ)
+        elif dt.tzinfo is None:
+            dt = dt.replace(tzinfo=BERLIN_TZ)
+        else:
+            dt = dt.astimezone(BERLIN_TZ)
+        monday_day = dt.date() - timedelta(days=dt.date().weekday())
+        return datetime.combine(monday_day, time(6, 0), BERLIN_TZ).isoformat(timespec="seconds")
+
+    def purge_non_monday_records(self) -> int:
+        """
+        Deletes any price_history rows whose recorded_at date (YYYY-MM-DD) is not a Monday
+        (in SQLite strftime('%w', date): '0'=Sunday, '1'=Monday, ..., '6'=Saturday).
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM price_history
+                WHERE strftime('%w', substr(recorded_at, 1, 10)) IS NOT NULL
+                  AND strftime('%w', substr(recorded_at, 1, 10)) != '1'
+                """
+            )
+            deleted = cursor.rowcount if cursor.rowcount is not None and cursor.rowcount > 0 else 0
+            if deleted > 0:
+                conn.commit()
+                self._atl_cache = None
+            return deleted
+
     def record_offers(
         self,
         offers: list[Offer],
@@ -1532,7 +1572,7 @@ class PriceHistoryService:
         if not offers:
             return 0
 
-        timestamp = recorded_at or datetime.now(UTC).isoformat(timespec="seconds")
+        timestamp = recorded_at or self.monday_iso_for_timestamp(None)
         date_prefix = timestamp.split("T", 1)[0]
 
         with self._get_connection() as conn:
@@ -2090,6 +2130,7 @@ class PriceHistoryService:
         }
 
     def seed_initial_history(self) -> int:
+        self.purge_non_monday_records()
         if self.db_path in self._SEEDED_DBS and self.db_path.exists():
             return 0
 
@@ -2101,9 +2142,6 @@ class PriceHistoryService:
                 return 0
 
         imported = 0
-        now = datetime.now(UTC)
-        past_week = (now - timedelta(days=7)).isoformat(timespec="seconds")
-        current_iso = now.isoformat(timespec="seconds")
 
         for filename in ("offers.json", "drugstore_offers.json"):
             file_path = self.cache_dir / filename
@@ -2115,37 +2153,10 @@ class PriceHistoryService:
                 offers_data = data.get("offers", [])
                 zip_code = data.get("zip_code", "14195")
                 offers = [Offer.from_dict(item) for item in offers_data]
+                monday_iso = self.monday_iso_for_timestamp(None)
 
-                # Seed current week observations
-                imported += self.record_offers(offers, zip_code=zip_code, recorded_at=current_iso)
-
-                # Seed historical anchor points from old_price to build initial baseline trend
-                past_offers: list[Offer] = [
-                    Offer(
-                        id=f"hist-{offer.id}",
-                        source_offer_id=offer.source_offer_id,
-                        retailer=offer.retailer,
-                        retailer_slug=offer.retailer_slug,
-                        title=offer.title,
-                        brand=offer.brand,
-                        category=offer.category,
-                        price=offer.old_price,
-                        old_price=None,
-                        unit_price=None,
-                        unit=offer.unit,
-                        discount_percent=None,
-                        description=offer.description,
-                        valid_from=None,
-                        valid_to=None,
-                        image_url=offer.image_url,
-                        source_url=offer.source_url,
-                        product_key=offer.product_key,
-                    )
-                    for offer in offers
-                    if offer.old_price and offer.old_price > 0
-                ]
-                if past_offers:
-                    imported += self.record_offers(past_offers, zip_code=zip_code, recorded_at=past_week)
+                # Seed weekly Monday observations only
+                imported += self.record_offers(offers, zip_code=zip_code, recorded_at=monday_iso)
             except Exception:
                 continue
 

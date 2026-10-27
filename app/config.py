@@ -70,14 +70,14 @@ DRUGSTORE_PAGE = {
 class Config:
     BASE_DIR = Path(__file__).resolve().parent.parent
     CACHE_DIR = BASE_DIR / "data" / "cache"
-    CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", str(60 * 60 * 6)))
+    CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", str(60 * 60 * 24 * 7)))
     DEFAULT_ZIP_CODE = os.getenv("DEFAULT_ZIP_CODE", "14195")
     MAX_OFFERS_PER_RETAILER = int(os.getenv("MAX_OFFERS_PER_RETAILER", "60"))
     REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "15"))
     REQUEST_VERIFY_TLS = os.getenv("REQUEST_VERIFY_TLS", "auto")
     AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "true").lower() == "true"
     SCHEDULER_CHECK_INTERVAL_SECONDS = int(os.getenv("SCHEDULER_CHECK_INTERVAL_SECONDS", "900"))
-    SCHEDULER_MAX_CACHE_AGE_HOURS = int(os.getenv("SCHEDULER_MAX_CACHE_AGE_HOURS", "24"))
+    SCHEDULER_MAX_CACHE_AGE_HOURS = int(os.getenv("SCHEDULER_MAX_CACHE_AGE_HOURS", "168"))
 
     RETAILERS = {
         "edeka": "EDEKA",

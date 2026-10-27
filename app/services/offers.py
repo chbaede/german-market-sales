@@ -66,6 +66,7 @@ class OfferService:
         self._memory_cache: dict[str, tuple[int, str | None, list[str], list[Offer]]] = {}
         self.price_history = PriceHistoryService(cache_dir=cache_dir)
         try:
+            self.price_history.purge_non_monday_records()
             self.price_history.seed_initial_history()
         except Exception:
             pass
@@ -115,7 +116,8 @@ class OfferService:
         offers = sorted(offers, key=lambda offer: (offer.retailer, offer.title.casefold()))
         self._write_cache(zip_code, fetched_at, offers, warnings)
         try:
-            self.price_history.record_offers(offers, zip_code=zip_code, recorded_at=fetched_at)
+            monday_iso = self.price_history.monday_iso_for_timestamp(fetched_at)
+            self.price_history.record_offers(offers, zip_code=zip_code, recorded_at=monday_iso)
         except Exception:
             pass
         return OfferResult(offers=offers, fetched_at=fetched_at, warnings=warnings)
