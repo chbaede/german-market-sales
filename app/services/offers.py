@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,7 @@ CACHE_SCHEMA_VERSION = 15
 UPSTREAM_FETCH_MULTIPLIER = 10
 MIN_UPSTREAM_FETCH_LIMIT = 500
 DEFAULT_CACHE_ZIP = "14195"
+MAX_MEMORY_CACHE_ENTRIES = 16
 
 
 class OfferService:
@@ -63,7 +65,7 @@ class OfferService:
             max_offers_per_retailer * UPSTREAM_FETCH_MULTIPLIER,
             MIN_UPSTREAM_FETCH_LIMIT,
         )
-        self._memory_cache: dict[str, tuple[int, str | None, list[str], list[Offer]]] = {}
+        self._memory_cache: OrderedDict[str, tuple[int, str | None, list[str], list[Offer]]] = OrderedDict()
         self.price_history = PriceHistoryService(cache_dir=cache_dir)
         try:
             self.price_history.purge_non_monday_records()
@@ -178,6 +180,20 @@ class OfferService:
 
         return None
 
+    def _set_memory_cache(
+        self,
+        zip_code: str,
+        mtime_ns: int,
+        fetched_at: str,
+        warnings: list[str],
+        offers: list[Offer],
+    ) -> None:
+        if zip_code in self._memory_cache:
+            self._memory_cache.move_to_end(zip_code)
+        elif len(self._memory_cache) >= MAX_MEMORY_CACHE_ENTRIES:
+            self._memory_cache.popitem(last=False)
+        self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [copy.copy(o) for o in offers])
+
     def _write_cache(self, zip_code: str, fetched_at: str, offers: list[Offer], warnings: list[str]) -> None:
         payload = {
             "schema_version": CACHE_SCHEMA_VERSION,
@@ -199,11 +215,11 @@ class OfferService:
                 delete=False,
             ) as handle:
                 temp_path = Path(handle.name)
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
             temp_path.replace(target_file)
             try:
                 mtime_ns = target_file.stat().st_mtime_ns
-                self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [copy.copy(o) for o in offers])
+                self._set_memory_cache(zip_code, mtime_ns, fetched_at, warnings, offers)
             except OSError:
                 self._memory_cache.pop(zip_code, None)
         except Exception:
@@ -228,6 +244,7 @@ class OfferService:
         if mem_entry is not None:
             cached_mtime, fetched_at, warnings, base_offers = mem_entry
             if cached_mtime == mtime_ns:
+                self._memory_cache.move_to_end(zip_code)
                 offers = self._non_expired_offers([copy.copy(o) for o in base_offers])
                 return OfferResult(
                     offers=offers,
@@ -242,7 +259,7 @@ class OfferService:
         offers = self._cached_offers(cached)
         fetched_at = cached["fetched_at"]
         warnings = cached.get("warnings", [])
-        self._memory_cache[zip_code] = (mtime_ns, fetched_at, list(warnings), [copy.copy(o) for o in offers])
+        self._set_memory_cache(zip_code, mtime_ns, fetched_at, warnings, offers)
         return OfferResult(
             offers=offers,
             fetched_at=fetched_at,

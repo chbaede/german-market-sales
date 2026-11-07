@@ -225,6 +225,44 @@ def test_supermarket_page_refresh_parameter_still_fetches_synchronously(monkeypa
     assert queued == []
 
 
+def test_load_offers_for_request_falls_back_to_default_cache_on_miss(monkeypatch):
+    import app.routes as routes
+
+    calls: list[str] = []
+    queued: list[str] = []
+
+    class FakeOfferService:
+        def get_cached_offers(self, zip_code: str) -> OfferResult | None:
+            calls.append(f"cache:{zip_code}")
+            if zip_code == "14195":
+                return OfferResult(
+                    offers=[_offer("Default PLZ Butter", "edeka", category="dairy")],
+                    fetched_at="2026-06-04T08:00:00+00:00",
+                    warnings=[],
+                    from_cache=True,
+                )
+            return None
+
+        def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
+            calls.append(f"live:{zip_code}:{refresh}")
+            raise AssertionError("Should not block on synchronous fetch when default cache is available")
+
+    monkeypatch.setattr(routes, "datetime", FrozenDateTime)
+    monkeypatch.setattr(routes, "offer_service", lambda: FakeOfferService())
+    monkeypatch.setattr(routes, "_queue_refresh", lambda service, zip_code: queued.append(zip_code))
+    app = create_app()
+
+    # Request a cold zip code that has no local cache yet
+    response = app.test_client().get("/?zip=80331")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Default PLZ Butter" in html
+    # Checked cache for requested zip (miss), then fallback default zip (hit)
+    assert calls == ["cache:80331", "cache:14195"]
+    # Queued background refresh for requested zip code so it fetches asynchronously
+    assert queued == ["80331"]
+
+
 def _offer(
     title: str,
     retailer_slug: str,

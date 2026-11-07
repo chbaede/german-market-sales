@@ -26,7 +26,7 @@ from app.services.location import (
     normalize_german_plz,
     resolve_plz_city,
 )
-from app.services.offers import OfferService
+from app.services.offers import DEFAULT_CACHE_ZIP, OfferService
 from app.services.price_history import (
     build_weekly_competitor_map,
     enrich_weekly_competitors,
@@ -726,6 +726,12 @@ def load_offers_for_request(service: OfferService, zip_code: str) -> OfferResult
         if cached:
             _queue_refresh(service, zip_code)
             return cached
+
+        default_cached = cached_getter(DEFAULT_CACHE_ZIP)
+        if default_cached:
+            _queue_refresh(service, zip_code)
+            return default_cached
+
     return service.get_offers(zip_code=zip_code, refresh=True)
 
 

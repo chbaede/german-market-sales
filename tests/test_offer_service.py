@@ -234,3 +234,50 @@ def test_offer_service_falls_back_to_marktguru_when_specialized_provider_is_empt
     assert offers[0].title == "Marktguru Deal"
     assert any("Marktguru" in w for w in warnings)
 
+
+def test_offer_service_memory_cache_lru_bounding(tmp_path):
+    service = OfferService(
+        cache_dir=tmp_path,
+        retailers={"lidl": "Lidl"},
+        cache_ttl_seconds=3600,
+        timeout=1,
+        verify_tls=False,
+        max_offers_per_retailer=10,
+    )
+
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    # Populate memory cache with 25 distinct zip codes
+    for i in range(25):
+        zip_code = f"100{i:02d}"
+        offer = _offer(f"Deal {zip_code}")
+        service._write_cache(zip_code, now_iso, [offer], [])
+
+    # The memory cache must be bounded to MAX_MEMORY_CACHE_ENTRIES (16)
+    assert len(service._memory_cache) == offers_module.MAX_MEMORY_CACHE_ENTRIES
+    # Earliest zip codes should have been evicted
+    assert "10000" not in service._memory_cache
+    assert "10001" not in service._memory_cache
+    # Latest zip codes should be present
+    assert "10024" in service._memory_cache
+
+
+def test_offer_service_write_cache_is_compact(tmp_path):
+    service = OfferService(
+        cache_dir=tmp_path,
+        retailers={"lidl": "Lidl"},
+        cache_ttl_seconds=3600,
+        timeout=1,
+        verify_tls=False,
+        max_offers_per_retailer=10,
+    )
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    service._write_cache("10115", now_iso, [_offer("Test Item")], [])
+
+    cache_file = service._cache_file_for_zip("10115")
+    assert cache_file.exists()
+    content = cache_file.read_text(encoding="utf-8")
+    # Verify no multi-line indent formatting exists
+    assert "\n  " not in content
+    assert '{"schema_version":' in content
+
+

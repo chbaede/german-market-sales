@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
 import json
@@ -1091,18 +1092,28 @@ class PriceHistoryService:
         self.cache_dir = cache_dir
         self.db_path = (cache_dir / db_name).resolve()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._atl_cache: dict[tuple[int, str | None, str | None], dict[str, float]] | None = None
+        self._atl_cache: OrderedDict[tuple[int, str | None, str | None], dict[str, float]] | None = None
         if self.db_path not in self._INITIALIZED_DBS or not self.db_path.exists():
             self._init_db()
             self._INITIALIZED_DBS.add(self.db_path)
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_connection(self):
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        conn.execute("PRAGMA busy_timeout = 10000")
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._get_connection() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA temp_store = MEMORY")
+            conn.execute("PRAGMA busy_timeout = 10000")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS price_history (
@@ -1160,6 +1171,9 @@ class PriceHistoryService:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_date ON price_history(recorded_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_retailer ON price_history(retailer_slug)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_zip ON price_history(zip_code)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ph_atl_lookup ON price_history(region_verified, scope_type, zip_code, product_key, price)"
+            )
 
             self._revalidate_historical_records_conn(conn)
             conn.commit()
@@ -1735,6 +1749,7 @@ class PriceHistoryService:
             mtime_ns = 0
         cache_key = (mtime_ns, zip_code, store_id)
         if mtime_ns and self._atl_cache is not None and cache_key in self._atl_cache:
+            self._atl_cache.move_to_end(cache_key)
             return dict(self._atl_cache[cache_key])
 
         with self._get_connection() as conn:
@@ -1774,7 +1789,11 @@ class PriceHistoryService:
             result = {row["product_key"]: float(row["min_price"]) for row in cursor.fetchall()}
             if mtime_ns:
                 if self._atl_cache is None or any(k[0] != mtime_ns for k in self._atl_cache):
-                    self._atl_cache = {}
+                    self._atl_cache = OrderedDict()
+                if cache_key in self._atl_cache:
+                    self._atl_cache.move_to_end(cache_key)
+                elif len(self._atl_cache) >= 64:
+                    self._atl_cache.popitem(last=False)
                 self._atl_cache[cache_key] = dict(result)
             return result
 
