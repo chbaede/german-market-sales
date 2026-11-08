@@ -73,6 +73,7 @@ class Config:
     CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", str(60 * 60 * 24 * 7)))
     DEFAULT_ZIP_CODE = os.getenv("DEFAULT_ZIP_CODE", "14195")
     MAX_OFFERS_PER_RETAILER = int(os.getenv("MAX_OFFERS_PER_RETAILER", "60"))
+    MAX_DISPLAY_OFFERS_PER_RETAILER = int(os.getenv("MAX_DISPLAY_OFFERS_PER_RETAILER", "0"))
     REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "15"))
     REQUEST_VERIFY_TLS = os.getenv("REQUEST_VERIFY_TLS", "auto")
     AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "true").lower() == "true"

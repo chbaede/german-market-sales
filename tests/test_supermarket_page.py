@@ -263,6 +263,36 @@ def test_load_offers_for_request_falls_back_to_default_cache_on_miss(monkeypatch
     assert queued == ["80331"]
 
 
+def test_supermarket_page_shows_all_offers_without_truncating_to_60(monkeypatch):
+    import app.routes as routes
+
+    class FakeOfferService:
+        def get_offers(self, zip_code: str, refresh: bool = False) -> OfferResult:
+            offers = [_offer(f"EDEKA Item {i}", "edeka", price=1.0 + i * 0.01) for i in range(260)]
+            return OfferResult(
+                offers=offers,
+                fetched_at="2026-06-04T08:00:00+00:00",
+                warnings=[],
+            )
+
+    monkeypatch.setattr(routes, "datetime", FrozenDateTime)
+    monkeypatch.setattr(routes, "offer_service", lambda: FakeOfferService())
+    app = create_app()
+
+    # 1. By default, all 260 items should be rendered
+    response = app.test_client().get("/")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert html.count('data-offer-id="') == 260
+    assert "EDEKA Item 0" in html
+    assert "EDEKA Item 259" in html
+
+    # 2. If explicit limit is requested, it should be respected
+    response_limited = app.test_client().get("/?limit=50")
+    html_limited = response_limited.get_data(as_text=True)
+    assert html_limited.count('data-offer-id="') == 50
+
+
 def _offer(
     title: str,
     retailer_slug: str,

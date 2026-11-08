@@ -152,7 +152,11 @@ def render_offer_page(
     week_offers = enrich_weekly_competitors(filter_offers_by_week(priced_offers, selected_week))
     filtered = filter_offers(week_offers, selected_retailers, query, category, priced_only, ending_soon, overlap_only)
     filtered = sort_offers(filtered, sort)
-    filtered = limit_offers_per_retailer(filtered, current_app.config["MAX_OFFERS_PER_RETAILER"])
+    limit_param = request.args.get("limit")
+    if limit_param and limit_param.isdigit() and int(limit_param) > 0:
+        filtered = limit_offers_per_retailer(filtered, int(limit_param))
+    elif current_app.config.get("MAX_DISPLAY_OFFERS_PER_RETAILER", 0) > 0:
+        filtered = limit_offers_per_retailer(filtered, current_app.config["MAX_DISPLAY_OFFERS_PER_RETAILER"])
 
     _enrich_atl_if_needed(filtered, service, result.fetched_at, zip_code=zip_code)
 
@@ -582,6 +586,8 @@ def sort_offers(offers: list[Offer], sort: str) -> list[Offer]:
 
 
 def limit_offers_per_retailer(offers: list[Offer], limit: int) -> list[Offer]:
+    if limit <= 0:
+        return offers
     counts: dict[str, int] = {}
     limited: list[Offer] = []
     for offer in offers:
